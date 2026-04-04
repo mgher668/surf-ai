@@ -1,0 +1,3 @@
+{"id":"sum-1","adapter":"mock","input":"Summarize: Harness engineering aligns agent loops with evaluation.","contains":"mock response"}
+{"id":"trans-1","adapter":"mock","input":"Translate this to Chinese: Software quality matters.","contains":"mock response"}
+{"id":"qa-1","adapter":"mock","input":"What is the key risk of long-running agents?","contains":"mock response"}

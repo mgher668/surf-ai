@@ -1,0 +1,43 @@
+.surf-ai-selection-handle {
+  position: absolute;
+  z-index: 2147483646;
+  width: 30px;
+  height: 30px;
+  border-radius: 999px;
+  border: 1px solid #0a3344;
+  background: linear-gradient(180deg, #17a3a5 0%, #0d5f78 100%);
+  color: #fff;
+  font: 600 12px/30px ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  text-align: center;
+  cursor: pointer;
+  box-shadow: 0 8px 20px rgba(13, 95, 120, 0.3);
+}
+
+.surf-ai-selection-menu {
+  position: absolute;
+  z-index: 2147483647;
+  min-width: 150px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  border-radius: 12px;
+  border: 1px solid #dae7ec;
+  background: #f9feff;
+  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.14);
+}
+
+.surf-ai-selection-menu button {
+  border: 1px solid #c5dce8;
+  border-radius: 8px;
+  padding: 6px 8px;
+  background: #fff;
+  color: #073241;
+  font: 500 12px/1.2 ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  text-align: left;
+  cursor: pointer;
+}
+
+.surf-ai-selection-menu button:hover {
+  background: #edf9ff;
+}

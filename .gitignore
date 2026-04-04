@@ -1,0 +1,23 @@
+node_modules
+pnpm-lock.yaml
+.DS_Store
+
+# Build output
+dist
+build
+coverage
+
+# Local runtime
+.env
+.env.*
+*.log
+
+# Tooling
+.vscode
+.idea
+
+# Bridge local state
+.bridge-data
+
+# gstack generated skill entry symlinks (machine-local, absolute targets)
+.agents/skills/gstack-*

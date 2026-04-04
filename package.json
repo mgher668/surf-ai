@@ -1,0 +1,17 @@
+{
+  "name": "surf-ai",
+  "private": true,
+  "version": "0.1.0",
+  "packageManager": "pnpm@10.6.0",
+  "scripts": {
+    "dev": "pnpm -r --parallel dev",
+    "dev:extension": "pnpm --filter @surf-ai/extension dev",
+    "dev:bridge": "pnpm --filter @surf-ai/bridge dev",
+    "build": "pnpm -r build",
+    "typecheck": "pnpm -r typecheck",
+    "lint": "pnpm -r lint",
+    "evals": "pnpm --filter @surf-ai/bridge evals",
+    "gstack:setup": "cd .agents/skills/gstack && ./setup --host codex",
+    "gstack:check": "test -x .agents/skills/gstack/browse/dist/browse && echo 'browse binary: ok' && ls .agents/skills | rg '^gstack-' | wc -l | xargs -I{} echo 'linked gstack skills: {}'"
+  }
+}

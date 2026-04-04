@@ -1,0 +1,24 @@
+{
+  "name": "@surf-ai/bridge",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node --watch --enable-source-maps --import tsx src/index.ts",
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "tsc -p tsconfig.json --noEmit",
+    "evals": "node ../../scripts/run-evals.mjs"
+  },
+  "dependencies": {
+    "@fastify/cors": "^10.0.2",
+    "@surf-ai/shared": "workspace:*",
+    "fastify": "^5.2.1",
+    "zod": "^3.24.2"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.8",
+    "tsx": "^4.20.3",
+    "typescript": "^5.8.2"
+  }
+}

@@ -1,0 +1,28 @@
+:root {
+  color-scheme: light;
+  font-family: "Noto Sans", "PingFang SC", "Segoe UI", sans-serif;
+  --bg: #f4f9fb;
+  --panel: #ffffff;
+  --ink: #112632;
+  --muted: #547080;
+  --line: #d1e2eb;
+  --brand: #0f7a8a;
+  --brand-2: #0d5f78;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: radial-gradient(circle at 8% 0%, #dcf4ff 0%, #f4f9fb 40%, #f2f8f8 100%);
+  color: var(--ink);
+}
+
+button,
+input,
+textarea,
+select {
+  font: inherit;
+}
