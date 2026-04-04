@@ -1,3 +1,4 @@
 {"id":"sum-1","adapter":"mock","input":"Summarize: Harness engineering aligns agent loops with evaluation.","contains":"mock response"}
 {"id":"trans-1","adapter":"mock","input":"Translate this to Chinese: Software quality matters.","contains":"mock response"}
 {"id":"qa-1","adapter":"mock","input":"What is the key risk of long-running agents?","contains":"mock response"}
+{"id":"ctx-1","adapter":"mock","input":"Please answer based on current page context.","context":{"pageTitle":"Harness","pageUrl":"https://example.com","selectedText":"Harness is about controlled execution loops.","pageText":"Harness engineering helps structure long-running agent applications with clear boundaries.","pageTextSource":"dom"},"contains":"ctx=selected+page"}

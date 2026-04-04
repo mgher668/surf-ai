@@ -109,6 +109,15 @@ Response:
 }
 ```
 
+Notes:
+
+- Bridge will normalize incoming chat request into a unified internal `AgentTaskPayload` before calling local agents.
+- Current normalization limits:
+  - conversation history: latest 24 messages
+  - per-message/user-request clip: 4,000 chars
+  - selected text clip: 12,000 chars
+  - full-page text clip: 24,000 chars
+
 ## POST /tts
 
 Request:

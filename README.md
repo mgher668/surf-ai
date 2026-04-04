@@ -67,6 +67,7 @@ pnpm dev:extension
 - Session list + starred sessions + message persistence
 - Adapter routing skeleton (`mock`, `codex`, `claude`)
 - Bridge capability negotiation (`/capabilities`) for dynamic adapter/TTS availability
+- Unified bounded task payload normalization before local agent invocation
 - `MiniMax TTS` integration via bridge `/tts` (API key only in bridge env)
 - Local-Agent-first backend strategy (`codex` / `claude`), provider-mode adapters are compatibility placeholders in current version
 

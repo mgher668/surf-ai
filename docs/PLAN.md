@@ -23,6 +23,7 @@ This repository follows a local-first architecture for personal usage.
 - `/chat` supports adapter field:
   - `codex`, `claude`, `mock` are concrete local adapters.
   - `openai-compatible`, `anthropic`, `gemini` are currently compatibility placeholders and map to configured local fallback adapter.
+  - request context is normalized into a bounded internal task payload before local agent invocation.
 - `/tts` uses MiniMax T2A config from bridge environment.
 
 ## 4. Out of Scope (v0.1)

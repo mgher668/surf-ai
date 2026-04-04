@@ -37,7 +37,8 @@ async function main() {
         body: JSON.stringify({
           adapter: item.adapter,
           sessionId: `eval-${item.id}`,
-          messages: [{ role: "user", content: item.input }]
+          messages: [{ role: "user", content: item.input }],
+          ...(item.context ? { context: item.context } : {})
         })
       });
 
