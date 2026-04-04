@@ -69,7 +69,9 @@ const chatRequestSchema = z.object({
   context: z.object({
     pageTitle: z.string().optional(),
     pageUrl: z.string().optional(),
-    selectedText: z.string().optional()
+    selectedText: z.string().optional(),
+    pageText: z.string().optional(),
+    pageTextSource: z.enum(["readability", "dom"]).optional()
   }).optional()
 });
 
@@ -91,7 +93,9 @@ app.post("/chat", async (request, reply) => {
             context: {
               ...(parsed.data.context.pageTitle ? { pageTitle: parsed.data.context.pageTitle } : {}),
               ...(parsed.data.context.pageUrl ? { pageUrl: parsed.data.context.pageUrl } : {}),
-              ...(parsed.data.context.selectedText ? { selectedText: parsed.data.context.selectedText } : {})
+              ...(parsed.data.context.selectedText ? { selectedText: parsed.data.context.selectedText } : {}),
+              ...(parsed.data.context.pageText ? { pageText: parsed.data.context.pageText } : {}),
+              ...(parsed.data.context.pageTextSource ? { pageTextSource: parsed.data.context.pageTextSource } : {})
             }
           }
         : {})

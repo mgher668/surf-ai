@@ -56,3 +56,19 @@
 - 验证结果（通过/失败 + 原因）。
 - 剩余风险与下一步建议（最多 3 条）。
 
+## 8. gstack 强制流程（新增，必须遵守）
+
+从现在开始，所有开发任务默认必须走完以下 gstack 流程：
+
+1. `plan-eng-review`：实现前先做工程评审（架构、边界、风险、验收口径）。
+2. `build`：完成实现并通过本地类型/构建校验。
+3. `qa`：至少执行 Quick 级别验证；涉及 UI、交互、数据链路时默认 Standard。
+4. `review`：提交前做差异审查（含 adversarial/cross-model 检查）。
+5. `report`：输出本次 gate 结果（DONE / DONE_WITH_CONCERNS / BLOCKED）。
+
+执行细则：
+
+- gstack 使用仓库内安装：`.agents/skills/gstack`。
+- 失败不得跳过：任何 gate 失败必须先修复或显式标记 `BLOCKED`。
+- 未通过 `qa + review` 不允许进入提交阶段。
+- 如受环境限制无法执行（端口权限、网络等），必须记录阻塞原因与复现命令。

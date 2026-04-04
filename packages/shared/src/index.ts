@@ -38,9 +38,47 @@ export interface SelectionPayload {
   createdAt: number;
 }
 
-export interface ExtensionToUiMessage {
-  type: "selection_payload";
-  payload: SelectionPayload;
+export interface PageContentPayload {
+  pageTitle: string;
+  pageUrl: string;
+  text: string;
+  source: "readability" | "dom";
+  charCount: number;
+  extractedAt: number;
+}
+
+export interface PageContentErrorPayload {
+  message: string;
+}
+
+export type ExtensionToUiMessage =
+  | {
+      type: "selection_payload";
+      payload: SelectionPayload;
+    }
+  | {
+      type: "page_content_payload";
+      payload: PageContentPayload;
+    }
+  | {
+      type: "page_content_error";
+      payload: PageContentErrorPayload;
+    };
+
+export type UiToExtensionMessage =
+  | {
+      type: "open_sidepanel_with_selection";
+      payload: SelectionPayload;
+    }
+  | {
+      type: "extract_active_tab_content";
+      maxChars?: number;
+    };
+
+export interface UiToExtensionResponse {
+  ok: boolean;
+  payload?: PageContentPayload;
+  error?: string;
 }
 
 export interface BridgeHealthResponse {
@@ -65,6 +103,8 @@ export interface BridgeChatRequest {
     pageTitle?: string;
     pageUrl?: string;
     selectedText?: string;
+    pageText?: string;
+    pageTextSource?: PageContentPayload["source"];
   };
 }
 

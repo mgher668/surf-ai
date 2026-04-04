@@ -17,7 +17,11 @@ const dictionary = {
     adapter: "适配器",
     model: "模型",
     favorite: "收藏",
-    empty: "暂无消息"
+    empty: "暂无消息",
+    extractPage: "提取当前页",
+    extractingPage: "提取中...",
+    pageContextReady: "已附加页面全文上下文",
+    includePageContext: "发送时附带页面全文"
   },
   "en-US": {
     appTitle: "Surf AI",
@@ -35,7 +39,11 @@ const dictionary = {
     adapter: "Adapter",
     model: "Model",
     favorite: "Favorite",
-    empty: "No messages yet"
+    empty: "No messages yet",
+    extractPage: "Extract Page",
+    extractingPage: "Extracting...",
+    pageContextReady: "Page full-text context attached",
+    includePageContext: "Include full page text on send"
   }
 } as const;
 

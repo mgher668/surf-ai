@@ -1,9 +1,17 @@
-import type { ExtensionToUiMessage, QuickAction, SelectionPayload } from "@surf-ai/shared";
+import type {
+  ExtensionToUiMessage,
+  PageContentPayload,
+  QuickAction,
+  SelectionPayload,
+  UiToExtensionMessage,
+  UiToExtensionResponse
+} from "@surf-ai/shared";
 
 const ROOT_MENU = "surf-ai-root";
 const MENU_SUMMARY = "surf-ai-summary";
 const MENU_TRANSLATE = "surf-ai-translate";
 const MENU_READ = "surf-ai-read";
+const EXTRACT_DEFAULT_MAX_CHARS = 60_000;
 
 chrome.runtime.onInstalled.addListener(async () => {
   await chrome.contextMenus.removeAll();
@@ -82,30 +90,44 @@ chrome.commands.onCommand.addListener(async (command, tab) => {
   }
 });
 
-chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  if (message?.type !== "open_sidepanel_with_selection") {
-    return;
-  }
+chrome.runtime.onMessage.addListener((rawMessage, sender, sendResponse) => {
+  const message = rawMessage as UiToExtensionMessage | undefined;
+  if (!message) return;
 
-  const payload = message.payload as SelectionPayload;
-  const tabId = sender.tab?.id;
-  const windowId = sender.tab?.windowId;
+  if (message.type === "open_sidepanel_with_selection") {
+    const tabId = sender.tab?.id;
+    const windowId = sender.tab?.windowId;
 
-  if (!tabId || !windowId) {
-    sendResponse({ ok: false, error: "missing_sender_tab" });
-    return;
-  }
+    if (!tabId || !windowId) {
+      sendResponse({ ok: false, error: "missing_sender_tab" } satisfies UiToExtensionResponse);
+      return;
+    }
 
-  void openPanelAndSend(tabId, windowId, payload)
-    .then(() => sendResponse({ ok: true }))
-    .catch((error: unknown) => {
-      sendResponse({
-        ok: false,
-        error: error instanceof Error ? error.message : "unknown"
+    void openPanelAndSend(tabId, windowId, message.payload)
+      .then(() => sendResponse({ ok: true } satisfies UiToExtensionResponse))
+      .catch((error: unknown) => {
+        sendResponse({
+          ok: false,
+          error: error instanceof Error ? error.message : "unknown"
+        } satisfies UiToExtensionResponse);
       });
-    });
+    return true;
+  }
 
-  return true;
+  if (message.type === "extract_active_tab_content") {
+    void handleExtractActiveTab(message.maxChars)
+      .then((payload) => {
+        sendResponse({ ok: true, payload } satisfies UiToExtensionResponse);
+      })
+      .catch((error: unknown) => {
+        const message = error instanceof Error ? error.message : "extract_failed";
+        sendResponse({
+          ok: false,
+          error: message
+        } satisfies UiToExtensionResponse);
+      });
+    return true;
+  }
 });
 
 function mapMenuIdToAction(menuId: string): QuickAction | null {
@@ -130,4 +152,65 @@ async function openPanelAndSend(tabId: number, windowId: number, payload: Select
   };
 
   await chrome.runtime.sendMessage(message);
+}
+
+async function handleExtractActiveTab(maxChars?: number): Promise<PageContentPayload> {
+  const activeTab = await getActiveTab();
+  if (!activeTab?.id) {
+    throw new Error("active_tab_not_found");
+  }
+
+  const payload = await extractPageContentFromTab(activeTab.id, maxChars ?? EXTRACT_DEFAULT_MAX_CHARS);
+  return {
+    ...payload,
+    pageTitle: payload.pageTitle || activeTab.title || "",
+    pageUrl: payload.pageUrl || activeTab.url || ""
+  };
+}
+
+async function extractPageContentFromTab(tabId: number, maxChars: number): Promise<PageContentPayload> {
+  try {
+    const request: UiToExtensionMessage = {
+      type: "extract_active_tab_content",
+      maxChars
+    };
+    const response = (await chrome.tabs.sendMessage(tabId, request)) as UiToExtensionResponse;
+    if (response?.ok && response.payload?.text) {
+      return response.payload;
+    }
+  } catch {
+    // Continue to executeScript fallback.
+  }
+
+  const [injected] = await chrome.scripting.executeScript({
+    target: { tabId },
+    func: (requestedMaxChars: number) => {
+      const max = Number.isFinite(requestedMaxChars)
+        ? Math.min(Math.max(Math.floor(requestedMaxChars), 500), 200_000)
+        : 60_000;
+      const text = (document.body?.innerText || document.documentElement?.innerText || "")
+        .replace(/\r/g, "")
+        .replace(/[ \t]+\n/g, "\n")
+        .replace(/\n{3,}/g, "\n\n")
+        .replace(/[ \t]{2,}/g, " ")
+        .trim()
+        .slice(0, max);
+
+      return {
+        pageTitle: document.title || "",
+        pageUrl: window.location.href || "",
+        text,
+        source: "dom" as const,
+        charCount: text.length,
+        extractedAt: Date.now()
+      };
+    },
+    args: [maxChars]
+  });
+
+  const payload = injected?.result;
+  if (!payload?.text) {
+    throw new Error("page_content_empty_or_unavailable");
+  }
+  return payload;
 }

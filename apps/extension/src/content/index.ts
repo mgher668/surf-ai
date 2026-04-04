@@ -1,4 +1,10 @@
-import type { QuickAction, SelectionPayload } from "@surf-ai/shared";
+import type {
+  QuickAction,
+  SelectionPayload,
+  UiToExtensionMessage,
+  UiToExtensionResponse
+} from "@surf-ai/shared";
+import { extractCurrentPageContent } from "./extract";
 import "./styles.css";
 
 const HANDLE_CLASS = "surf-ai-selection-handle";
@@ -73,10 +79,14 @@ function createActionButton(label: string, action: QuickAction): HTMLButtonEleme
       createdAt: Date.now()
     };
 
-    await chrome.runtime.sendMessage({
+    const request: UiToExtensionMessage = {
       type: "open_sidepanel_with_selection",
       payload
-    });
+    };
+    const response = (await chrome.runtime.sendMessage(request)) as UiToExtensionResponse;
+    if (!response?.ok) {
+      return;
+    }
 
     cleanup();
     window.getSelection()?.removeAllRanges();
@@ -84,6 +94,25 @@ function createActionButton(label: string, action: QuickAction): HTMLButtonEleme
 
   return button;
 }
+
+chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+  const typedMessage = message as UiToExtensionMessage | undefined;
+  if (typedMessage?.type !== "extract_active_tab_content") {
+    return;
+  }
+
+  try {
+    const payload = extractCurrentPageContent(typedMessage.maxChars);
+    sendResponse({ ok: true, payload } satisfies UiToExtensionResponse);
+  } catch (error) {
+    sendResponse({
+      ok: false,
+      error: error instanceof Error ? error.message : "extract_failed"
+    } satisfies UiToExtensionResponse);
+  }
+
+  return true;
+});
 
 function handleSelectionChange(): void {
   const selection = window.getSelection();

@@ -6,7 +6,11 @@ import type {
   ChatSession,
   ExtensionToUiMessage,
   BridgeTtsResponse,
-  QuickAction
+  PageContentPayload,
+  QuickAction,
+  SelectionPayload,
+  UiToExtensionMessage,
+  UiToExtensionResponse
 } from "@surf-ai/shared";
 import { listMessagesBySession, saveMessage } from "../../lib/db";
 import {
@@ -38,6 +42,11 @@ export function App(): JSX.Element {
   const [input, setInput] = useState("");
   const [adapter, setAdapter] = useState<BridgeChatRequest["adapter"]>("mock");
   const [pending, setPending] = useState(false);
+  const [extractingPage, setExtractingPage] = useState(false);
+  const [extractError, setExtractError] = useState<string | undefined>();
+  const [pageContent, setPageContent] = useState<PageContentPayload | undefined>();
+  const [includePageContext, setIncludePageContext] = useState(false);
+  const [selectionContext, setSelectionContext] = useState<SelectionPayload | undefined>();
 
   const [newConnName, setNewConnName] = useState("");
   const [newConnUrl, setNewConnUrl] = useState("http://127.0.0.1:43127");
@@ -56,11 +65,28 @@ export function App(): JSX.Element {
     });
 
     const messageListener = (message: ExtensionToUiMessage) => {
-      if (message?.type !== "selection_payload") return;
-      const text = `${ACTION_PROMPT_PREFIX[message.payload.action]}\n\n${message.payload.text}`;
-      setInput(text);
-      if (message.payload.action === "read_aloud") {
-        void requestTts(message.payload.text);
+      if (message?.type === "selection_payload") {
+        const text = `${ACTION_PROMPT_PREFIX[message.payload.action]}\n\n${message.payload.text}`;
+        setInput(text);
+        setSelectionContext(message.payload);
+        setPageContent(undefined);
+        setExtractError(undefined);
+        setIncludePageContext(false);
+        if (message.payload.action === "read_aloud") {
+          void requestTts(message.payload.text);
+        }
+        return;
+      }
+
+      if (message?.type === "page_content_payload") {
+        setPageContent(message.payload);
+        setExtractError(undefined);
+        setIncludePageContext(false);
+        return;
+      }
+
+      if (message?.type === "page_content_error") {
+        setExtractError(message.payload.message);
       }
     };
 
@@ -75,9 +101,17 @@ export function App(): JSX.Element {
   useEffect(() => {
     if (!activeSessionId) {
       setMessages([]);
+      setSelectionContext(undefined);
+      setPageContent(undefined);
+      setExtractError(undefined);
+      setIncludePageContext(false);
       return;
     }
 
+    setSelectionContext(undefined);
+    setPageContent(undefined);
+    setExtractError(undefined);
+    setIncludePageContext(false);
     void listMessagesBySession(activeSessionId).then(setMessages);
   }, [activeSessionId]);
 
@@ -163,20 +197,38 @@ export function App(): JSX.Element {
     setPending(true);
 
     try {
+      const context: NonNullable<BridgeChatRequest["context"]> = {};
+      const pageTitle = pageContent?.pageTitle || selectionContext?.pageTitle;
+      if (pageTitle) context.pageTitle = pageTitle;
+      const pageUrl = pageContent?.pageUrl || selectionContext?.pageUrl;
+      if (pageUrl) context.pageUrl = pageUrl;
+      if (selectionContext?.text) {
+        context.selectedText = selectionContext.text;
+      }
+      if (includePageContext && pageContent?.text) {
+        context.pageText = pageContent.text;
+        context.pageTextSource = pageContent.source;
+      }
+
+      const requestPayload: BridgeChatRequest = {
+        adapter,
+        sessionId: activeSessionId,
+        messages: [...messages, userMessage].map((item) => ({
+          role: item.role,
+          content: item.content
+        }))
+      };
+      if (Object.keys(context).length > 0) {
+        requestPayload.context = context;
+      }
+
       const response = await fetch(`${activeConnection.baseUrl}/chat`, {
         method: "POST",
         headers: {
           "content-type": "application/json",
           ...(activeConnection.token ? { "x-surf-token": activeConnection.token } : {})
         },
-        body: JSON.stringify({
-          adapter,
-          sessionId: activeSessionId,
-          messages: [...messages, userMessage].map((item) => ({
-            role: item.role,
-            content: item.content
-          }))
-        } satisfies BridgeChatRequest)
+        body: JSON.stringify(requestPayload)
       });
 
       if (!response.ok) {
@@ -208,6 +260,9 @@ export function App(): JSX.Element {
       setMessages((prev) => [...prev, errMessage]);
     } finally {
       setPending(false);
+      setPageContent(undefined);
+      setExtractError(undefined);
+      setIncludePageContext(false);
     }
   }
 
@@ -243,6 +298,35 @@ export function App(): JSX.Element {
       void audio.play();
     } catch {
       // Keep silent for skeleton: chat flow should continue even if TTS is unavailable.
+    }
+  }
+
+  async function extractCurrentPage(): Promise<void> {
+    setExtractingPage(true);
+    setExtractError(undefined);
+
+    try {
+      const request: UiToExtensionMessage = {
+        type: "extract_active_tab_content",
+        maxChars: 60_000
+      };
+      const response = (await chrome.runtime.sendMessage(request)) as UiToExtensionResponse;
+      if (!response?.ok) {
+        throw new Error(response?.error || "extract_failed");
+      }
+      if (response.payload) {
+        setPageContent(response.payload);
+        setIncludePageContext(false);
+      }
+      if (!input.trim()) {
+        setInput("Please summarize the current tab using extracted full-page content.");
+      }
+    } catch (error) {
+      setExtractError(error instanceof Error ? error.message : "extract_failed");
+      setPageContent(undefined);
+      setIncludePageContext(false);
+    } finally {
+      setExtractingPage(false);
     }
   }
 
@@ -341,9 +425,26 @@ export function App(): JSX.Element {
             <option value="anthropic">anthropic</option>
             <option value="gemini">gemini</option>
           </select>
+          <button type="button" onClick={() => void extractCurrentPage()} disabled={extractingPage} style={ghostButtonStyle}>
+            {extractingPage ? t(locale, "extractingPage") : t(locale, "extractPage")}
+          </button>
         </header>
 
         <section style={{ padding: 14, overflow: "auto", display: "grid", gap: 12, alignContent: "start" }}>
+          {pageContent ? (
+            <div style={hintInfoStyle}>
+              {t(locale, "pageContextReady")} · {pageContent.source} · {pageContent.charCount} chars
+              <label style={inlineCheckboxLabelStyle}>
+                <input
+                  type="checkbox"
+                  checked={includePageContext}
+                  onChange={(event) => setIncludePageContext(event.target.checked)}
+                />
+                {t(locale, "includePageContext")}
+              </label>
+            </div>
+          ) : null}
+          {extractError ? <div style={hintErrorStyle}>{extractError}</div> : null}
           {messages.length === 0 ? (
             <div style={{ color: "var(--muted)", fontSize: 13 }}>{t(locale, "empty")}</div>
           ) : (
@@ -437,4 +538,39 @@ const labelStyle: CSSProperties = {
   fontSize: 12,
   color: "var(--muted)",
   display: "block"
+};
+
+const ghostButtonStyle: CSSProperties = {
+  border: "1px solid var(--line)",
+  borderRadius: 10,
+  padding: "8px 10px",
+  background: "#fff",
+  color: "var(--ink)",
+  cursor: "pointer"
+};
+
+const hintInfoStyle: CSSProperties = {
+  border: "1px solid #c7e6d9",
+  borderRadius: 10,
+  padding: "8px 10px",
+  background: "#eefaf4",
+  color: "#246a4b",
+  fontSize: 12
+};
+
+const hintErrorStyle: CSSProperties = {
+  border: "1px solid #f0b9b9",
+  borderRadius: 10,
+  padding: "8px 10px",
+  background: "#fff2f2",
+  color: "#9b2d2d",
+  fontSize: 12
+};
+
+const inlineCheckboxLabelStyle: CSSProperties = {
+  display: "inline-flex",
+  alignItems: "center",
+  gap: 6,
+  marginLeft: 10,
+  fontSize: 12
 };
