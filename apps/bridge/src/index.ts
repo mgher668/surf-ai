@@ -2,9 +2,11 @@ import Fastify from "fastify";
 import cors from "@fastify/cors";
 import { z } from "zod";
 import type {
+  BridgeCapabilitiesResponse,
   BridgeChatRequest,
   BridgeChatResponse,
   BridgeHealthResponse,
+  BridgeModelsResponse,
   BridgeTtsRequest,
   BridgeTtsResponse
 } from "@surf-ai/shared";
@@ -53,7 +55,27 @@ app.get("/health", async () => {
 });
 
 app.get("/models", async () => {
-  return { models: registry.listModels() };
+  const response: BridgeModelsResponse = { models: registry.listModels() };
+  return response;
+});
+
+app.get("/capabilities", async () => {
+  const response: BridgeCapabilitiesResponse = {
+    version: "0.1.0",
+    now: new Date().toISOString(),
+    chat: {
+      adapters: registry.listAdapterCapabilities(config.defaultAdapter),
+      defaultAdapter: config.defaultAdapter,
+      supportsModelOverride: false
+    },
+    tts: {
+      minimax: {
+        enabled: true,
+        configured: Boolean(config.minimaxTts.apiKey)
+      }
+    }
+  };
+  return response;
 });
 
 const chatRequestSchema = z.object({

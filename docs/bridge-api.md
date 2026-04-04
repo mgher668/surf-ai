@@ -38,6 +38,44 @@ Response:
 }
 ```
 
+## GET /capabilities
+
+Response:
+
+```json
+{
+  "version": "0.1.0",
+  "now": "2026-04-04T00:00:00.000Z",
+  "chat": {
+    "defaultAdapter": "mock",
+    "supportsModelOverride": false,
+    "adapters": [
+      { "adapter": "mock", "label": "Mock (local)", "kind": "native", "enabled": true },
+      { "adapter": "codex", "label": "Codex CLI", "kind": "native", "enabled": true },
+      { "adapter": "claude", "label": "Claude Code CLI", "kind": "native", "enabled": true },
+      {
+        "adapter": "openai-compatible",
+        "label": "OpenAI Compatible (fallback)",
+        "kind": "compatibility",
+        "enabled": true,
+        "routedTo": "mock"
+      }
+    ]
+  },
+  "tts": {
+    "minimax": {
+      "enabled": true,
+      "configured": false
+    }
+  }
+}
+```
+
+Notes:
+
+- Sidepanel should fetch this endpoint first and render adapter options dynamically.
+- `configured=false` for `tts.minimax` means MiniMax key is missing in bridge env and `/tts` will fail with `tts_not_configured`.
+
 Note:
 
 - `openai-compatible` / `anthropic` / `gemini` adapter values are compatibility placeholders in current version and route to configured local fallback adapter.

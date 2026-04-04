@@ -94,6 +94,36 @@ export interface BridgeModel {
   adapter: "codex" | "claude" | "openai-compatible" | "anthropic" | "gemini" | "mock";
 }
 
+export interface BridgeModelsResponse {
+  models: BridgeModel[];
+}
+
+export type LocalBridgeAdapter = Extract<BridgeModel["adapter"], "mock" | "codex" | "claude">;
+
+export interface BridgeAdapterCapability {
+  adapter: BridgeModel["adapter"];
+  label: string;
+  kind: "native" | "compatibility";
+  enabled: boolean;
+  routedTo?: LocalBridgeAdapter;
+}
+
+export interface BridgeCapabilitiesResponse {
+  version: string;
+  now: string;
+  chat: {
+    adapters: BridgeAdapterCapability[];
+    defaultAdapter: LocalBridgeAdapter;
+    supportsModelOverride: boolean;
+  };
+  tts: {
+    minimax: {
+      enabled: boolean;
+      configured: boolean;
+    };
+  };
+}
+
 export interface BridgeChatRequest {
   adapter: BridgeModel["adapter"];
   model?: string;

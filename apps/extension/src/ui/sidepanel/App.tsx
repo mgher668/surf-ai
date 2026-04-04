@@ -1,7 +1,10 @@
 import { useEffect, useMemo, useState, type CSSProperties } from "react";
 import type {
+  BridgeCapabilitiesResponse,
   BridgeChatRequest,
   BridgeConnection,
+  BridgeModel,
+  BridgeModelsResponse,
   ChatMessage,
   ChatSession,
   ExtensionToUiMessage,
@@ -31,6 +34,8 @@ const ACTION_PROMPT_PREFIX: Record<QuickAction, string> = {
   ask: "Please help answer based on this content:"
 };
 
+const FALLBACK_ADAPTER_OPTIONS: BridgeModel["adapter"][] = ["mock", "codex", "claude"];
+
 export function App(): JSX.Element {
   const locale = resolveLocale(navigator.language);
 
@@ -41,6 +46,8 @@ export function App(): JSX.Element {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [adapter, setAdapter] = useState<BridgeChatRequest["adapter"]>("mock");
+  const [capabilities, setCapabilities] = useState<BridgeCapabilitiesResponse | undefined>();
+  const [capabilitiesError, setCapabilitiesError] = useState<string | undefined>();
   const [pending, setPending] = useState(false);
   const [extractingPage, setExtractingPage] = useState(false);
   const [extractError, setExtractError] = useState<string | undefined>();
@@ -56,6 +63,21 @@ export function App(): JSX.Element {
     () => connections.find((item) => item.id === activeConnectionId),
     [connections, activeConnectionId]
   );
+
+  const availableAdapters = useMemo(() => {
+    const serverAdapters = capabilities?.chat.adapters.filter((item) => item.enabled);
+    if (serverAdapters && serverAdapters.length > 0) {
+      return serverAdapters.map((item) => ({ adapter: item.adapter, label: item.label }));
+    }
+    return FALLBACK_ADAPTER_OPTIONS.map((item) => ({ adapter: item, label: item }));
+  }, [capabilities]);
+
+  const ttsReady = useMemo(() => {
+    if (!capabilities) {
+      return true;
+    }
+    return capabilities.tts.minimax.enabled && capabilities.tts.minimax.configured;
+  }, [capabilities]);
 
   useEffect(() => {
     void bootstrap();
@@ -115,6 +137,27 @@ export function App(): JSX.Element {
     void listMessagesBySession(activeSessionId).then(setMessages);
   }, [activeSessionId]);
 
+  useEffect(() => {
+    void bootstrapCapabilities(activeConnection);
+  }, [activeConnection]);
+
+  useEffect(() => {
+    const isCurrentAdapterAvailable = availableAdapters.some((item) => item.adapter === adapter);
+    if (isCurrentAdapterAvailable) {
+      return;
+    }
+
+    const preferredAdapter = capabilities?.chat.defaultAdapter;
+    if (preferredAdapter && availableAdapters.some((item) => item.adapter === preferredAdapter)) {
+      setAdapter(preferredAdapter);
+      return;
+    }
+
+    if (availableAdapters[0]) {
+      setAdapter(availableAdapters[0].adapter);
+    }
+  }, [adapter, availableAdapters, capabilities]);
+
   async function bootstrap(): Promise<void> {
     await bootstrapConnectionsAndSessions();
   }
@@ -139,6 +182,67 @@ export function App(): JSX.Element {
 
     setSessionsState(storedSessions);
     setActiveSessionId((current) => current ?? storedSessions[0]?.id);
+  }
+
+  async function bootstrapCapabilities(connection: BridgeConnection | undefined): Promise<void> {
+    if (!connection) {
+      setCapabilities(undefined);
+      setCapabilitiesError(undefined);
+      return;
+    }
+
+    try {
+      const capabilityResponse = await fetchBridgeJson<BridgeCapabilitiesResponse>(
+        connection,
+        "/capabilities"
+      );
+      if (capabilityResponse.ok) {
+        setCapabilities(capabilityResponse.data);
+        setCapabilitiesError(undefined);
+        return;
+      }
+
+      if (capabilityResponse.status !== 404) {
+        throw new Error(`capabilities_request_failed:${capabilityResponse.status}`);
+      }
+
+      const modelsResponse = await fetchBridgeJson<BridgeModelsResponse>(connection, "/models");
+      if (!modelsResponse.ok) {
+        throw new Error(`models_request_failed:${modelsResponse.status}`);
+      }
+
+      const adapterSet = new Set<BridgeChatRequest["adapter"]>(
+        modelsResponse.data.models.map((item) => item.adapter)
+      );
+      const adapters = FALLBACK_ADAPTER_OPTIONS.filter((item) => adapterSet.has(item)).map((item) => ({
+        adapter: item,
+        label: item,
+        kind: "native" as const,
+        enabled: true
+      }));
+
+      setCapabilities({
+        version: "legacy",
+        now: new Date().toISOString(),
+        chat: {
+          adapters,
+          defaultAdapter: adapters[0]?.adapter === "codex" || adapters[0]?.adapter === "claude"
+            ? adapters[0].adapter
+            : "mock",
+          supportsModelOverride: false
+        },
+        tts: {
+          minimax: {
+            enabled: true,
+            configured: true
+          }
+        }
+      });
+      setCapabilitiesError(undefined);
+    } catch (error) {
+      setCapabilities(undefined);
+      setCapabilitiesError(error instanceof Error ? error.message : "capabilities_unavailable");
+    }
   }
 
   async function addConnection(): Promise<void> {
@@ -267,7 +371,7 @@ export function App(): JSX.Element {
   }
 
   async function requestTts(text: string): Promise<void> {
-    if (!activeConnection) return;
+    if (!activeConnection || !ttsReady) return;
 
     try {
       const response = await fetch(`${activeConnection.baseUrl}/tts`, {
@@ -418,12 +522,11 @@ export function App(): JSX.Element {
           <strong style={{ flex: 1 }}>{t(locale, "appTitle")}</strong>
           <label>{t(locale, "adapter")}</label>
           <select value={adapter} onChange={(e) => setAdapter(e.target.value as BridgeChatRequest["adapter"])} style={{ ...inputStyle, width: 150 }}>
-            <option value="mock">mock</option>
-            <option value="codex">codex</option>
-            <option value="claude">claude</option>
-            <option value="openai-compatible">openai-compatible</option>
-            <option value="anthropic">anthropic</option>
-            <option value="gemini">gemini</option>
+            {availableAdapters.map((item) => (
+              <option key={item.adapter} value={item.adapter}>
+                {item.label}
+              </option>
+            ))}
           </select>
           <button type="button" onClick={() => void extractCurrentPage()} disabled={extractingPage} style={ghostButtonStyle}>
             {extractingPage ? t(locale, "extractingPage") : t(locale, "extractPage")}
@@ -431,6 +534,10 @@ export function App(): JSX.Element {
         </header>
 
         <section style={{ padding: 14, overflow: "auto", display: "grid", gap: 12, alignContent: "start" }}>
+          {capabilitiesError ? <div style={hintErrorStyle}>Capabilities sync failed: {capabilitiesError}</div> : null}
+          {capabilities && !ttsReady ? (
+            <div style={hintInfoStyle}>TTS is unavailable. Configure MiniMax key in local bridge env.</div>
+          ) : null}
           {pageContent ? (
             <div style={hintInfoStyle}>
               {t(locale, "pageContextReady")} · {pageContent.source} · {pageContent.charCount} chars
@@ -498,6 +605,24 @@ function createSession(title: string): ChatSession {
     createdAt: now,
     updatedAt: now
   };
+}
+
+async function fetchBridgeJson<T>(
+  connection: BridgeConnection,
+  path: string
+): Promise<{ ok: true; data: T } | { ok: false; status: number }> {
+  const response = await fetch(`${connection.baseUrl}${path}`, {
+    headers: {
+      ...(connection.token ? { "x-surf-token": connection.token } : {})
+    }
+  });
+
+  if (!response.ok) {
+    return { ok: false, status: response.status };
+  }
+
+  const data = (await response.json()) as T;
+  return { ok: true, data };
 }
 
 const solidButtonStyle: CSSProperties = {

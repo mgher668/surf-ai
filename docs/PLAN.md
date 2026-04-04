@@ -16,6 +16,10 @@ This repository follows a local-first architecture for personal usage.
 
 ## 3. Current Runtime Routing
 
+- `/capabilities` is the first handshake endpoint for UI capability negotiation:
+  - dynamic chat adapter options,
+  - local fallback mapping exposure for compatibility adapters,
+  - MiniMax TTS availability/configuration flags.
 - `/chat` supports adapter field:
   - `codex`, `claude`, `mock` are concrete local adapters.
   - `openai-compatible`, `anthropic`, `gemini` are currently compatibility placeholders and map to configured local fallback adapter.
