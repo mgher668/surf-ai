@@ -6,6 +6,11 @@ Auth header (optional but recommended):
 
 - `x-surf-token: <token>`
 
+Current positioning:
+
+- Chat path is local-Agent-first (`codex` / `claude` / `mock`).
+- MiniMax is currently integrated for TTS (`/tts`) only.
+
 ## GET /health
 
 Response:
@@ -26,10 +31,16 @@ Response:
 ```json
 {
   "models": [
-    { "id": "mock/default", "label": "Mock (local)", "adapter": "mock" }
+    { "id": "mock/default", "label": "Mock (local)", "adapter": "mock" },
+    { "id": "codex/default", "label": "Codex CLI", "adapter": "codex" },
+    { "id": "claude/default", "label": "Claude Code CLI", "adapter": "claude" }
   ]
 }
 ```
+
+Note:
+
+- `openai-compatible` / `anthropic` / `gemini` adapter values are compatibility placeholders in current version and route to configured local fallback adapter.
 
 ## POST /chat
 
@@ -45,7 +56,9 @@ Request:
   "context": {
     "pageTitle": "Example",
     "pageUrl": "https://example.com",
-    "selectedText": "some text"
+    "selectedText": "some text",
+    "pageText": "full page text (optional)",
+    "pageTextSource": "readability"
   }
 }
 ```

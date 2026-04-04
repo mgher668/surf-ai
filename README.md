@@ -19,6 +19,7 @@ apps/
 packages/
   shared/        # Shared types and API contracts
 docs/
+  PLAN.md
   bridge-api.md
 evals/
   cases/
@@ -66,6 +67,7 @@ pnpm dev:extension
 - Session list + starred sessions + message persistence
 - Adapter routing skeleton (`mock`, `codex`, `claude`)
 - `MiniMax TTS` integration via bridge `/tts` (API key only in bridge env)
+- Local-Agent-first backend strategy (`codex` / `claude`), provider-mode adapters are compatibility placeholders in current version
 
 ## Development Commands
 
@@ -95,5 +97,7 @@ Defaults:
 
 - This repository is optimized for local self-hosted usage.
 - For production-grade security, enable token auth and keep bridge bound to localhost.
+- Planning baseline: `docs/PLAN.md`.
+- MiniMax is currently used for TTS only, not as chat LLM provider.
 - gstack (Codex) repo-local install guide: `docs/gstack-codex.md`.
 - `.agents/skills/gstack-*` entry symlinks are machine-local and ignored by git; run `pnpm gstack:setup` after clone.
