@@ -29,7 +29,7 @@ export interface AgentSessionLink {
   provider: "codex" | "claude";
   providerSessionId: string;
   syncedSeq: number;
-  state: "READY" | "BROKEN" | "CLOSED";
+  state: "READY" | "BROKEN";
   lastError?: string;
   updatedAt: number;
 }
@@ -202,12 +202,11 @@ export class BridgeStore {
     return this.getSession(userId, sessionId);
   }
 
-  public closeSession(userId: string, sessionId: string): ChatSession | null {
-    const now = Date.now();
-    this.db.prepare(
-      "UPDATE sessions SET status = 'CLOSED', updated_at = ? WHERE id = ? AND user_id = ?"
-    ).run(now, sessionId, userId);
-    return this.getSession(userId, sessionId);
+  public deleteSession(userId: string, sessionId: string): boolean {
+    const result = this.db.prepare(
+      "DELETE FROM sessions WHERE id = ? AND user_id = ?"
+    ).run(sessionId, userId) as { changes: number };
+    return result.changes > 0;
   }
 
   public listMessages(userId: string, sessionId: string, afterSeq: number, limit: number): ChatMessage[] {
@@ -628,7 +627,11 @@ export class BridgeStore {
 
   private seedUsers(users: BridgeUserAccount[]): void {
     const insert = this.db.prepare(
-      "INSERT OR REPLACE INTO users (id, name, token_hash) VALUES (?, ?, ?)"
+      `INSERT INTO users (id, name, token_hash)
+       VALUES (?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET
+         name = excluded.name,
+         token_hash = excluded.token_hash`
     );
     for (const user of users) {
       insert.run(user.id, user.name, user.token ? hashToken(user.token) : null);

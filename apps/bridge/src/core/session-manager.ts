@@ -7,7 +7,7 @@ import { type AgentSessionLink, BridgeStore } from "./store";
 import { retrieveSessionMessages } from "./retrieval";
 
 const MAX_DELTA_MESSAGE_CHARS = 4_000;
-const MAX_DELTA_PAGE_TEXT_CHARS = 16_000;
+const MAX_DELTA_PAGE_TEXT_CHARS = 100_000;
 const MAX_SUMMARY_INPUT_MESSAGE_CHARS = 2_000;
 const MAX_SUMMARY_OUTPUT_CHARS = 6_000;
 const SUMMARY_TRIGGER_MIN_MESSAGES = 6;

@@ -275,20 +275,20 @@ app.post("/sessions/:id/star", async (request, reply) => {
   return { session };
 });
 
-app.post("/sessions/:id/close", async (request, reply) => {
+app.delete("/sessions/:id", async (request, reply) => {
   const userId = requireAuthedUserId(request, reply);
   if (!userId) {
     return;
   }
 
   const sessionId = String((request.params as { id: string }).id);
-  const session = store.closeSession(userId, sessionId);
-  if (!session) {
+  const deleted = store.deleteSession(userId, sessionId);
+  if (!deleted) {
     reply.code(404);
     return { error: "session_not_found" };
   }
 
-  return { session };
+  return { ok: true, deletedSessionId: sessionId };
 });
 
 app.get("/sessions/:id/messages", async (request, reply) => {
@@ -451,10 +451,6 @@ app.post("/sessions/:id/messages", async (request, reply) => {
   if (!session) {
     reply.code(404);
     return { error: "session_not_found" };
-  }
-  if (session.status === "CLOSED") {
-    reply.code(409);
-    return { error: "session_closed" };
   }
 
   const userMessage = store.appendMessage(userId, sessionId, "user", parsed.data.content);

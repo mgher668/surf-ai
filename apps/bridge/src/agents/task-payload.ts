@@ -3,7 +3,7 @@ import type { BridgeChatRequest } from "@surf-ai/shared";
 const MAX_HISTORY_MESSAGES = 24;
 const MAX_MESSAGE_CHARS = 4_000;
 const MAX_SELECTED_TEXT_CHARS = 12_000;
-const MAX_PAGE_TEXT_CHARS = 24_000;
+const MAX_PAGE_TEXT_CHARS = 100_000;
 
 interface ClippedText {
   content: string;

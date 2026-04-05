@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState, type CSSProperties } from "react";
+import { STORAGE_KEYS } from "@surf-ai/shared";
 import type {
   BridgeCapabilitiesResponse,
   BridgeChatRequest,
@@ -20,7 +21,7 @@ import type {
   UiToExtensionMessage,
   UiToExtensionResponse
 } from "@surf-ai/shared";
-import { listMessagesBySession, saveMessage, saveMessages } from "../../lib/db";
+import { deleteMessagesBySession, listMessagesBySession, saveMessage, saveMessages } from "../../lib/db";
 import {
   getActiveConnectionId,
   getConnections,
@@ -40,6 +41,7 @@ const ACTION_PROMPT_PREFIX: Record<QuickAction, string> = {
 };
 
 const FALLBACK_ADAPTER_OPTIONS: BridgeModel["adapter"][] = ["mock", "codex", "claude"];
+const BACKEND_DRAFT_SESSION_ID = "__backend_draft__";
 type SessionMode = "backend" | "local";
 
 export function App(): JSX.Element {
@@ -67,6 +69,9 @@ export function App(): JSX.Element {
   const [newConnUserId, setNewConnUserId] = useState("local");
   const [newConnToken, setNewConnToken] = useState("");
 
+  const isBackendDraftActive =
+    sessionMode === "backend" && activeSessionId === BACKEND_DRAFT_SESSION_ID;
+
   const activeConnection = useMemo(
     () => connections.find((item) => item.id === activeConnectionId),
     [connections, activeConnectionId]
@@ -89,22 +94,21 @@ export function App(): JSX.Element {
 
   useEffect(() => {
     void bootstrap();
+    void consumePendingSelectionPayload();
 
-    const removeStorageListener = onStorageChanged(() => {
+    const removeStorageListener = onStorageChanged((changes) => {
+      const connectionChanged =
+        Boolean(changes[STORAGE_KEYS.connections]) ||
+        Boolean(changes[STORAGE_KEYS.activeConnectionId]);
+      if (!connectionChanged) {
+        return;
+      }
       void bootstrapConnectionsAndSessions();
     });
 
     const messageListener = (message: ExtensionToUiMessage) => {
       if (message?.type === "selection_payload") {
-        const text = `${ACTION_PROMPT_PREFIX[message.payload.action]}\n\n${message.payload.text}`;
-        setInput(text);
-        setSelectionContext(message.payload);
-        setPageContent(undefined);
-        setExtractError(undefined);
-        setIncludePageContext(false);
-        if (message.payload.action === "read_aloud") {
-          void requestTts(message.payload.text);
-        }
+        applySelectionPayload(message.payload);
         return;
       }
 
@@ -128,8 +132,36 @@ export function App(): JSX.Element {
     };
   }, []);
 
+  async function consumePendingSelectionPayload(): Promise<void> {
+    try {
+      const activeTab = await getActiveTab();
+      const request: UiToExtensionMessage = {
+        type: "consume_pending_selection_payload",
+        ...(activeTab?.id ? { tabId: activeTab.id } : {})
+      };
+      const response = (await chrome.runtime.sendMessage(request)) as UiToExtensionResponse;
+      if (response?.ok && response.selectionPayload) {
+        applySelectionPayload(response.selectionPayload);
+      }
+    } catch {
+      // Ignore; sidepanel can still receive live runtime messages.
+    }
+  }
+
+  function applySelectionPayload(payload: SelectionPayload): void {
+    const text = `${ACTION_PROMPT_PREFIX[payload.action]}\n\n${payload.text}`;
+    setInput(text);
+    setSelectionContext(payload);
+    setPageContent(undefined);
+    setExtractError(undefined);
+    setIncludePageContext(false);
+    if (payload.action === "read_aloud") {
+      void requestTts(payload.text);
+    }
+  }
+
   useEffect(() => {
-    if (!activeSessionId) {
+    if (!activeSessionId || isBackendDraftActive) {
       setMessages([]);
       setSelectionContext(undefined);
       setPageContent(undefined);
@@ -142,6 +174,15 @@ export function App(): JSX.Element {
     setPageContent(undefined);
     setExtractError(undefined);
     setIncludePageContext(false);
+  }, [activeSessionId, isBackendDraftActive]);
+
+  useEffect(() => {
+    if (!activeSessionId) {
+      return;
+    }
+    if (sessionMode === "backend" && activeSessionId === BACKEND_DRAFT_SESSION_ID) {
+      return;
+    }
 
     if (sessionMode === "backend" && activeConnection) {
       void loadMessagesFromBackend(activeConnection, activeSessionId);
@@ -149,11 +190,59 @@ export function App(): JSX.Element {
     }
 
     void listMessagesBySession(activeSessionId).then(setMessages);
-  }, [activeConnection, activeSessionId, sessionMode]);
+  }, [activeConnectionId, activeConnection?.baseUrl, activeSessionId, sessionMode]);
 
   useEffect(() => {
     void bootstrapCapabilities(activeConnection);
   }, [activeConnection]);
+
+  useEffect(() => {
+    if (sessionMode !== "backend" || !activeConnection) {
+      return;
+    }
+
+    let stopped = false;
+
+    const sync = async (): Promise<void> => {
+      const backendSessions = await fetchSessionsFromBackend(activeConnection);
+      if (stopped || !backendSessions) {
+        return;
+      }
+
+      setSessionsState((prev) => {
+        if (areSessionListsEqual(prev, backendSessions)) {
+          return prev;
+        }
+        void setSessions(backendSessions);
+        return backendSessions;
+      });
+      setActiveSessionId((current) => {
+        if (current === BACKEND_DRAFT_SESSION_ID) {
+          return BACKEND_DRAFT_SESSION_ID;
+        }
+        if (current && backendSessions.some((item) => item.id === current)) {
+          return current;
+        }
+        return backendSessions[0]?.id ?? BACKEND_DRAFT_SESSION_ID;
+      });
+    };
+
+    void sync();
+    const timer = window.setInterval(() => {
+      void sync();
+    }, 5_000);
+
+    return () => {
+      stopped = true;
+      window.clearInterval(timer);
+    };
+  }, [
+    sessionMode,
+    activeConnection?.id,
+    activeConnection?.baseUrl,
+    activeConnection?.userId,
+    activeConnection?.token
+  ]);
 
   useEffect(() => {
     const isCurrentAdapterAvailable = availableAdapters.some((item) => item.adapter === adapter);
@@ -183,21 +272,42 @@ export function App(): JSX.Element {
       getSessions()
     ]);
 
-    const resolvedActiveConnectionId = storedActiveConnectionId ?? storedConnections[0]?.id;
-    const resolvedActiveConnection = storedConnections.find((item) => item.id === resolvedActiveConnectionId);
+    const preferredActiveConnectionId = storedActiveConnectionId ?? storedConnections[0]?.id;
+    const resolvedActiveConnection =
+      storedConnections.find((item) => item.id === preferredActiveConnectionId) ?? storedConnections[0];
+    const resolvedActiveConnectionId = resolvedActiveConnection?.id;
 
     setConnectionsState(storedConnections);
     setActiveConnectionIdState(resolvedActiveConnectionId);
 
     if (resolvedActiveConnection) {
       const backendSessions = await fetchSessionsFromBackend(resolvedActiveConnection);
+      setSessionMode("backend");
       if (backendSessions) {
-        setSessionMode("backend");
         await setSessions(backendSessions);
         setSessionsState(backendSessions);
-        setActiveSessionId((current) => current ?? backendSessions[0]?.id);
-        return;
+        setActiveSessionId((current) => {
+          if (current === BACKEND_DRAFT_SESSION_ID) {
+            return BACKEND_DRAFT_SESSION_ID;
+          }
+          if (current && backendSessions.some((item) => item.id === current)) {
+            return current;
+          }
+          return backendSessions[0]?.id ?? BACKEND_DRAFT_SESSION_ID;
+        });
+      } else {
+        setSessionsState(storedSessions);
+        setActiveSessionId((current) => {
+          if (current === BACKEND_DRAFT_SESSION_ID) {
+            return BACKEND_DRAFT_SESSION_ID;
+          }
+          if (current && storedSessions.some((item) => item.id === current)) {
+            return current;
+          }
+          return storedSessions[0]?.id ?? BACKEND_DRAFT_SESSION_ID;
+        });
       }
+      return;
     }
 
     setSessionMode("local");
@@ -276,15 +386,25 @@ export function App(): JSX.Element {
   }
 
   async function fetchSessionsFromBackend(connection: BridgeConnection): Promise<ChatSession[] | null> {
-    try {
-      const response = await fetchBridgeJson<BridgeSessionListResponse>(connection, "/sessions");
-      if (!response.ok) {
-        return null;
+    const maxAttempts = 3;
+    for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+      try {
+        const response = await fetchBridgeJson<BridgeSessionListResponse>(connection, "/sessions");
+        if (response.ok) {
+          return response.data.sessions;
+        }
+        if (response.status === 401 || response.status === 403) {
+          return null;
+        }
+      } catch {
+        // retry below
       }
-      return response.data.sessions;
-    } catch {
-      return null;
+
+      if (attempt < maxAttempts - 1) {
+        await sleep(300 * (attempt + 1));
+      }
     }
+    return null;
   }
 
   async function loadMessagesFromBackend(connection: BridgeConnection, sessionId: string): Promise<void> {
@@ -350,6 +470,18 @@ export function App(): JSX.Element {
     }
   }
 
+  async function deleteSessionOnBackend(connection: BridgeConnection, sessionId: string): Promise<boolean> {
+    try {
+      const response = await fetch(`${connection.baseUrl}/sessions/${sessionId}`, {
+        method: "DELETE",
+        headers: buildBridgeHeaders(connection)
+      });
+      return response.ok;
+    } catch {
+      return false;
+    }
+  }
+
   async function addConnection(): Promise<void> {
     if (!newConnName.trim() || !newConnUrl.trim()) return;
 
@@ -378,17 +510,14 @@ export function App(): JSX.Element {
   }
 
   async function createNewSession(): Promise<void> {
-    if (sessionMode === "backend" && activeConnection) {
-      const backendSession = await createSessionOnBackend(activeConnection, `Chat ${sessions.length + 1}`);
-      if (backendSession) {
-        setSessionsState((prev) => {
-          const next = [backendSession, ...prev];
-          void setSessions(next);
-          return next;
-        });
-        setActiveSessionId(backendSession.id);
-        return;
-      }
+    if (sessionMode === "backend") {
+      setActiveSessionId(BACKEND_DRAFT_SESSION_ID);
+      setMessages([]);
+      setSelectionContext(undefined);
+      setPageContent(undefined);
+      setExtractError(undefined);
+      setIncludePageContext(false);
+      return;
     }
 
     const session = createSession(`Chat ${sessions.length + 1}`);
@@ -420,11 +549,113 @@ export function App(): JSX.Element {
     setSessionsState(next);
   }
 
-  async function send(): Promise<void> {
-    if (!input.trim() || !activeSessionId || !activeConnection) return;
+  async function deleteSession(id: string): Promise<void> {
+    const confirmed = window.confirm(t(locale, "deleteSessionConfirm"));
+    if (!confirmed) {
+      return;
+    }
 
     if (sessionMode === "backend") {
-      await sendWithBackend(activeConnection, activeSessionId, input.trim());
+      if (!activeConnection) {
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: crypto.randomUUID(),
+            sessionId: activeSessionId ?? "pending",
+            role: "assistant",
+            content: "Error: no active bridge connection. Please select or add one first.",
+            createdAt: Date.now()
+          }
+        ]);
+        return;
+      }
+      const deleted = await deleteSessionOnBackend(activeConnection, id);
+      if (!deleted) {
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: crypto.randomUUID(),
+            sessionId: activeSessionId ?? "pending",
+            role: "assistant",
+            content: "Error: failed to delete backend session.",
+            createdAt: Date.now()
+          }
+        ]);
+        return;
+      }
+
+      await deleteMessagesBySession(id).catch(() => undefined);
+      setSessionsState((prev) => {
+        const filtered = prev.filter((item) => item.id !== id);
+        void setSessions(filtered);
+        return filtered;
+      });
+      setActiveSessionId(BACKEND_DRAFT_SESSION_ID);
+      return;
+    }
+
+    await deleteMessagesBySession(id).catch(() => undefined);
+    const replacement = createSession("New chat");
+    const filtered = sessions.filter((item) => item.id !== id);
+    const next = [replacement, ...filtered];
+    await setSessions(next);
+    setSessionsState(next);
+    setActiveSessionId(replacement.id);
+  }
+
+  async function send(): Promise<void> {
+    const content = input.trim();
+    if (!content) {
+      return;
+    }
+    if (!activeConnection) {
+      const errMessage: ChatMessage = {
+        id: crypto.randomUUID(),
+        sessionId: activeSessionId ?? "pending",
+        role: "assistant",
+        content: "Error: no active bridge connection. Please select or add one first.",
+        createdAt: Date.now()
+      };
+      setMessages((prev) => [...prev, errMessage]);
+      return;
+    }
+
+    if (sessionMode === "backend") {
+      let sessionId = activeSessionId;
+      if (!sessionId || sessionId === BACKEND_DRAFT_SESSION_ID) {
+        const created = await createSessionOnBackend(activeConnection, "New chat");
+        if (!created) {
+          const errMessage: ChatMessage = {
+            id: crypto.randomUUID(),
+            sessionId: "pending",
+            role: "assistant",
+            content: "Error: no active backend session and failed to create one.",
+            createdAt: Date.now()
+          };
+          setMessages((prev) => [...prev, errMessage]);
+          return;
+        }
+
+        setSessionsState((prev) => {
+          const next = [created, ...prev];
+          void setSessions(next);
+          return next;
+        });
+        setActiveSessionId(created.id);
+        sessionId = created.id;
+      }
+
+      await sendWithBackend(activeConnection, sessionId, content);
+      return;
+    }
+
+    if (!activeSessionId) {
+      const session = createSession("New chat");
+      const next = [session, ...sessions];
+      await setSessions(next);
+      setSessionsState(next);
+      setActiveSessionId(session.id);
+      await sendWithBackend(activeConnection, session.id, content);
       return;
     }
 
@@ -432,7 +663,7 @@ export function App(): JSX.Element {
       id: crypto.randomUUID(),
       sessionId: activeSessionId,
       role: "user",
-      content: input.trim(),
+      content,
       createdAt: Date.now()
     };
 
@@ -526,9 +757,11 @@ export function App(): JSX.Element {
       setMessages((prev) => [...prev, payload.userMessage, payload.assistantMessage]);
       await saveMessages([payload.userMessage, payload.assistantMessage]);
       setSessionsState((prev) => {
-        const next = prev.map((item) =>
-          item.id === payload.session.id ? payload.session : item
-        );
+        const existingIndex = prev.findIndex((item) => item.id === payload.session.id);
+        const next =
+          existingIndex >= 0
+            ? prev.map((item) => (item.id === payload.session.id ? payload.session : item))
+            : [payload.session, ...prev];
         void setSessions(next);
         return next;
       });
@@ -588,7 +821,7 @@ export function App(): JSX.Element {
     try {
       const request: UiToExtensionMessage = {
         type: "extract_active_tab_content",
-        maxChars: 60_000
+        maxChars: 100_000
       };
       const response = (await chrome.runtime.sendMessage(request)) as UiToExtensionResponse;
       if (!response?.ok) {
@@ -623,6 +856,21 @@ export function App(): JSX.Element {
         </button>
 
         <div style={{ marginTop: 10, display: "grid", gap: 8 }}>
+          {sessionMode === "backend" ? (
+            <button
+              key={BACKEND_DRAFT_SESSION_ID}
+              type="button"
+              onClick={() => setActiveSessionId(BACKEND_DRAFT_SESSION_ID)}
+              style={{
+                ...rowButtonStyle,
+                background: activeSessionId === BACKEND_DRAFT_SESSION_ID ? "#e8f8ff" : "#fff"
+              }}
+            >
+              <span style={{ flex: 1, textAlign: "left", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                {t(locale, "newSession")}
+              </span>
+            </button>
+          ) : null}
           {sessions.map((session) => (
             <button
               key={session.id}
@@ -639,12 +887,24 @@ export function App(): JSX.Element {
               <span
                 role="button"
                 aria-label={t(locale, "favorite")}
+                style={sessionInlineActionStyle}
                 onClick={(event) => {
                   event.stopPropagation();
                   void toggleStarSession(session.id);
                 }}
               >
                 {session.starred ? "★" : "☆"}
+              </span>
+              <span
+                role="button"
+                aria-label={t(locale, "deleteSession")}
+                style={sessionInlineActionStyle}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  void deleteSession(session.id);
+                }}
+              >
+                {t(locale, "deleteSession")}
               </span>
             </button>
           ))}
@@ -713,6 +973,9 @@ export function App(): JSX.Element {
         </header>
 
         <section style={{ padding: 14, overflow: "auto", display: "grid", gap: 12, alignContent: "start" }}>
+          {!activeConnection ? (
+            <div style={hintErrorStyle}>No active bridge connection. Please select or add one in the left panel.</div>
+          ) : null}
           {capabilitiesError ? <div style={hintErrorStyle}>Capabilities sync failed: {capabilitiesError}</div> : null}
           {capabilities && !ttsReady ? (
             <div style={hintInfoStyle}>TTS is unavailable. Configure MiniMax key in local bridge env.</div>
@@ -786,6 +1049,33 @@ function createSession(title: string): ChatSession {
   };
 }
 
+function areSessionListsEqual(left: ChatSession[], right: ChatSession[]): boolean {
+  if (left.length !== right.length) {
+    return false;
+  }
+
+  for (let index = 0; index < left.length; index += 1) {
+    const a = left[index];
+    const b = right[index];
+    if (!a || !b) {
+      return false;
+    }
+    if (
+      a.id !== b.id ||
+      a.title !== b.title ||
+      a.starred !== b.starred ||
+      a.status !== b.status ||
+      a.lastActiveAt !== b.lastActiveAt ||
+      a.createdAt !== b.createdAt ||
+      a.updatedAt !== b.updatedAt
+    ) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
 async function fetchBridgeJson<T>(
   connection: BridgeConnection,
   path: string
@@ -833,6 +1123,17 @@ function buildChatContext(
     context.pageTextSource = pageContent.source;
   }
   return context;
+}
+
+async function getActiveTab(): Promise<chrome.tabs.Tab | undefined> {
+  const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+  return tabs[0];
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
 }
 
 const solidButtonStyle: CSSProperties = {
@@ -908,4 +1209,10 @@ const inlineCheckboxLabelStyle: CSSProperties = {
   gap: 6,
   marginLeft: 10,
   fontSize: 12
+};
+
+const sessionInlineActionStyle: CSSProperties = {
+  cursor: "pointer",
+  fontSize: 12,
+  color: "var(--muted)"
 };

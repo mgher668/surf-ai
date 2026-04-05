@@ -36,7 +36,6 @@
 
 - `ACTIVE`：最近有消息写入。
 - `IDLE`：超过阈值时间无新消息（建议默认 30 分钟，可配置）。
-- `CLOSED`：用户显式关闭。
 
 说明：
 - `IDLE` 不是删除，不会丢历史。
@@ -103,7 +102,7 @@
 
 3. `sessions`
 - `id`, `user_id`, `title`, `starred`
-- `status` (`ACTIVE` | `IDLE` | `CLOSED`)
+- `status` (`ACTIVE` | `IDLE`)
 - `created_at`, `updated_at`, `last_active_at`
 
 4. `messages`
@@ -112,7 +111,7 @@
 5. `agent_session_links`
 - `session_id`, `provider`, `provider_session_id`
 - `synced_seq`
-- `state` (`READY` | `BROKEN` | `CLOSED`)
+- `state` (`READY` | `BROKEN`)
 - `last_error`, `updated_at`
 
 6. `session_memories`（建议新增）
@@ -125,7 +124,7 @@
 - `POST /sessions`：创建会话
 - `GET /sessions`：分页列会话
 - `POST /sessions/:id/star`：收藏/取消
-- `POST /sessions/:id/close`：关闭会话
+- `DELETE /sessions/:id`：删除会话
 
 2. 消息
 - `GET /sessions/:id/messages?afterSeq=...`：增量拉取

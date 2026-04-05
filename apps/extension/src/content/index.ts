@@ -12,6 +12,8 @@ const MENU_CLASS = "surf-ai-selection-menu";
 
 let handleEl: HTMLDivElement | null = null;
 let menuEl: HTMLDivElement | null = null;
+let menuStatusEl: HTMLDivElement | null = null;
+let menuStatusTimer: number | undefined;
 let selectedText = "";
 
 function cleanup(): void {
@@ -62,6 +64,31 @@ function toggleMenu(): void {
   document.body.appendChild(menuEl);
 }
 
+function showMenuStatus(message: string): void {
+  if (!menuEl) {
+    return;
+  }
+
+  if (!menuStatusEl) {
+    menuStatusEl = document.createElement("div");
+    menuStatusEl.style.marginTop = "2px";
+    menuStatusEl.style.fontSize = "11px";
+    menuStatusEl.style.color = "#9f2f2f";
+    menuStatusEl.style.lineHeight = "1.3";
+    menuEl.appendChild(menuStatusEl);
+  }
+
+  menuStatusEl.textContent = message;
+
+  if (menuStatusTimer !== undefined) {
+    window.clearTimeout(menuStatusTimer);
+  }
+  menuStatusTimer = window.setTimeout(() => {
+    menuStatusEl?.remove();
+    menuStatusEl = null;
+  }, 3200);
+}
+
 function createActionButton(label: string, action: QuickAction): HTMLButtonElement {
   const button = document.createElement("button");
   button.type = "button";
@@ -85,6 +112,7 @@ function createActionButton(label: string, action: QuickAction): HTMLButtonEleme
     };
     const response = (await chrome.runtime.sendMessage(request)) as UiToExtensionResponse;
     if (!response?.ok) {
+      showMenuStatus(`Action failed: ${response?.error ?? "unknown_error"}`);
       return;
     }
 
@@ -138,7 +166,11 @@ function handleSelectionChange(): void {
   createHandle(rect);
 }
 
-document.addEventListener("mouseup", () => {
+document.addEventListener("mouseup", (event) => {
+  const target = event.target as HTMLElement | null;
+  if (target?.closest(`.${HANDLE_CLASS}`) || target?.closest(`.${MENU_CLASS}`)) {
+    return;
+  }
   setTimeout(handleSelectionChange, 0);
 });
 

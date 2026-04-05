@@ -11,7 +11,8 @@ const ROOT_MENU = "surf-ai-root";
 const MENU_SUMMARY = "surf-ai-summary";
 const MENU_TRANSLATE = "surf-ai-translate";
 const MENU_READ = "surf-ai-read";
-const EXTRACT_DEFAULT_MAX_CHARS = 60_000;
+const EXTRACT_DEFAULT_MAX_CHARS = 100_000;
+const pendingSelectionByTab = new Map<number, SelectionPayload>();
 
 chrome.runtime.onInstalled.addListener(async () => {
   await chrome.contextMenus.removeAll();
@@ -114,6 +115,23 @@ chrome.runtime.onMessage.addListener((rawMessage, sender, sendResponse) => {
     return true;
   }
 
+  if (message.type === "consume_pending_selection_payload") {
+    void consumePendingSelection(message.tabId)
+      .then((selectionPayload) => {
+        sendResponse({
+          ok: true,
+          ...(selectionPayload ? { selectionPayload } : {})
+        } satisfies UiToExtensionResponse);
+      })
+      .catch((error: unknown) => {
+        sendResponse({
+          ok: false,
+          error: error instanceof Error ? error.message : "unknown"
+        } satisfies UiToExtensionResponse);
+      });
+    return true;
+  }
+
   if (message.type === "extract_active_tab_content") {
     void handleExtractActiveTab(message.maxChars)
       .then((payload) => {
@@ -143,15 +161,47 @@ async function getActiveTab(): Promise<chrome.tabs.Tab | undefined> {
 }
 
 async function openPanelAndSend(tabId: number, windowId: number, payload: SelectionPayload): Promise<void> {
-  await chrome.sidePanel.setOptions({ tabId, enabled: true });
-  await chrome.sidePanel.open({ windowId });
+  pendingSelectionByTab.set(tabId, payload);
+  const enablePromise = chrome.sidePanel.setOptions({ tabId, enabled: true });
+  try {
+    await chrome.sidePanel.open({ windowId });
+  } catch (windowOpenError) {
+    await enablePromise;
+    try {
+      await chrome.sidePanel.open({ tabId });
+    } catch (tabOpenError) {
+      const windowMsg =
+        windowOpenError instanceof Error ? windowOpenError.message : "open_by_window_failed";
+      const tabMsg = tabOpenError instanceof Error ? tabOpenError.message : "open_by_tab_failed";
+      throw new Error(`sidepanel_open_failed: ${windowMsg}; ${tabMsg}`);
+    }
+  }
+  await enablePromise;
 
   const message: ExtensionToUiMessage = {
     type: "selection_payload",
     payload
   };
 
-  await chrome.runtime.sendMessage(message);
+  try {
+    await chrome.runtime.sendMessage(message);
+    pendingSelectionByTab.delete(tabId);
+  } catch {
+    // If sidepanel listener is not ready yet, keep pending payload for later consume.
+  }
+}
+
+async function consumePendingSelection(tabId?: number): Promise<SelectionPayload | undefined> {
+  const resolvedTabId = tabId ?? (await getActiveTab())?.id;
+  if (!resolvedTabId) {
+    return undefined;
+  }
+  const payload = pendingSelectionByTab.get(resolvedTabId);
+  if (!payload) {
+    return undefined;
+  }
+  pendingSelectionByTab.delete(resolvedTabId);
+  return payload;
 }
 
 async function handleExtractActiveTab(maxChars?: number): Promise<PageContentPayload> {
@@ -187,7 +237,7 @@ async function extractPageContentFromTab(tabId: number, maxChars: number): Promi
     func: (requestedMaxChars: number) => {
       const max = Number.isFinite(requestedMaxChars)
         ? Math.min(Math.max(Math.floor(requestedMaxChars), 500), 200_000)
-        : 60_000;
+        : 100_000;
       const text = (document.body?.innerText || document.documentElement?.innerText || "")
         .replace(/\r/g, "")
         .replace(/[ \t]+\n/g, "\n")

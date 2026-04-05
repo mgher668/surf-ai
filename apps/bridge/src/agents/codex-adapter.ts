@@ -1,5 +1,6 @@
-import { readFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { homedir } from "node:os";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { BridgeChatRequest } from "@surf-ai/shared";
 import { buildPrompt } from "./prompt";
@@ -17,6 +18,17 @@ interface CodexResult {
 interface SessionIndexEntry {
   id: string;
   updatedAtMs: number;
+}
+
+interface ExecOnceResult {
+  output: string;
+  providerSessionId?: string;
+}
+
+interface CodexJsonEvent {
+  type?: unknown;
+  message?: unknown;
+  thread_id?: unknown;
 }
 
 export class CodexAdapter implements AgentAdapter {
@@ -37,18 +49,19 @@ export class CodexAdapter implements AgentAdapter {
     return await this.withLock(async () => {
       const before = await this.readSessionIndexMap();
       const prompt = buildPrompt(request);
-      const output = await this.execOnce(prompt);
-      const after = await this.readSessionIndexMap();
-      const providerSessionId = pickLatestUpdatedSessionId(before, after);
+      const execResult = await this.execOnce(prompt);
+      const providerSessionId =
+        execResult.providerSessionId ??
+        pickLatestUpdatedSessionId(before, await this.readSessionIndexMap());
 
       if (!providerSessionId) {
         throw new Error(
-          "codex_session_id_not_found: failed to infer session id from ~/.codex/session_index.jsonl"
+          "codex_session_id_not_found: failed to infer session id from codex json events and ~/.codex/session_index.jsonl"
         );
       }
 
       return {
-        output,
+        output: execResult.output,
         providerSessionId
       };
     });
@@ -68,13 +81,24 @@ export class CodexAdapter implements AgentAdapter {
     });
   }
 
-  private async execOnce(prompt: string): Promise<string> {
-    const result = await runProcess(
-      "codex",
-      ["exec", "--skip-git-repo-check", prompt],
-      CODEX_TIMEOUT_MS
-    );
-    return extractOutput(result.code, result.stdout, result.stderr, "codex");
+  private async execOnce(prompt: string): Promise<ExecOnceResult> {
+    const tmpDir = await mkdtemp(join(tmpdir(), "surf-ai-codex-"));
+    const outputPath = join(tmpDir, "last-message.txt");
+    try {
+      const result = await runProcess(
+        "codex",
+        ["exec", "--skip-git-repo-check", "--json", "--output-last-message", outputPath, prompt],
+        CODEX_TIMEOUT_MS
+      );
+      const output = await extractCodexOutput(result.code, result.stdout, result.stderr, outputPath, "codex exec");
+      const providerSessionId = extractThreadIdFromJsonl(result.stdout);
+      return {
+        output,
+        ...(providerSessionId ? { providerSessionId } : {})
+      };
+    } finally {
+      await rm(tmpDir, { recursive: true, force: true }).catch(() => undefined);
+    }
   }
 
   private async readSessionIndexMap(): Promise<Map<string, SessionIndexEntry>> {
@@ -160,4 +184,98 @@ function extractOutput(
     throw new Error(`${commandLabel} returned empty output`);
   }
   return output;
+}
+
+async function extractCodexOutput(
+  code: number | null,
+  stdout: string,
+  stderr: string,
+  outputPath: string,
+  label: string
+): Promise<string> {
+  if (code !== 0) {
+    const message = extractLastCodexErrorMessage(stdout);
+    throw new Error(message || stderr || `${label} exited with code ${code ?? "unknown"}`);
+  }
+
+  try {
+    const output = (await readFile(outputPath, "utf8")).trim();
+    if (output) {
+      return output;
+    }
+  } catch {
+    // Fallback to stdout parsing.
+  }
+
+  const outputFromJson = extractLastCodexOutputFromJsonl(stdout);
+  if (outputFromJson) {
+    return outputFromJson;
+  }
+
+  throw new Error(`${label} returned empty output`);
+}
+
+function extractThreadIdFromJsonl(stdout: string): string | undefined {
+  for (const line of stdout.split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith("{") || !trimmed.endsWith("}")) {
+      continue;
+    }
+    try {
+      const parsed = JSON.parse(trimmed) as CodexJsonEvent;
+      if (parsed.type === "thread.started" && typeof parsed.thread_id === "string" && parsed.thread_id.trim()) {
+        return parsed.thread_id;
+      }
+    } catch {
+      // Ignore non-JSON lines.
+    }
+  }
+  return undefined;
+}
+
+function extractLastCodexErrorMessage(stdout: string): string | undefined {
+  const events = parseCodexJsonLines(stdout);
+  for (let i = events.length - 1; i >= 0; i -= 1) {
+    const event = events[i];
+    if (!event) {
+      continue;
+    }
+    if (event.type === "error" && typeof event.message === "string" && event.message.trim()) {
+      return event.message;
+    }
+  }
+  return undefined;
+}
+
+function extractLastCodexOutputFromJsonl(stdout: string): string | undefined {
+  const events = parseCodexJsonLines(stdout);
+  for (let i = events.length - 1; i >= 0; i -= 1) {
+    const event = events[i];
+    if (!event) {
+      continue;
+    }
+    const record = event as Record<string, unknown>;
+    const content = record["content"] ?? record["text"] ?? record["result"];
+    if (typeof content === "string" && content.trim()) {
+      return content.trim();
+    }
+  }
+  return undefined;
+}
+
+function parseCodexJsonLines(stdout: string): CodexJsonEvent[] {
+  const events: CodexJsonEvent[] = [];
+  for (const line of stdout.split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith("{") || !trimmed.endsWith("}")) {
+      continue;
+    }
+    try {
+      const parsed = JSON.parse(trimmed) as CodexJsonEvent;
+      events.push(parsed);
+    } catch {
+      // Ignore parse errors.
+    }
+  }
+  return events;
 }

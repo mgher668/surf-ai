@@ -13,7 +13,7 @@ export interface BridgeConnection {
   updatedAt: number;
 }
 
-export type SessionStatus = "ACTIVE" | "IDLE" | "CLOSED";
+export type SessionStatus = "ACTIVE" | "IDLE";
 
 export interface ChatSession {
   id: string;
@@ -77,6 +77,10 @@ export type UiToExtensionMessage =
       payload: SelectionPayload;
     }
   | {
+      type: "consume_pending_selection_payload";
+      tabId?: number;
+    }
+  | {
       type: "extract_active_tab_content";
       maxChars?: number;
     };
@@ -84,6 +88,7 @@ export type UiToExtensionMessage =
 export interface UiToExtensionResponse {
   ok: boolean;
   payload?: PageContentPayload;
+  selectionPayload?: SelectionPayload;
   error?: string;
 }
 

@@ -1,7 +1,7 @@
 import { Readability } from "@mozilla/readability";
 import type { PageContentPayload } from "@surf-ai/shared";
 
-const DEFAULT_MAX_CHARS = 60_000;
+const DEFAULT_MAX_CHARS = 100_000;
 const MIN_READABILITY_LENGTH = 200;
 const READABILITY_MAX_NODE_COUNT = 12_000;
 

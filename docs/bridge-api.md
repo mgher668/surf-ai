@@ -274,9 +274,18 @@ Request:
 { "starred": true }
 ```
 
-### POST /sessions/:id/close
+### DELETE /sessions/:id
 
 No request body required.
+
+Response:
+
+```json
+{
+  "ok": true,
+  "deletedSessionId": "uuid"
+}
+```
 
 ### GET /sessions/:id/context?query=...
 
@@ -438,7 +447,7 @@ Proposed endpoints:
 - `POST /sessions`
 - `GET /sessions`
 - `POST /sessions/:id/star`
-- `POST /sessions/:id/close`
+- `DELETE /sessions/:id`
 - `GET /sessions/:id/messages?afterSeq=...`
 - `POST /sessions/:id/messages`
 

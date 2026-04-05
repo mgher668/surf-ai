@@ -71,3 +71,26 @@ export async function listMessagesBySession(sessionId: string): Promise<ChatMess
     request.onerror = () => reject(request.error ?? new Error("Failed to list messages"));
   });
 }
+
+export async function deleteMessagesBySession(sessionId: string): Promise<void> {
+  const db = await getDb();
+
+  await new Promise<void>((resolve, reject) => {
+    const tx = db.transaction(STORE_MESSAGES, "readwrite");
+    const index = tx.objectStore(STORE_MESSAGES).index("sessionId");
+    const request = index.openCursor(IDBKeyRange.only(sessionId));
+
+    request.onsuccess = () => {
+      const cursor = request.result;
+      if (!cursor) {
+        return;
+      }
+      cursor.delete();
+      cursor.continue();
+    };
+
+    request.onerror = () => reject(request.error ?? new Error("Failed to delete messages"));
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error ?? new Error("Failed to delete messages"));
+  });
+}
