@@ -5,6 +5,7 @@ Base URL example: `http://127.0.0.1:43127`
 Auth header (optional but recommended):
 
 - `x-surf-token: <token>`
+- `x-surf-user-id: <user-id>` (required when multi-user mode is enabled)
 
 Current positioning:
 
@@ -75,6 +76,110 @@ Notes:
 
 - Sidepanel should fetch this endpoint first and render adapter options dynamically.
 - `configured=false` for `tts.minimax` means MiniMax key is missing in bridge env and `/tts` will fail with `tts_not_configured`.
+
+## Session APIs (Phase 1)
+
+Session APIs are the new source-of-truth path for session/message storage in backend mode.
+
+Headers:
+
+- `x-surf-user-id: <user-id>`
+- `x-surf-token: <token>` (if user account has token configured)
+
+### POST /sessions
+
+Request:
+
+```json
+{ "title": "New chat" }
+```
+
+Response:
+
+```json
+{
+  "session": {
+    "id": "uuid",
+    "title": "New chat",
+    "starred": false,
+    "status": "ACTIVE",
+    "createdAt": 1775355511020,
+    "updatedAt": 1775355511020,
+    "lastActiveAt": 1775355511020
+  }
+}
+```
+
+### GET /sessions
+
+Response:
+
+```json
+{
+  "sessions": [
+    {
+      "id": "uuid",
+      "title": "Manual QA",
+      "starred": false,
+      "status": "ACTIVE",
+      "createdAt": 1775355511020,
+      "updatedAt": 1775355511048,
+      "lastActiveAt": 1775355511048
+    }
+  ]
+}
+```
+
+### GET /sessions/:id/messages?afterSeq=0&limit=200
+
+Response:
+
+```json
+{
+  "session": { "id": "uuid", "title": "Manual QA", "starred": false },
+  "messages": [
+    { "id": "m1", "sessionId": "uuid", "seq": 1, "role": "user", "content": "hello", "createdAt": 1 },
+    { "id": "m2", "sessionId": "uuid", "seq": 2, "role": "assistant", "content": "world", "createdAt": 2 }
+  ]
+}
+```
+
+### POST /sessions/:id/messages
+
+Request:
+
+```json
+{
+  "adapter": "mock",
+  "content": "hello from session api",
+  "context": {
+    "pageTitle": "Example",
+    "pageUrl": "https://example.com"
+  }
+}
+```
+
+Response:
+
+```json
+{
+  "session": { "id": "uuid", "title": "Manual QA", "starred": false, "status": "ACTIVE" },
+  "userMessage": { "id": "u1", "sessionId": "uuid", "seq": 1, "role": "user", "content": "hello from session api" },
+  "assistantMessage": { "id": "a1", "sessionId": "uuid", "seq": 2, "role": "assistant", "content": "..." }
+}
+```
+
+### POST /sessions/:id/star
+
+Request:
+
+```json
+{ "starred": true }
+```
+
+### POST /sessions/:id/close
+
+No request body required.
 
 Note:
 

@@ -25,6 +25,7 @@ export async function getConnections(): Promise<BridgeConnection[]> {
     id: crypto.randomUUID(),
     name: "Local Bridge",
     baseUrl: BRIDGE_DEFAULT_BASE_URL,
+    userId: "local",
     enabled: true,
     createdAt: now,
     updatedAt: now

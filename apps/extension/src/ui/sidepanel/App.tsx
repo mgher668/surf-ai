@@ -5,6 +5,11 @@ import type {
   BridgeConnection,
   BridgeModel,
   BridgeModelsResponse,
+  BridgeSessionCreateResponse,
+  BridgeSessionListResponse,
+  BridgeSessionMessagesResponse,
+  BridgeSessionSendMessageResponse,
+  BridgeSessionStarRequest,
   ChatMessage,
   ChatSession,
   ExtensionToUiMessage,
@@ -35,6 +40,7 @@ const ACTION_PROMPT_PREFIX: Record<QuickAction, string> = {
 };
 
 const FALLBACK_ADAPTER_OPTIONS: BridgeModel["adapter"][] = ["mock", "codex", "claude"];
+type SessionMode = "backend" | "local";
 
 export function App(): JSX.Element {
   const locale = resolveLocale(navigator.language);
@@ -43,6 +49,7 @@ export function App(): JSX.Element {
   const [activeConnectionId, setActiveConnectionIdState] = useState<string | undefined>();
   const [sessions, setSessionsState] = useState<ChatSession[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<string | undefined>();
+  const [sessionMode, setSessionMode] = useState<SessionMode>("local");
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [adapter, setAdapter] = useState<BridgeChatRequest["adapter"]>("mock");
@@ -57,6 +64,7 @@ export function App(): JSX.Element {
 
   const [newConnName, setNewConnName] = useState("");
   const [newConnUrl, setNewConnUrl] = useState("http://127.0.0.1:43127");
+  const [newConnUserId, setNewConnUserId] = useState("local");
   const [newConnToken, setNewConnToken] = useState("");
 
   const activeConnection = useMemo(
@@ -134,8 +142,14 @@ export function App(): JSX.Element {
     setPageContent(undefined);
     setExtractError(undefined);
     setIncludePageContext(false);
+
+    if (sessionMode === "backend" && activeConnection) {
+      void loadMessagesFromBackend(activeConnection, activeSessionId);
+      return;
+    }
+
     void listMessagesBySession(activeSessionId).then(setMessages);
-  }, [activeSessionId]);
+  }, [activeConnection, activeSessionId, sessionMode]);
 
   useEffect(() => {
     void bootstrapCapabilities(activeConnection);
@@ -169,8 +183,23 @@ export function App(): JSX.Element {
       getSessions()
     ]);
 
+    const resolvedActiveConnectionId = storedActiveConnectionId ?? storedConnections[0]?.id;
+    const resolvedActiveConnection = storedConnections.find((item) => item.id === resolvedActiveConnectionId);
+
     setConnectionsState(storedConnections);
-    setActiveConnectionIdState(storedActiveConnectionId ?? storedConnections[0]?.id);
+    setActiveConnectionIdState(resolvedActiveConnectionId);
+
+    if (resolvedActiveConnection) {
+      const backendSessions = await fetchSessionsFromBackend(resolvedActiveConnection);
+      if (backendSessions) {
+        setSessionMode("backend");
+        setSessionsState(backendSessions);
+        setActiveSessionId((current) => current ?? backendSessions[0]?.id);
+        return;
+      }
+    }
+
+    setSessionMode("local");
 
     if (storedSessions.length === 0) {
       const first = createSession("New chat");
@@ -245,6 +274,80 @@ export function App(): JSX.Element {
     }
   }
 
+  async function fetchSessionsFromBackend(connection: BridgeConnection): Promise<ChatSession[] | null> {
+    try {
+      const response = await fetchBridgeJson<BridgeSessionListResponse>(connection, "/sessions");
+      if (!response.ok) {
+        return null;
+      }
+      return response.data.sessions;
+    } catch {
+      return null;
+    }
+  }
+
+  async function loadMessagesFromBackend(connection: BridgeConnection, sessionId: string): Promise<void> {
+    try {
+      const response = await fetchBridgeJson<BridgeSessionMessagesResponse>(
+        connection,
+        `/sessions/${sessionId}/messages?afterSeq=0&limit=500`
+      );
+      if (!response.ok) {
+        throw new Error(`messages_request_failed:${response.status}`);
+      }
+      setMessages(response.data.messages);
+    } catch (error) {
+      setMessages([
+        {
+          id: crypto.randomUUID(),
+          sessionId,
+          role: "assistant",
+          content: `Error: ${error instanceof Error ? error.message : "load_messages_failed"}`,
+          createdAt: Date.now()
+        }
+      ]);
+    }
+  }
+
+  async function createSessionOnBackend(connection: BridgeConnection, title: string): Promise<ChatSession | null> {
+    try {
+      const response = await fetch(`${connection.baseUrl}/sessions`, {
+        method: "POST",
+        headers: buildBridgeHeaders(connection, true),
+        body: JSON.stringify({ title })
+      });
+      if (!response.ok) {
+        return null;
+      }
+      const payload = (await response.json()) as BridgeSessionCreateResponse;
+      return payload.session;
+    } catch {
+      return null;
+    }
+  }
+
+  async function updateSessionStarOnBackend(
+    connection: BridgeConnection,
+    sessionId: string,
+    starred: boolean
+  ): Promise<ChatSession | null> {
+    try {
+      const body: BridgeSessionStarRequest = { starred };
+      const response = await fetch(`${connection.baseUrl}/sessions/${sessionId}/star`, {
+        method: "POST",
+        headers: buildBridgeHeaders(connection, true),
+        body: JSON.stringify(body)
+      });
+      if (!response.ok) {
+        return null;
+      }
+      const payload = (await response.json()) as { session: ChatSession };
+      return payload.session;
+    } catch {
+      return null;
+    }
+  }
+
   async function addConnection(): Promise<void> {
     if (!newConnName.trim() || !newConnUrl.trim()) return;
 
@@ -253,6 +356,7 @@ export function App(): JSX.Element {
       id: crypto.randomUUID(),
       name: newConnName.trim(),
       baseUrl: newConnUrl.trim().replace(/\/$/, ""),
+      ...(newConnUserId.trim() ? { userId: newConnUserId.trim() } : {}),
       enabled: true,
       createdAt: now,
       updatedAt: now,
@@ -267,10 +371,21 @@ export function App(): JSX.Element {
 
     setNewConnName("");
     setNewConnUrl("http://127.0.0.1:43127");
+    setNewConnUserId("local");
     setNewConnToken("");
   }
 
   async function createNewSession(): Promise<void> {
+    if (sessionMode === "backend" && activeConnection) {
+      const backendSession = await createSessionOnBackend(activeConnection, `Chat ${sessions.length + 1}`);
+      if (backendSession) {
+        const next = [backendSession, ...sessions];
+        setSessionsState(next);
+        setActiveSessionId(backendSession.id);
+        return;
+      }
+    }
+
     const session = createSession(`Chat ${sessions.length + 1}`);
     const next = [session, ...sessions];
     await setSessions(next);
@@ -279,6 +394,18 @@ export function App(): JSX.Element {
   }
 
   async function toggleStarSession(id: string): Promise<void> {
+    if (sessionMode === "backend" && activeConnection) {
+      const current = sessions.find((item) => item.id === id);
+      if (!current) {
+        return;
+      }
+      const updated = await updateSessionStarOnBackend(activeConnection, id, !current.starred);
+      if (updated) {
+        setSessionsState((prev) => prev.map((item) => (item.id === id ? updated : item)));
+      }
+      return;
+    }
+
     const next = sessions.map((item) => (item.id === id ? { ...item, starred: !item.starred, updatedAt: Date.now() } : item));
     await setSessions(next);
     setSessionsState(next);
@@ -286,6 +413,11 @@ export function App(): JSX.Element {
 
   async function send(): Promise<void> {
     if (!input.trim() || !activeSessionId || !activeConnection) return;
+
+    if (sessionMode === "backend") {
+      await sendWithBackend(activeConnection, activeSessionId, input.trim());
+      return;
+    }
 
     const userMessage: ChatMessage = {
       id: crypto.randomUUID(),
@@ -301,18 +433,7 @@ export function App(): JSX.Element {
     setPending(true);
 
     try {
-      const context: NonNullable<BridgeChatRequest["context"]> = {};
-      const pageTitle = pageContent?.pageTitle || selectionContext?.pageTitle;
-      if (pageTitle) context.pageTitle = pageTitle;
-      const pageUrl = pageContent?.pageUrl || selectionContext?.pageUrl;
-      if (pageUrl) context.pageUrl = pageUrl;
-      if (selectionContext?.text) {
-        context.selectedText = selectionContext.text;
-      }
-      if (includePageContext && pageContent?.text) {
-        context.pageText = pageContent.text;
-        context.pageTextSource = pageContent.source;
-      }
+      const context = buildChatContext(selectionContext, pageContent, includePageContext);
 
       const requestPayload: BridgeChatRequest = {
         adapter,
@@ -328,10 +449,7 @@ export function App(): JSX.Element {
 
       const response = await fetch(`${activeConnection.baseUrl}/chat`, {
         method: "POST",
-        headers: {
-          "content-type": "application/json",
-          ...(activeConnection.token ? { "x-surf-token": activeConnection.token } : {})
-        },
+        headers: buildBridgeHeaders(activeConnection, true),
         body: JSON.stringify(requestPayload)
       });
 
@@ -370,16 +488,60 @@ export function App(): JSX.Element {
     }
   }
 
+  async function sendWithBackend(
+    connection: BridgeConnection,
+    sessionId: string,
+    content: string
+  ): Promise<void> {
+    setPending(true);
+
+    try {
+      const context = buildChatContext(selectionContext, pageContent, includePageContext);
+      const response = await fetch(`${connection.baseUrl}/sessions/${sessionId}/messages`, {
+        method: "POST",
+        headers: buildBridgeHeaders(connection, true),
+        body: JSON.stringify({
+          adapter,
+          content,
+          ...(Object.keys(context).length > 0 ? { context } : {})
+        })
+      });
+
+      if (!response.ok) {
+        const failedText = await response.text();
+        throw new Error(`Bridge session message failed: ${response.status} ${failedText}`);
+      }
+
+      const payload = (await response.json()) as BridgeSessionSendMessageResponse;
+      setInput("");
+      setMessages((prev) => [...prev, payload.userMessage, payload.assistantMessage]);
+      setSessionsState((prev) =>
+        prev.map((item) => (item.id === payload.session.id ? payload.session : item))
+      );
+    } catch (error) {
+      const errMessage: ChatMessage = {
+        id: crypto.randomUUID(),
+        sessionId,
+        role: "assistant",
+        content: `Error: ${error instanceof Error ? error.message : "Unknown error"}`,
+        createdAt: Date.now()
+      };
+      setMessages((prev) => [...prev, errMessage]);
+    } finally {
+      setPending(false);
+      setPageContent(undefined);
+      setExtractError(undefined);
+      setIncludePageContext(false);
+    }
+  }
+
   async function requestTts(text: string): Promise<void> {
     if (!activeConnection || !ttsReady) return;
 
     try {
       const response = await fetch(`${activeConnection.baseUrl}/tts`, {
         method: "POST",
-        headers: {
-          "content-type": "application/json",
-          ...(activeConnection.token ? { "x-surf-token": activeConnection.token } : {})
-        },
+        headers: buildBridgeHeaders(activeConnection, true),
         body: JSON.stringify({ text })
       });
 
@@ -499,6 +661,9 @@ export function App(): JSX.Element {
         <label style={labelStyle}>{t(locale, "baseUrl")}</label>
         <input value={newConnUrl} onChange={(e) => setNewConnUrl(e.target.value)} style={inputStyle} />
 
+        <label style={labelStyle}>{t(locale, "connectionUserId")}</label>
+        <input value={newConnUserId} onChange={(e) => setNewConnUserId(e.target.value)} style={inputStyle} />
+
         <label style={labelStyle}>{t(locale, "token")}</label>
         <input value={newConnToken} onChange={(e) => setNewConnToken(e.target.value)} style={inputStyle} />
 
@@ -612,9 +777,7 @@ async function fetchBridgeJson<T>(
   path: string
 ): Promise<{ ok: true; data: T } | { ok: false; status: number }> {
   const response = await fetch(`${connection.baseUrl}${path}`, {
-    headers: {
-      ...(connection.token ? { "x-surf-token": connection.token } : {})
-    }
+    headers: buildBridgeHeaders(connection)
   });
 
   if (!response.ok) {
@@ -623,6 +786,39 @@ async function fetchBridgeJson<T>(
 
   const data = (await response.json()) as T;
   return { ok: true, data };
+}
+
+function buildBridgeHeaders(connection: BridgeConnection, includeJsonContentType = false): Record<string, string> {
+  const headers: Record<string, string> = {
+    ...(connection.userId ? { "x-surf-user-id": connection.userId } : {})
+  };
+  if (includeJsonContentType) {
+    headers["content-type"] = "application/json";
+  }
+  if (connection.token) {
+    headers["x-surf-token"] = connection.token;
+  }
+  return headers;
+}
+
+function buildChatContext(
+  selectionContext: SelectionPayload | undefined,
+  pageContent: PageContentPayload | undefined,
+  includePageContext: boolean
+): NonNullable<BridgeChatRequest["context"]> {
+  const context: NonNullable<BridgeChatRequest["context"]> = {};
+  const pageTitle = pageContent?.pageTitle || selectionContext?.pageTitle;
+  if (pageTitle) context.pageTitle = pageTitle;
+  const pageUrl = pageContent?.pageUrl || selectionContext?.pageUrl;
+  if (pageUrl) context.pageUrl = pageUrl;
+  if (selectionContext?.text) {
+    context.selectedText = selectionContext.text;
+  }
+  if (includePageContext && pageContent?.text) {
+    context.pageText = pageContent.text;
+    context.pageTextSource = pageContent.source;
+  }
+  return context;
 }
 
 const solidButtonStyle: CSSProperties = {

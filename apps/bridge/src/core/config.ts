@@ -1,9 +1,17 @@
 export interface BridgeConfig {
   host: string;
   port: number;
+  dbPath: string;
   token?: string;
+  users: BridgeUserAccount[];
   defaultAdapter: "mock" | "codex" | "claude";
   minimaxTts: MiniMaxTtsConfig;
+}
+
+export interface BridgeUserAccount {
+  id: string;
+  name: string;
+  token?: string;
 }
 
 export interface MiniMaxTtsConfig {
@@ -27,10 +35,13 @@ export function readConfig(): BridgeConfig {
   const parsedPort = Number(portRaw);
   const token = process.env.SURF_AI_TOKEN;
   const apiKey = process.env.SURF_AI_MINIMAX_API_KEY ?? process.env.MINIMAX_API_KEY;
+  const users = readUsers(token);
 
   const base: Omit<BridgeConfig, "token"> = {
     host: process.env.SURF_AI_HOST ?? "127.0.0.1",
     port: Number.isFinite(parsedPort) ? parsedPort : 43127,
+    dbPath: process.env.SURF_AI_DB_PATH ?? "./data/surf-ai.sqlite",
+    users,
     defaultAdapter: normalizeAdapter(process.env.SURF_AI_DEFAULT_ADAPTER),
     minimaxTts: {
       endpoint: process.env.SURF_AI_MINIMAX_TTS_ENDPOINT ?? "https://api.minimax.io/v1/t2a_v2",
@@ -60,6 +71,56 @@ export function readConfig(): BridgeConfig {
       ...(apiKey ? { apiKey } : {})
     }
   };
+}
+
+function readUsers(legacyToken: string | undefined): BridgeUserAccount[] {
+  const raw = process.env.SURF_AI_USERS_JSON?.trim();
+  if (!raw) {
+    return [
+      {
+        id: process.env.SURF_AI_DEFAULT_USER_ID ?? "local",
+        name: process.env.SURF_AI_DEFAULT_USER_NAME ?? "Local User",
+        ...(legacyToken ? { token: legacyToken } : {})
+      }
+    ];
+  }
+
+  try {
+    const parsed = JSON.parse(raw) as Array<{
+      id?: unknown;
+      name?: unknown;
+      token?: unknown;
+    }>;
+    const normalized = parsed
+      .map((item) => {
+        const id = typeof item.id === "string" ? item.id.trim() : "";
+        const name = typeof item.name === "string" ? item.name.trim() : "";
+        const token = typeof item.token === "string" ? item.token.trim() : "";
+        if (!id || !name) {
+          return null;
+        }
+        return {
+          id,
+          name,
+          ...(token ? { token } : {})
+        } satisfies BridgeUserAccount;
+      })
+      .filter((item): item is BridgeUserAccount => Boolean(item));
+
+    if (normalized.length > 0) {
+      return normalized;
+    }
+  } catch {
+    // Fall through to local default user.
+  }
+
+  return [
+    {
+      id: process.env.SURF_AI_DEFAULT_USER_ID ?? "local",
+      name: process.env.SURF_AI_DEFAULT_USER_NAME ?? "Local User",
+      ...(legacyToken ? { token: legacyToken } : {})
+    }
+  ];
 }
 
 function normalizeAdapter(value: string | undefined): BridgeConfig["defaultAdapter"] {

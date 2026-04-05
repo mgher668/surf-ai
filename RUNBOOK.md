@@ -10,6 +10,7 @@
 ## Bridge Troubleshooting
 
 - `401 unauthorized`: verify `SURF_AI_TOKEN` and `x-surf-token` header.
+- `401 unauthorized_user` on session APIs: verify `x-surf-user-id` and per-user token configuration (`SURF_AI_USERS_JSON`).
 - `adapter_failed`: check local CLI availability (`codex`, `claude`).
 - CORS blocked: ensure request origin is `chrome-extension://...` and bridge is on localhost.
 

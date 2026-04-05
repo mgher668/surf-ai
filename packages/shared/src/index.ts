@@ -6,16 +6,21 @@ export interface BridgeConnection {
   id: string;
   name: string;
   baseUrl: string;
+  userId?: string;
   token?: string;
   enabled: boolean;
   createdAt: number;
   updatedAt: number;
 }
 
+export type SessionStatus = "ACTIVE" | "IDLE" | "CLOSED";
+
 export interface ChatSession {
   id: string;
   title: string;
   starred: boolean;
+  status?: SessionStatus;
+  lastActiveAt?: number;
   createdAt: number;
   updatedAt: number;
 }
@@ -25,6 +30,7 @@ export type MessageRole = "user" | "assistant" | "system";
 export interface ChatMessage {
   id: string;
   sessionId: string;
+  seq?: number;
   role: MessageRole;
   content: string;
   createdAt: number;
@@ -144,6 +150,40 @@ export interface BridgeChatResponse {
     inputTokens?: number;
     outputTokens?: number;
   };
+}
+
+export interface BridgeSessionCreateRequest {
+  title?: string;
+}
+
+export interface BridgeSessionCreateResponse {
+  session: ChatSession;
+}
+
+export interface BridgeSessionListResponse {
+  sessions: ChatSession[];
+}
+
+export interface BridgeSessionMessagesResponse {
+  session: ChatSession;
+  messages: ChatMessage[];
+}
+
+export interface BridgeSessionSendMessageRequest {
+  adapter: BridgeModel["adapter"];
+  content: string;
+  model?: string;
+  context?: BridgeChatRequest["context"];
+}
+
+export interface BridgeSessionSendMessageResponse {
+  session: ChatSession;
+  userMessage: ChatMessage;
+  assistantMessage: ChatMessage;
+}
+
+export interface BridgeSessionStarRequest {
+  starred: boolean;
 }
 
 export interface BridgeTtsRequest {

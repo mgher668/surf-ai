@@ -5,17 +5,24 @@ import type {
   BridgeCapabilitiesResponse,
   BridgeChatRequest,
   BridgeChatResponse,
+  BridgeSessionCreateResponse,
   BridgeHealthResponse,
+  BridgeSessionListResponse,
+  BridgeSessionMessagesResponse,
+  BridgeSessionSendMessageResponse,
+  BridgeSessionStarRequest,
   BridgeModelsResponse,
   BridgeTtsRequest,
   BridgeTtsResponse
 } from "@surf-ai/shared";
 import { readConfig } from "./core/config";
 import { AdapterRegistry } from "./core/registry";
+import { BridgeStore } from "./core/store";
 import { synthesizeWithMiniMax, TtsError } from "./tts/minimax";
 
 const config = readConfig();
 const registry = new AdapterRegistry();
+const store = new BridgeStore(config.dbPath, config.users);
 
 const app = Fastify({ logger: true });
 
@@ -78,6 +85,14 @@ app.get("/capabilities", async () => {
   return response;
 });
 
+const chatContextSchema = z.object({
+  pageTitle: z.string().optional(),
+  pageUrl: z.string().optional(),
+  selectedText: z.string().optional(),
+  pageText: z.string().optional(),
+  pageTextSource: z.enum(["readability", "dom"]).optional()
+});
+
 const chatRequestSchema = z.object({
   adapter: z.enum(["codex", "claude", "openai-compatible", "anthropic", "gemini", "mock"]),
   model: z.string().optional(),
@@ -88,13 +103,181 @@ const chatRequestSchema = z.object({
       content: z.string().min(1)
     })
   ).min(1),
-  context: z.object({
-    pageTitle: z.string().optional(),
-    pageUrl: z.string().optional(),
-    selectedText: z.string().optional(),
-    pageText: z.string().optional(),
-    pageTextSource: z.enum(["readability", "dom"]).optional()
-  }).optional()
+  context: chatContextSchema.optional()
+});
+
+const createSessionSchema = z.object({
+  title: z.string().trim().min(1).max(120).optional()
+});
+
+const updateStarSchema = z.object({
+  starred: z.boolean()
+});
+
+const sendSessionMessageSchema = z.object({
+  adapter: z.enum(["codex", "claude", "openai-compatible", "anthropic", "gemini", "mock"]),
+  model: z.string().optional(),
+  content: z.string().trim().min(1),
+  context: chatContextSchema.optional()
+});
+
+const listSessionMessagesQuerySchema = z.object({
+  afterSeq: z.coerce.number().int().min(0).optional(),
+  limit: z.coerce.number().int().min(1).max(500).optional()
+});
+
+app.get("/sessions", async (request, reply) => {
+  const userId = requireAuthedUserId(request.headers, reply);
+  if (!userId) {
+    return;
+  }
+
+  const response: BridgeSessionListResponse = {
+    sessions: store.listSessions(userId)
+  };
+  return response;
+});
+
+app.post("/sessions", async (request, reply) => {
+  const userId = requireAuthedUserId(request.headers, reply);
+  if (!userId) {
+    return;
+  }
+
+  const parsed = createSessionSchema.safeParse(request.body);
+  if (!parsed.success) {
+    reply.code(400);
+    return { error: "invalid_request", details: parsed.error.flatten() };
+  }
+
+  const title = parsed.data.title;
+  const response: BridgeSessionCreateResponse = {
+    session: store.createSession(userId, title ?? "New chat")
+  };
+  return response;
+});
+
+app.post("/sessions/:id/star", async (request, reply) => {
+  const userId = requireAuthedUserId(request.headers, reply);
+  if (!userId) {
+    return;
+  }
+
+  const parsed = updateStarSchema.safeParse(request.body);
+  if (!parsed.success) {
+    reply.code(400);
+    return { error: "invalid_request", details: parsed.error.flatten() };
+  }
+
+  const sessionId = String((request.params as { id: string }).id);
+  const payload: BridgeSessionStarRequest = parsed.data;
+  const session = store.updateSessionStar(userId, sessionId, payload.starred);
+  if (!session) {
+    reply.code(404);
+    return { error: "session_not_found" };
+  }
+
+  return { session };
+});
+
+app.post("/sessions/:id/close", async (request, reply) => {
+  const userId = requireAuthedUserId(request.headers, reply);
+  if (!userId) {
+    return;
+  }
+
+  const sessionId = String((request.params as { id: string }).id);
+  const session = store.closeSession(userId, sessionId);
+  if (!session) {
+    reply.code(404);
+    return { error: "session_not_found" };
+  }
+
+  return { session };
+});
+
+app.get("/sessions/:id/messages", async (request, reply) => {
+  const userId = requireAuthedUserId(request.headers, reply);
+  if (!userId) {
+    return;
+  }
+
+  const sessionId = String((request.params as { id: string }).id);
+  const session = store.getSession(userId, sessionId);
+  if (!session) {
+    reply.code(404);
+    return { error: "session_not_found" };
+  }
+
+  const parsed = listSessionMessagesQuerySchema.safeParse(request.query);
+  if (!parsed.success) {
+    reply.code(400);
+    return { error: "invalid_request", details: parsed.error.flatten() };
+  }
+
+  const messages = store.listMessages(
+    userId,
+    sessionId,
+    parsed.data.afterSeq ?? 0,
+    parsed.data.limit ?? 200
+  );
+  const response: BridgeSessionMessagesResponse = { session, messages };
+  return response;
+});
+
+app.post("/sessions/:id/messages", async (request, reply) => {
+  const userId = requireAuthedUserId(request.headers, reply);
+  if (!userId) {
+    return;
+  }
+
+  const parsed = sendSessionMessageSchema.safeParse(request.body);
+  if (!parsed.success) {
+    reply.code(400);
+    return { error: "invalid_request", details: parsed.error.flatten() };
+  }
+
+  const sessionId = String((request.params as { id: string }).id);
+  const session = store.getSession(userId, sessionId);
+  if (!session) {
+    reply.code(404);
+    return { error: "session_not_found" };
+  }
+  if (session.status === "CLOSED") {
+    reply.code(409);
+    return { error: "session_closed" };
+  }
+
+  const userMessage = store.appendMessage(userId, sessionId, "user", parsed.data.content);
+  const history = store.listAllMessagesBySession(userId, sessionId);
+  const normalizedContext = normalizeChatContext(parsed.data.context);
+
+  const requestPayload: BridgeChatRequest = {
+    adapter: parsed.data.adapter,
+    sessionId,
+    messages: history.map((item) => ({ role: item.role, content: item.content })),
+    ...(parsed.data.model ? { model: parsed.data.model } : {}),
+    ...(normalizedContext ? { context: normalizedContext } : {})
+  };
+
+  try {
+    const output = await registry.generate(requestPayload, config.defaultAdapter);
+    const assistantMessage = store.appendMessage(userId, sessionId, "assistant", output);
+    const latestSession = store.getSession(userId, sessionId);
+    const response: BridgeSessionSendMessageResponse = {
+      session: latestSession ?? session,
+      userMessage,
+      assistantMessage
+    };
+    return response;
+  } catch (error) {
+    request.log.error(error);
+    reply.code(500);
+    return {
+      error: "adapter_failed",
+      message: error instanceof Error ? error.message : "unknown adapter error"
+    };
+  }
 });
 
 app.post("/chat", async (request, reply) => {
@@ -184,6 +367,59 @@ app.post("/tts", async (request, reply) => {
     };
   }
 });
+
+function requireAuthedUserId(
+  headers: Record<string, unknown>,
+  reply: { code: (statusCode: number) => { send: (body: unknown) => unknown } }
+): string | null {
+  const headerUserId = normalizeHeaderValue(headers["x-surf-user-id"]);
+  const headerToken = normalizeHeaderValue(headers["x-surf-token"]);
+
+  if (config.users.length > 1 && !headerUserId) {
+    reply.code(401).send({ error: "missing_user_id" });
+    return null;
+  }
+
+  const userId = store.authenticateUser(headerUserId, headerToken);
+  if (!userId) {
+    reply.code(401).send({ error: "unauthorized_user" });
+    return null;
+  }
+  return userId;
+}
+
+function normalizeHeaderValue(value: unknown): string | undefined {
+  if (typeof value === "string") {
+    return value;
+  }
+  if (Array.isArray(value) && typeof value[0] === "string") {
+    return value[0];
+  }
+  return undefined;
+}
+
+function normalizeChatContext(
+  context:
+    | {
+        pageTitle?: string | undefined;
+        pageUrl?: string | undefined;
+        selectedText?: string | undefined;
+        pageText?: string | undefined;
+        pageTextSource?: "readability" | "dom" | undefined;
+      }
+    | undefined
+): BridgeChatRequest["context"] | undefined {
+  if (!context) {
+    return undefined;
+  }
+  const normalized: NonNullable<BridgeChatRequest["context"]> = {};
+  if (context.pageTitle) normalized.pageTitle = context.pageTitle;
+  if (context.pageUrl) normalized.pageUrl = context.pageUrl;
+  if (context.selectedText) normalized.selectedText = context.selectedText;
+  if (context.pageText) normalized.pageText = context.pageText;
+  if (context.pageTextSource) normalized.pageTextSource = context.pageTextSource;
+  return Object.keys(normalized).length > 0 ? normalized : undefined;
+}
 
 app.setErrorHandler((error, _request, reply) => {
   const message = error instanceof Error ? error.message : "unknown error";
