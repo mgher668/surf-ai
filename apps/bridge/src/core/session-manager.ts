@@ -4,6 +4,7 @@ import { CodexAdapter } from "../agents/codex-adapter";
 import { ClaudeAdapter } from "../agents/claude-adapter";
 import { AdapterRegistry } from "./registry";
 import { type AgentSessionLink, BridgeStore } from "./store";
+import { retrieveSessionMessages } from "./retrieval";
 
 const MAX_DELTA_MESSAGE_CHARS = 4_000;
 const MAX_DELTA_PAGE_TEXT_CHARS = 16_000;
@@ -55,7 +56,39 @@ interface HandoffPayload {
   pinned_facts?: string;
   open_todos?: string;
   evidence_refs: number[];
+  retrieved_context?: {
+    query: string;
+    query_tokens: string[];
+    low_confidence: boolean;
+    expanded: boolean;
+    items: Array<{
+      seq: number;
+      role: ChatMessage["role"];
+      source: "direct" | "neighbor";
+      score: number;
+      content: {
+        content: string;
+        truncated: boolean;
+      };
+    }>;
+  };
   page_context?: ReturnType<typeof normalizeContext>;
+}
+
+export interface SessionContextPreview {
+  query: string;
+  triggered: boolean;
+  queryTokens: string[];
+  topScore: number;
+  lowConfidence: boolean;
+  expanded: boolean;
+  items: Array<{
+    seq: number;
+    role: ChatMessage["role"];
+    source: "direct" | "neighbor";
+    score: number;
+    snippet: string;
+  }>;
 }
 
 export class SessionManager {
@@ -116,6 +149,34 @@ export class SessionManager {
       syncedSeq,
       state: "READY"
     });
+  }
+
+  public previewContext(userId: string, sessionId: string, query: string): SessionContextPreview {
+    const history = this.store.listAllMessagesBySession(userId, sessionId);
+    const retrieval = retrieveSessionMessages({
+      messages: history,
+      query,
+      topDirectLimit: 6,
+      neighborWindow: 2
+    });
+
+    const triggered = shouldRetrieveOlderContext(query);
+
+    return {
+      query: retrieval.query,
+      triggered,
+      queryTokens: retrieval.queryTokens,
+      topScore: retrieval.topScore,
+      lowConfidence: retrieval.lowConfidence,
+      expanded: retrieval.expanded,
+      items: retrieval.items.map((item) => ({
+        seq: item.seq,
+        role: item.role,
+        source: item.source,
+        score: item.score,
+        snippet: item.content.slice(0, 240)
+      }))
+    };
   }
 
   private async generateWithCodex(
@@ -245,9 +306,28 @@ export class SessionManager {
     });
 
     const recentMessages = pickRecentWindow(input.history);
+    const recentSeqSet = new Set<number>(
+      recentMessages
+        .map((item) => item.seq)
+        .filter((seq): seq is number => typeof seq === "number")
+    );
+    const shouldRetrieve = shouldRetrieveOlderContext(latestUserRequest);
+    const retrieval = shouldRetrieve
+      ? retrieveSessionMessages({
+          messages: input.history,
+          query: latestUserRequest,
+          excludeSeqs: recentSeqSet,
+          topDirectLimit: 6,
+          neighborWindow: 2
+        })
+      : undefined;
+
     const evidenceRefs = collectEvidenceRefs(
       recentMessages.map((item) => item.seq),
-      summary ? [summary.source_seq_start, summary.source_seq_end] : []
+      [
+        ...(summary ? [summary.source_seq_start, summary.source_seq_end] : []),
+        ...(retrieval ? retrieval.items.map((item) => item.seq) : [])
+      ]
     );
 
     const facts = this.store.getSessionMemory(input.userId, input.sessionId, "facts");
@@ -264,6 +344,23 @@ export class SessionManager {
       ...(facts?.content ? { pinned_facts: facts.content } : {}),
       ...(todos?.content ? { open_todos: todos.content } : {}),
       evidence_refs: evidenceRefs,
+      ...(retrieval
+        ? {
+            retrieved_context: {
+              query: retrieval.query,
+              query_tokens: retrieval.queryTokens,
+              low_confidence: retrieval.lowConfidence,
+              expanded: retrieval.expanded,
+              items: retrieval.items.map((item) => ({
+                seq: item.seq,
+                role: item.role,
+                source: item.source,
+                score: item.score,
+                content: clipText(item.content, RECENT_ITEM_MAX_CHARS)
+              }))
+            }
+          }
+        : {}),
       ...(input.context ? { page_context: normalizeContext(input.context) } : {})
     };
   }
@@ -407,6 +504,25 @@ function shouldGenerateSummary(deltaMessages: ChatMessage[]): boolean {
 
   const chars = deltaMessages.reduce((sum, item) => sum + item.content.length, 0);
   return chars >= SUMMARY_TRIGGER_MIN_CHARS;
+}
+
+function shouldRetrieveOlderContext(latestUserRequest: string): boolean {
+  const text = latestUserRequest.toLowerCase();
+  if (!text.trim()) {
+    return false;
+  }
+
+  const cues = [
+    /之前|前面|上次|刚才|\bearlier\b|\bpreviously\b|\bbefore\b/i,
+    /记得|remember|recall|回顾|当时|结论|决定|todo|待办/i,
+    /那个|那条|那段|which one|what did .* say/i
+  ];
+
+  if (cues.some((pattern) => pattern.test(text))) {
+    return true;
+  }
+
+  return text.length >= 80;
 }
 
 function pickRecentWindow(messages: ChatMessage[]): ChatMessage[] {

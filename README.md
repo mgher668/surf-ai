@@ -72,6 +72,7 @@ pnpm dev:extension
 - Backend session APIs (`/sessions/*`) with SQLite source-of-truth (Phase 1)
 - Codex/Claude continuity in backend session mode (`provider_session_id` + `synced_seq` + resume fallback)
 - Adaptive handoff memory layer (`session_memories`: summary/facts/todos) for cross-adapter continuity
+- On-demand history retrieval (keywords/BM25 + evidence refs) for old-context questions
 - `MiniMax TTS` integration via bridge `/tts` (API key only in bridge env)
 - Local-Agent-first backend strategy (`codex` / `claude`), provider-mode adapters are compatibility placeholders in current version
 

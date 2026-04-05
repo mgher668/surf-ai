@@ -128,6 +128,10 @@ const listSessionMessagesQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(500).optional()
 });
 
+const previewContextQuerySchema = z.object({
+  query: z.string().trim().min(1).max(800)
+});
+
 app.get("/sessions", async (request, reply) => {
   const userId = requireAuthedUserId(request.headers, reply);
   if (!userId) {
@@ -225,6 +229,29 @@ app.get("/sessions/:id/messages", async (request, reply) => {
   );
   const response: BridgeSessionMessagesResponse = { session, messages };
   return response;
+});
+
+app.get("/sessions/:id/context", async (request, reply) => {
+  const userId = requireAuthedUserId(request.headers, reply);
+  if (!userId) {
+    return;
+  }
+
+  const parsed = previewContextQuerySchema.safeParse(request.query);
+  if (!parsed.success) {
+    reply.code(400);
+    return { error: "invalid_request", details: parsed.error.flatten() };
+  }
+
+  const sessionId = String((request.params as { id: string }).id);
+  const session = store.getSession(userId, sessionId);
+  if (!session) {
+    reply.code(404);
+    return { error: "session_not_found" };
+  }
+
+  const context = sessionManager.previewContext(userId, sessionId, parsed.data.query);
+  return { session, context };
 });
 
 app.post("/sessions/:id/messages", async (request, reply) => {

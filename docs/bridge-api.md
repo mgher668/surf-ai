@@ -181,6 +181,39 @@ Request:
 
 No request body required.
 
+### GET /sessions/:id/context?query=...
+
+Debug endpoint for retrieval preview (phase 5).
+
+Response shape:
+
+```json
+{
+  "session": {
+    "id": "uuid",
+    "title": "Manual QA",
+    "starred": false
+  },
+  "context": {
+    "query": "上次提到的结论是什么？",
+    "triggered": true,
+    "queryTokens": ["上", "次提", "..."],
+    "topScore": 5.82,
+    "lowConfidence": false,
+    "expanded": false,
+    "items": [
+      {
+        "seq": 1,
+        "role": "user",
+        "source": "direct",
+        "score": 5.8264,
+        "snippet": "结论：蓝色方案优先，预算10万。"
+      }
+    ]
+  }
+}
+```
+
 Note:
 
 - `openai-compatible` / `anthropic` / `gemini` adapter values are compatibility placeholders in current version and route to configured local fallback adapter.
@@ -190,6 +223,7 @@ Note:
 - When claude link is healthy, bridge uses `claude -p --output-format json --resume <provider_session_id>` with delta handoff payload.
 - If resume fails, link is marked `BROKEN`, and bridge auto-falls back to a fresh provider session for that request.
 - Handoff payload now includes: `latest_user_request`, optional `delta_summary`, `recent_verbatim`, optional `pinned_facts/open_todos`, and `evidence_refs`.
+- Phase 5 retrieval is session-scoped keyword/BM25 based, with low-confidence neighbor expansion and `evidence_refs` binding.
 
 ## POST /chat
 

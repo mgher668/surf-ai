@@ -71,3 +71,4 @@ Progress update:
 - 2026-04-05: Phase 2 codex continuity (`SessionManager`, `provider_session_id`, `synced_seq`, resume fallback) completed.
 - 2026-04-05: Phase 3 claude continuity (`--session-id` create, `--resume` continue, `BROKEN` fallback) completed.
 - 2026-04-05: Phase 4 handoff memory layer (`session_memories`, adaptive handoff package, summary reuse) completed.
+- 2026-04-05: Phase 5 step 1 completed (`keywords/BM25 retrieval`, low-confidence expansion, context preview endpoint).

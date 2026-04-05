@@ -16,6 +16,7 @@
 - `codex resume` failures: bridge marks codex link as `BROKEN` and falls back to new codex session on next request.
 - `claude --resume` failures: bridge marks claude link as `BROKEN` and falls back to a new `--session-id` session.
 - `session_memories` not generated on handoff: verify delta size crossed summary trigger threshold (message count / char count).
+- Retrieval miss for old context: check `/sessions/:id/context?query=...` preview output (`topScore`, `items`, `expanded`) before tuning thresholds.
 - CORS blocked: ensure request origin is `chrome-extension://...` and bridge is on localhost.
 
 ## Extension Troubleshooting
