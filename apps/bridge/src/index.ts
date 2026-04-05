@@ -266,11 +266,12 @@ app.post("/sessions/:id/messages", async (request, reply) => {
     const output = sessionReply.output;
     const assistantMessage = store.appendMessage(userId, sessionId, "assistant", output);
 
-    if (sessionReply.resolvedAdapter === "codex" && sessionReply.codexLink) {
-      sessionManager.syncCodexLink(
+    if (sessionReply.agentLink) {
+      sessionManager.syncAgentLink(
         userId,
         sessionId,
-        sessionReply.codexLink.providerSessionId,
+        sessionReply.agentLink.provider,
+        sessionReply.agentLink.providerSessionId,
         assistantMessage.seq ?? userMessage.seq ?? 0
       );
     }

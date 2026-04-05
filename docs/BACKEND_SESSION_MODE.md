@@ -172,6 +172,11 @@
 2. 使用 `--resume` / `--session-id` 续聊。
 3. 与 codex 共用错误码与恢复流程。
 
+当前状态（2026-04-05）：
+
+- Claude Code 连续会话链路已落地（`--session-id` 创建 + `--resume` 续聊）。
+- 续聊失败自动标记 `BROKEN` 并回退新会话。
+
 验收：
 - codex / claude 在同一主会话中可互相切换接管。
 

@@ -14,6 +14,7 @@
 - `adapter_failed`: check local CLI availability (`codex`, `claude`).
 - `codex_session_id_not_found`: verify Codex session index file exists (`~/.codex/session_index.jsonl`) and bridge process has read permission.
 - `codex resume` failures: bridge marks codex link as `BROKEN` and falls back to new codex session on next request.
+- `claude --resume` failures: bridge marks claude link as `BROKEN` and falls back to a new `--session-id` session.
 - CORS blocked: ensure request origin is `chrome-extension://...` and bridge is on localhost.
 
 ## Extension Troubleshooting

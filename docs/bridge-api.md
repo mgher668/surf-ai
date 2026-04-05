@@ -184,9 +184,10 @@ No request body required.
 Note:
 
 - `openai-compatible` / `anthropic` / `gemini` adapter values are compatibility placeholders in current version and route to configured local fallback adapter.
-- For codex in backend session mode, bridge keeps `agent_session_links` (`provider_session_id`, `synced_seq`).
+- For codex/claude in backend session mode, bridge keeps `agent_session_links` (`provider_session_id`, `synced_seq`).
 - When codex link is healthy, bridge uses `codex exec resume <provider_session_id>` with delta handoff payload.
-- If codex resume fails, link is marked `BROKEN`, and bridge auto-falls back to a fresh codex session for that request.
+- When claude link is healthy, bridge uses `claude -p --output-format json --resume <provider_session_id>` with delta handoff payload.
+- If resume fails, link is marked `BROKEN`, and bridge auto-falls back to a fresh provider session for that request.
 
 ## POST /chat
 
