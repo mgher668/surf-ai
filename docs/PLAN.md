@@ -64,3 +64,8 @@ Confirmed execution choices:
 Implementation steps are tracked in:
 
 - `docs/BACKEND_SESSION_MODE.md`
+
+Progress update:
+
+- 2026-04-05: Phase 1 (backend session source-of-truth + extension cache sync) completed.
+- 2026-04-05: Phase 2 codex continuity (`SessionManager`, `provider_session_id`, `synced_seq`, resume fallback) completed.

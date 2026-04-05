@@ -12,6 +12,8 @@
 - `401 unauthorized`: verify `SURF_AI_TOKEN` and `x-surf-token` header.
 - `401 unauthorized_user` on session APIs: verify `x-surf-user-id` and per-user token configuration (`SURF_AI_USERS_JSON`).
 - `adapter_failed`: check local CLI availability (`codex`, `claude`).
+- `codex_session_id_not_found`: verify Codex session index file exists (`~/.codex/session_index.jsonl`) and bridge process has read permission.
+- `codex resume` failures: bridge marks codex link as `BROKEN` and falls back to new codex session on next request.
 - CORS blocked: ensure request origin is `chrome-extension://...` and bridge is on localhost.
 
 ## Extension Troubleshooting

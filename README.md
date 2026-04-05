@@ -70,6 +70,7 @@ pnpm dev:extension
 - Bridge capability negotiation (`/capabilities`) for dynamic adapter/TTS availability
 - Unified bounded task payload normalization before local agent invocation
 - Backend session APIs (`/sessions/*`) with SQLite source-of-truth (Phase 1)
+- Codex continuity in backend session mode (`provider_session_id` + `synced_seq` + resume fallback)
 - `MiniMax TTS` integration via bridge `/tts` (API key only in bridge env)
 - Local-Agent-first backend strategy (`codex` / `claude`), provider-mode adapters are compatibility placeholders in current version
 

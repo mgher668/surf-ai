@@ -24,6 +24,26 @@ interface MessageRow {
   created_at: number;
 }
 
+export interface AgentSessionLink {
+  sessionId: string;
+  provider: "codex" | "claude";
+  providerSessionId: string;
+  syncedSeq: number;
+  state: "READY" | "BROKEN" | "CLOSED";
+  lastError?: string;
+  updatedAt: number;
+}
+
+interface AgentSessionLinkRow {
+  session_id: string;
+  provider: AgentSessionLink["provider"];
+  provider_session_id: string;
+  synced_seq: number;
+  state: AgentSessionLink["state"];
+  last_error: string | null;
+  updated_at: number;
+}
+
 export class BridgeStore {
   private readonly db: DatabaseSync;
   private readonly defaultUserId: string;
@@ -169,11 +189,86 @@ export class BridgeStore {
     };
   }
 
+  public getAgentSessionLink(
+    userId: string,
+    sessionId: string,
+    provider: AgentSessionLink["provider"]
+  ): AgentSessionLink | null {
+    const row = this.db.prepare(
+      `SELECT l.session_id, l.provider, l.provider_session_id, l.synced_seq, l.state, l.last_error, l.updated_at
+       FROM agent_session_links l
+       JOIN sessions s ON s.id = l.session_id
+       WHERE l.session_id = ? AND l.provider = ? AND s.user_id = ?`
+    ).get(sessionId, provider, userId) as AgentSessionLinkRow | undefined;
+
+    return row ? mapAgentSessionLinkRow(row) : null;
+  }
+
+  public upsertAgentSessionLink(
+    userId: string,
+    link: Omit<AgentSessionLink, "updatedAt">
+  ): AgentSessionLink {
+    this.assertSessionOwnership(userId, link.sessionId);
+    const now = Date.now();
+    this.db.prepare(
+      `INSERT INTO agent_session_links (
+        session_id, provider, provider_session_id, synced_seq, state, last_error, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(session_id, provider) DO UPDATE SET
+        provider_session_id = excluded.provider_session_id,
+        synced_seq = excluded.synced_seq,
+        state = excluded.state,
+        last_error = excluded.last_error,
+        updated_at = excluded.updated_at`
+    ).run(
+      link.sessionId,
+      link.provider,
+      link.providerSessionId,
+      link.syncedSeq,
+      link.state,
+      link.lastError ?? null,
+      now
+    );
+
+    const row = this.getAgentSessionLink(userId, link.sessionId, link.provider);
+    if (!row) {
+      throw new Error("agent_session_link_upsert_failed");
+    }
+    return row;
+  }
+
+  public markAgentSessionLinkBroken(
+    userId: string,
+    sessionId: string,
+    provider: AgentSessionLink["provider"],
+    errorMessage: string
+  ): AgentSessionLink | null {
+    this.assertSessionOwnership(userId, sessionId);
+    const now = Date.now();
+    this.db.prepare(
+      `UPDATE agent_session_links
+       SET state = 'BROKEN', last_error = ?, updated_at = ?
+       WHERE session_id = ? AND provider = ?`
+    ).run(errorMessage.slice(0, 1_000), now, sessionId, provider);
+
+    return this.getAgentSessionLink(userId, sessionId, provider);
+  }
+
   private getNextSeq(userId: string, sessionId: string): number {
     const row = this.db.prepare(
       "SELECT COALESCE(MAX(seq), 0) AS seq FROM messages WHERE user_id = ? AND session_id = ?"
     ).get(userId, sessionId) as { seq: number };
     return row.seq + 1;
+  }
+
+  private assertSessionOwnership(userId: string, sessionId: string): void {
+    const row = this.db.prepare(
+      "SELECT id FROM sessions WHERE id = ? AND user_id = ?"
+    ).get(sessionId, userId) as { id: string } | undefined;
+
+    if (!row) {
+      throw new Error("session_not_found");
+    }
   }
 
   private migrate(): void {
@@ -262,4 +357,16 @@ function mapMessageRow(row: MessageRow): ChatMessage {
 
 function hashToken(token: string): string {
   return createHash("sha256").update(token).digest("hex");
+}
+
+function mapAgentSessionLinkRow(row: AgentSessionLinkRow): AgentSessionLink {
+  return {
+    sessionId: row.session_id,
+    provider: row.provider,
+    providerSessionId: row.provider_session_id,
+    syncedSeq: row.synced_seq,
+    state: row.state,
+    ...(row.last_error ? { lastError: row.last_error } : {}),
+    updatedAt: row.updated_at
+  };
 }

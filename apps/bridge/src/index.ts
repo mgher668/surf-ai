@@ -18,11 +18,13 @@ import type {
 import { readConfig } from "./core/config";
 import { AdapterRegistry } from "./core/registry";
 import { BridgeStore } from "./core/store";
+import { SessionManager } from "./core/session-manager";
 import { synthesizeWithMiniMax, TtsError } from "./tts/minimax";
 
 const config = readConfig();
 const registry = new AdapterRegistry();
 const store = new BridgeStore(config.dbPath, config.users);
+const sessionManager = new SessionManager(store, registry);
 
 const app = Fastify({ logger: true });
 
@@ -249,20 +251,30 @@ app.post("/sessions/:id/messages", async (request, reply) => {
   }
 
   const userMessage = store.appendMessage(userId, sessionId, "user", parsed.data.content);
-  const history = store.listAllMessagesBySession(userId, sessionId);
   const normalizedContext = normalizeChatContext(parsed.data.context);
 
-  const requestPayload: BridgeChatRequest = {
-    adapter: parsed.data.adapter,
-    sessionId,
-    messages: history.map((item) => ({ role: item.role, content: item.content })),
-    ...(parsed.data.model ? { model: parsed.data.model } : {}),
-    ...(normalizedContext ? { context: normalizedContext } : {})
-  };
-
   try {
-    const output = await registry.generate(requestPayload, config.defaultAdapter);
+    const sessionReply = await sessionManager.generateReply({
+      userId,
+      sessionId,
+      adapter: parsed.data.adapter,
+      fallbackAdapter: config.defaultAdapter,
+      ...(parsed.data.model ? { model: parsed.data.model } : {}),
+      ...(normalizedContext ? { context: normalizedContext } : {})
+    });
+
+    const output = sessionReply.output;
     const assistantMessage = store.appendMessage(userId, sessionId, "assistant", output);
+
+    if (sessionReply.resolvedAdapter === "codex" && sessionReply.codexLink) {
+      sessionManager.syncCodexLink(
+        userId,
+        sessionId,
+        sessionReply.codexLink.providerSessionId,
+        assistantMessage.seq ?? userMessage.seq ?? 0
+      );
+    }
+
     const latestSession = store.getSession(userId, sessionId);
     const response: BridgeSessionSendMessageResponse = {
       session: latestSession ?? session,

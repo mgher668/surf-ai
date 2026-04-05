@@ -158,6 +158,11 @@
 3. 后续消息使用 `codex exec resume <providerSessionId>`。
 4. session 失效自动重建并标记旧链接 `BROKEN`。
 
+当前状态（2026-04-05）：
+
+- `SessionManager` + codex `resume` + `BROKEN` 回退链路已落地。
+- handoff 目前为“delta 原文窗口”版本（摘要/检索增强留在后续 Phase）。
+
 验收：
 - 同一会话连续 10+ 轮，切换窗口后仍可续聊。
 

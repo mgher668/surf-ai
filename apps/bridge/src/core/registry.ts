@@ -62,10 +62,22 @@ export class AdapterRegistry {
     return [...native, ...compatibility];
   }
 
+  public resolveAdapterName(
+    adapter: BridgeChatRequest["adapter"],
+    fallback: LocalBridgeAdapter
+  ): LocalBridgeAdapter {
+    if (adapter === "openai-compatible" || adapter === "anthropic" || adapter === "gemini") {
+      return fallback;
+    }
+    return adapter;
+  }
+
+  public getAdapter(name: LocalBridgeAdapter): AgentAdapter | undefined {
+    return this.adapters[name];
+  }
+
   public async generate(request: BridgeChatRequest, fallback: "mock" | "codex" | "claude"): Promise<string> {
-    const adapterName = request.adapter === "openai-compatible" || request.adapter === "anthropic" || request.adapter === "gemini"
-      ? fallback
-      : request.adapter;
+    const adapterName = this.resolveAdapterName(request.adapter, fallback);
 
     const adapter = this.adapters[adapterName];
     if (!adapter) {
