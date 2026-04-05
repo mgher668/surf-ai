@@ -162,3 +162,24 @@ Error examples:
 ```
 
 MiniMax credentials must be configured in bridge env (`apps/bridge/.env.example`), not in extension UI.
+
+## Planned API (Backend Session Mode)
+
+For future shared backend deployment mode, session/message authority moves to bridge server.
+See `docs/BACKEND_SESSION_MODE.md` for full flow.
+
+Proposed endpoints:
+
+- `POST /sessions`
+- `GET /sessions`
+- `POST /sessions/:id/star`
+- `POST /sessions/:id/close`
+- `GET /sessions/:id/messages?afterSeq=...`
+- `POST /sessions/:id/messages`
+
+Codex/Claude continuity rule in this mode:
+
+- Always resume with explicit provider session id.
+- Never rely on `--last` in backend automation.
+- Maintain per-adapter sync cursor (`synced_seq`) for delta handoff.
+- Handoff uses adaptive context packaging (summary + dynamic recent window + evidence refs).

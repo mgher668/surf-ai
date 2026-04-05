@@ -40,3 +40,27 @@ When adding provider-mode LLM support, update this file first with:
 - credential strategy,
 - fallback policy,
 - security and data-boundary changes.
+
+## 6. New Direction (2026-04-05)
+
+For upcoming shared deployment mode (one backend + multiple extension clients), architecture direction is updated:
+
+1. Backend will become the source of truth for sessions/messages.
+2. Extension local storage/IndexedDB will act as cache/sync layer.
+3. Agent continuity will rely on explicit provider session IDs:
+   - Codex via `codex exec resume <session_id>`
+   - Claude Code via `--resume` or `--session-id`
+4. `--last` strategy is not used for server-side resume logic.
+5. User auth and per-user data isolation become mandatory in this mode.
+
+Confirmed execution choices:
+
+- Storage starts with SQLite.
+- Auth starts with multi-user account isolation.
+- Handoff is adaptive (summary + dynamic recent window), not fixed-length raw history.
+- Old-message retrieval is session-scoped and on-demand.
+- Summary generation uses one-shot calls to available local Agent.
+
+Implementation steps are tracked in:
+
+- `docs/BACKEND_SESSION_MODE.md`

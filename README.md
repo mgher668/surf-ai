@@ -21,6 +21,7 @@ packages/
 docs/
   PLAN.md
   bridge-api.md
+  BACKEND_SESSION_MODE.md
 evals/
   cases/
 scripts/
@@ -100,6 +101,7 @@ Defaults:
 - This repository is optimized for local self-hosted usage.
 - For production-grade security, enable token auth and keep bridge bound to localhost.
 - Planning baseline: `docs/PLAN.md`.
+- Shared backend session roadmap (IDLE policy, handoff, retrieval): `docs/BACKEND_SESSION_MODE.md`.
 - MiniMax is currently used for TTS only, not as chat LLM provider.
 - gstack (Codex) repo-local install guide: `docs/gstack-codex.md`.
 - `.agents/skills/gstack-*` entry symlinks are machine-local and ignored by git; run `pnpm gstack:setup` after clone.
