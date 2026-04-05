@@ -6,6 +6,7 @@ export interface BridgeConfig {
   users: BridgeUserAccount[];
   defaultAdapter: "mock" | "codex" | "claude";
   minimaxTts: MiniMaxTtsConfig;
+  security: BridgeSecurityConfig;
 }
 
 export interface BridgeUserAccount {
@@ -30,12 +31,26 @@ export interface MiniMaxTtsConfig {
   timeoutMs: number;
 }
 
+export interface BridgeSecurityConfig {
+  corsAllowedOriginPatterns: string[];
+  requireHttps: boolean;
+  trustProxy: boolean;
+  rateLimit: BridgeRateLimitConfig;
+}
+
+export interface BridgeRateLimitConfig {
+  enabled: boolean;
+  windowMs: number;
+  maxRequests: number;
+}
+
 export function readConfig(): BridgeConfig {
   const portRaw = process.env.SURF_AI_PORT ?? "43127";
   const parsedPort = Number(portRaw);
   const token = process.env.SURF_AI_TOKEN;
   const apiKey = process.env.SURF_AI_MINIMAX_API_KEY ?? process.env.MINIMAX_API_KEY;
   const users = readUsers(token);
+  const security = readSecurityConfig();
 
   const base: Omit<BridgeConfig, "token"> = {
     host: process.env.SURF_AI_HOST ?? "127.0.0.1",
@@ -43,6 +58,7 @@ export function readConfig(): BridgeConfig {
     dbPath: process.env.SURF_AI_DB_PATH ?? "./data/surf-ai.sqlite",
     users,
     defaultAdapter: normalizeAdapter(process.env.SURF_AI_DEFAULT_ADAPTER),
+    security,
     minimaxTts: {
       endpoint: process.env.SURF_AI_MINIMAX_TTS_ENDPOINT ?? "https://api.minimax.io/v1/t2a_v2",
       model: process.env.SURF_AI_MINIMAX_TTS_MODEL ?? "speech-02-hd",
@@ -149,6 +165,73 @@ function normalizeChannel(value: string | undefined): MiniMaxTtsConfig["channel"
     return 2;
   }
   return 1;
+}
+
+function readSecurityConfig(): BridgeSecurityConfig {
+  const corsAllowedOriginPatterns = parseCommaList(
+    process.env.SURF_AI_CORS_ALLOW_ORIGINS,
+    [
+      "chrome-extension://*",
+      "http://localhost:*",
+      "https://localhost:*",
+      "http://127.0.0.1:*",
+      "https://127.0.0.1:*"
+    ]
+  );
+
+  const rateLimitEnabled = parseBoolean(process.env.SURF_AI_RATE_LIMIT_ENABLED, true);
+  const rateLimitWindowMs = parseNumber(
+    process.env.SURF_AI_RATE_LIMIT_WINDOW_MS,
+    60_000,
+    1_000,
+    3_600_000
+  );
+  const rateLimitMaxRequests = parseNumber(
+    process.env.SURF_AI_RATE_LIMIT_MAX_REQUESTS,
+    120,
+    1,
+    10_000
+  );
+
+  return {
+    corsAllowedOriginPatterns,
+    requireHttps: parseBoolean(process.env.SURF_AI_REQUIRE_HTTPS, false),
+    trustProxy: parseBoolean(process.env.SURF_AI_TRUST_PROXY, false),
+    rateLimit: {
+      enabled: rateLimitEnabled,
+      windowMs: rateLimitWindowMs,
+      maxRequests: rateLimitMaxRequests
+    }
+  };
+}
+
+function parseCommaList(raw: string | undefined, fallback: string[]): string[] {
+  if (!raw) {
+    return fallback;
+  }
+
+  const parsed = raw
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+
+  return parsed.length > 0 ? parsed : fallback;
+}
+
+function parseBoolean(raw: string | undefined, fallback: boolean): boolean {
+  if (!raw) {
+    return fallback;
+  }
+
+  const normalized = raw.trim().toLowerCase();
+  if (["1", "true", "yes", "on"].includes(normalized)) {
+    return true;
+  }
+  if (["0", "false", "no", "off"].includes(normalized)) {
+    return false;
+  }
+
+  return fallback;
 }
 
 function parseNumber(

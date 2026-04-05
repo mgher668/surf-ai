@@ -9,6 +9,8 @@ coverage
 # Local runtime
 .env
 .env.*
+!.env.example
+!**/.env.example
 *.log
 
 # Tooling

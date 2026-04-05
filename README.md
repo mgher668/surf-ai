@@ -73,6 +73,7 @@ pnpm dev:extension
 - Codex/Claude continuity in backend session mode (`provider_session_id` + `synced_seq` + resume fallback)
 - Adaptive handoff memory layer (`session_memories`: summary/facts/todos) for cross-adapter continuity
 - On-demand history retrieval (keywords/BM25 + evidence refs) for old-context questions
+- Security baseline for production mode (CORS allowlist patterns + per-route rate limit + optional HTTPS-required gate)
 - `MiniMax TTS` integration via bridge `/tts` (API key only in bridge env)
 - Local-Agent-first backend strategy (`codex` / `claude`), provider-mode adapters are compatibility placeholders in current version
 
@@ -98,12 +99,15 @@ Defaults:
 - Host: `127.0.0.1`
 - Port: `43127`
 - Adapter: `mock`
+- CORS allowlist: `SURF_AI_CORS_ALLOW_ORIGINS` (wildcard patterns supported)
+- Rate limit: `SURF_AI_RATE_LIMIT_WINDOW_MS=60000`, `SURF_AI_RATE_LIMIT_MAX_REQUESTS=120`
+- Optional HTTPS gate: `SURF_AI_REQUIRE_HTTPS=1` (typically with reverse proxy + `SURF_AI_TRUST_PROXY=1`)
 - MiniMax endpoint: `https://api.minimax.io/v1/t2a_v2`
 
 ## Notes
 
 - This repository is optimized for local self-hosted usage.
-- For production-grade security, enable token auth and keep bridge bound to localhost.
+- For production-grade security, enable token auth, configure strict CORS allowlist, and run HTTPS (reverse proxy recommended).
 - Planning baseline: `docs/PLAN.md`.
 - Shared backend session roadmap (IDLE policy, handoff, retrieval): `docs/BACKEND_SESSION_MODE.md`.
 - MiniMax is currently used for TTS only, not as chat LLM provider.

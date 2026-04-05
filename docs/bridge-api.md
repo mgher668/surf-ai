@@ -7,6 +7,15 @@ Auth header (optional but recommended):
 - `x-surf-token: <token>`
 - `x-surf-user-id: <user-id>` (required when multi-user mode is enabled)
 
+Security defaults:
+
+- CORS allowlist patterns from `SURF_AI_CORS_ALLOW_ORIGINS` (wildcards allowed, default includes extension/localhost).
+- Fixed-window rate limit for write-heavy routes:
+  - `POST /chat`
+  - `POST /sessions/:id/messages`
+  - `POST /tts`
+- Optional HTTPS enforcement via `SURF_AI_REQUIRE_HTTPS=1` (typically with reverse proxy + `SURF_AI_TRUST_PROXY=1`).
+
 Current positioning:
 
 - Chat path is local-Agent-first (`codex` / `claude` / `mock`).
@@ -169,6 +178,16 @@ Response:
 }
 ```
 
+Possible error (`429`):
+
+```json
+{
+  "error": "rate_limited",
+  "bucket": "session-message",
+  "retryAfterMs": 2100
+}
+```
+
 ### POST /sessions/:id/star
 
 Request:
@@ -254,6 +273,16 @@ Response:
 }
 ```
 
+Possible error (`429`):
+
+```json
+{
+  "error": "rate_limited",
+  "bucket": "chat",
+  "retryAfterMs": 3210
+}
+```
+
 Notes:
 
 - Bridge will normalize incoming chat request into a unified internal `AgentTaskPayload` before calling local agents.
@@ -262,6 +291,11 @@ Notes:
   - per-message/user-request clip: 4,000 chars
   - selected text clip: 12,000 chars
   - full-page text clip: 24,000 chars
+- Rate-limit metadata headers:
+  - `x-ratelimit-limit`
+  - `x-ratelimit-remaining`
+  - `x-ratelimit-reset-ms`
+  - `retry-after` (only when blocked)
 
 ## POST /tts
 
@@ -304,6 +338,14 @@ Error examples:
 
 ```json
 { "error": "tts_timeout", "message": "MiniMax request timed out after 30000ms." }
+```
+
+```json
+{
+  "error": "rate_limited",
+  "bucket": "tts",
+  "retryAfterMs": 1500
+}
 ```
 
 MiniMax credentials must be configured in bridge env (`apps/bridge/.env.example`), not in extension UI.

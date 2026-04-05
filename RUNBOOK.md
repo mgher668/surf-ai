@@ -17,7 +17,9 @@
 - `claude --resume` failures: bridge marks claude link as `BROKEN` and falls back to a new `--session-id` session.
 - `session_memories` not generated on handoff: verify delta size crossed summary trigger threshold (message count / char count).
 - Retrieval miss for old context: check `/sessions/:id/context?query=...` preview output (`topScore`, `items`, `expanded`) before tuning thresholds.
-- CORS blocked: ensure request origin is `chrome-extension://...` and bridge is on localhost.
+- `https_required`: disable `SURF_AI_REQUIRE_HTTPS` for local HTTP, or put bridge behind TLS reverse proxy and set `SURF_AI_TRUST_PROXY=1`.
+- `rate_limited` (`429`): raise `SURF_AI_RATE_LIMIT_MAX_REQUESTS` or widen `SURF_AI_RATE_LIMIT_WINDOW_MS`.
+- CORS blocked: verify `SURF_AI_CORS_ALLOW_ORIGINS` includes your exact origin pattern.
 
 ## Extension Troubleshooting
 

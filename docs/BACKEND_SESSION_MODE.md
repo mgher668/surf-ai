@@ -221,6 +221,14 @@
 2. 审计日志与告警。
 3. 数据保留与删除策略。
 
+当前状态（2026-04-05）：
+
+- Phase 6 第一步已落地：
+  - CORS 白名单（`SURF_AI_CORS_ALLOW_ORIGINS`，支持通配符）
+  - 写接口限流（`/chat`、`/sessions/:id/messages`、`/tts`）
+  - 可选 HTTPS 强制（`SURF_AI_REQUIRE_HTTPS` + `SURF_AI_TRUST_PROXY`）
+- Phase 6 第二步/第三步（审计、保留策略）待实现。
+
 验收：
 - 多用户环境下不串数据，未授权访问返回 401/403。
 

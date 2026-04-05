@@ -19,14 +19,19 @@ import { readConfig } from "./core/config";
 import { AdapterRegistry } from "./core/registry";
 import { BridgeStore } from "./core/store";
 import { SessionManager } from "./core/session-manager";
+import { FixedWindowRateLimiter } from "./core/rate-limit";
 import { synthesizeWithMiniMax, TtsError } from "./tts/minimax";
 
 const config = readConfig();
 const registry = new AdapterRegistry();
 const store = new BridgeStore(config.dbPath, config.users);
 const sessionManager = new SessionManager(store, registry);
+const rateLimiter = new FixedWindowRateLimiter(config.security.rateLimit);
 
-const app = Fastify({ logger: true });
+const app = Fastify({
+  logger: true,
+  trustProxy: config.security.trustProxy
+});
 
 await app.register(cors, {
   origin(origin, callback) {
@@ -34,11 +39,20 @@ await app.register(cors, {
       callback(null, true);
       return;
     }
-    if (origin.startsWith("chrome-extension://") || origin.startsWith("http://localhost")) {
+    if (isOriginAllowed(origin, config.security.corsAllowedOriginPatterns)) {
       callback(null, true);
       return;
     }
     callback(new Error("Origin not allowed"), false);
+  }
+});
+
+app.addHook("onRequest", async (request, reply) => {
+  if (config.security.requireHttps && !isHttpsRequest(request.protocol, request.headers)) {
+    return reply.code(426).send({
+      error: "https_required",
+      message: "HTTPS is required. Use a TLS reverse proxy or set SURF_AI_REQUIRE_HTTPS=0."
+    });
   }
 });
 
@@ -51,6 +65,33 @@ app.addHook("onRequest", async (request, reply) => {
   if (token !== config.token) {
     return reply.code(401).send({ error: "unauthorized" });
   }
+});
+
+app.addHook("onRequest", async (request, reply) => {
+  const bucket = getRateLimitBucket(request.method, request.url);
+  if (!bucket) {
+    return;
+  }
+
+  const userHint = normalizeHeaderValue(request.headers["x-surf-user-id"]) ?? "-";
+  const key = `${bucket}:${request.ip}:${userHint}`;
+  const decision = rateLimiter.check(key);
+
+  reply.header("x-ratelimit-limit", String(decision.limit));
+  reply.header("x-ratelimit-remaining", String(decision.remaining));
+  reply.header("x-ratelimit-reset-ms", String(decision.resetAfterMs));
+
+  if (decision.allowed) {
+    return;
+  }
+
+  const retryAfterSeconds = Math.max(1, Math.ceil(decision.retryAfterMs / 1_000));
+  reply.header("retry-after", String(retryAfterSeconds));
+  return reply.code(429).send({
+    error: "rate_limited",
+    bucket,
+    retryAfterMs: decision.retryAfterMs
+  });
 });
 
 app.get("/health", async () => {
@@ -465,6 +506,65 @@ app.setErrorHandler((error, _request, reply) => {
   const message = error instanceof Error ? error.message : "unknown error";
   reply.code(500).send({ error: "internal_error", message });
 });
+
+function isOriginAllowed(origin: string, patterns: string[]): boolean {
+  if (patterns.length === 0) {
+    return false;
+  }
+
+  return patterns.some((pattern) => {
+    if (!pattern) {
+      return false;
+    }
+    if (!pattern.includes("*")) {
+      return origin === pattern;
+    }
+
+    const regex = new RegExp(`^${escapeRegex(pattern).replace(/\\\*/g, ".*")}$`, "i");
+    return regex.test(origin);
+  });
+}
+
+function escapeRegex(input: string): string {
+  return input.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function isHttpsRequest(protocol: string, headers: Record<string, unknown>): boolean {
+  if (protocol === "https") {
+    return true;
+  }
+
+  const forwarded =
+    normalizeHeaderValue(headers["x-forwarded-proto"]) ??
+    normalizeHeaderValue(headers["x-forwarded-protocol"]) ??
+    normalizeHeaderValue(headers["x-forwarded-scheme"]);
+
+  if (!forwarded) {
+    return false;
+  }
+
+  const primary = forwarded.split(",")[0]?.trim().toLowerCase();
+  return primary === "https";
+}
+
+function getRateLimitBucket(method: string, rawUrl: string): string | null {
+  const path = rawUrl.split("?")[0] ?? "/";
+  if (method !== "POST") {
+    return null;
+  }
+
+  if (path === "/chat") {
+    return "chat";
+  }
+  if (path === "/tts") {
+    return "tts";
+  }
+  if (/^\/sessions\/[^/]+\/messages$/.test(path)) {
+    return "session-message";
+  }
+
+  return null;
+}
 
 await app.listen({ host: config.host, port: config.port });
 app.log.info(`surf-ai bridge listening on http://${config.host}:${config.port}`);
