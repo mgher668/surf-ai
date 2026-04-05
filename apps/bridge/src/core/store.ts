@@ -64,6 +64,34 @@ interface SessionMemoryRow {
   updated_at: number;
 }
 
+export type AuditLevel = "INFO" | "WARN" | "ERROR";
+
+export interface AuditEvent {
+  id: string;
+  userId?: string;
+  eventType: string;
+  level: AuditLevel;
+  route?: string;
+  method?: string;
+  statusCode?: number;
+  ip?: string;
+  details?: Record<string, unknown>;
+  createdAt: number;
+}
+
+interface AuditEventRow {
+  id: string;
+  user_id: string | null;
+  event_type: string;
+  level: AuditLevel;
+  route: string | null;
+  method: string | null;
+  status_code: number | null;
+  ip: string | null;
+  details_json: string | null;
+  created_at: number;
+}
+
 export class BridgeStore {
   private readonly db: DatabaseSync;
   private readonly defaultUserId: string;
@@ -320,6 +348,71 @@ export class BridgeStore {
     return row;
   }
 
+  public appendAuditEvent(input: {
+    userId?: string | undefined;
+    eventType: string;
+    level: AuditLevel;
+    route?: string | undefined;
+    method?: string | undefined;
+    statusCode?: number | undefined;
+    ip?: string | undefined;
+    details?: Record<string, unknown> | undefined;
+  }): AuditEvent {
+    const id = randomUUID();
+    const now = Date.now();
+    const detailsJson = input.details ? JSON.stringify(input.details).slice(0, 8_000) : null;
+
+    this.db.prepare(
+      `INSERT INTO audit_events (
+        id, user_id, event_type, level, route, method, status_code, ip, details_json, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(
+      id,
+      input.userId ?? null,
+      input.eventType.slice(0, 120),
+      input.level,
+      input.route?.slice(0, 240) ?? null,
+      input.method?.slice(0, 20) ?? null,
+      input.statusCode ?? null,
+      input.ip?.slice(0, 120) ?? null,
+      detailsJson,
+      now
+    );
+
+    const row = this.db.prepare(
+      `SELECT id, user_id, event_type, level, route, method, status_code, ip, details_json, created_at
+       FROM audit_events
+       WHERE id = ?`
+    ).get(id) as AuditEventRow | undefined;
+
+    if (!row) {
+      throw new Error("audit_event_insert_failed");
+    }
+    return mapAuditEventRow(row);
+  }
+
+  public listAuditEvents(userId: string, limit: number, eventType?: string): AuditEvent[] {
+    if (eventType) {
+      const rows = this.db.prepare(
+        `SELECT id, user_id, event_type, level, route, method, status_code, ip, details_json, created_at
+         FROM audit_events
+         WHERE user_id = ? AND event_type = ?
+         ORDER BY created_at DESC
+         LIMIT ?`
+      ).all(userId, eventType, limit) as unknown as AuditEventRow[];
+      return rows.map(mapAuditEventRow);
+    }
+
+    const rows = this.db.prepare(
+      `SELECT id, user_id, event_type, level, route, method, status_code, ip, details_json, created_at
+       FROM audit_events
+       WHERE user_id = ?
+       ORDER BY created_at DESC
+       LIMIT ?`
+    ).all(userId, limit) as unknown as AuditEventRow[];
+    return rows.map(mapAuditEventRow);
+  }
+
   private getNextSeq(userId: string, sessionId: string): number {
     const row = this.db.prepare(
       "SELECT COALESCE(MAX(seq), 0) AS seq FROM messages WHERE user_id = ? AND session_id = ?"
@@ -396,6 +489,25 @@ export class BridgeStore {
         PRIMARY KEY(session_id, kind),
         FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE
       );
+
+      CREATE TABLE IF NOT EXISTS audit_events (
+        id TEXT PRIMARY KEY,
+        user_id TEXT,
+        event_type TEXT NOT NULL,
+        level TEXT NOT NULL,
+        route TEXT,
+        method TEXT,
+        status_code INTEGER,
+        ip TEXT,
+        details_json TEXT,
+        created_at INTEGER NOT NULL,
+        FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE SET NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_audit_events_user_created
+        ON audit_events(user_id, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_audit_events_type_created
+        ON audit_events(event_type, created_at DESC);
     `);
   }
 
@@ -457,4 +569,31 @@ function mapSessionMemoryRow(row: SessionMemoryRow): SessionMemory {
     sourceSeqEnd: row.source_seq_end,
     updatedAt: row.updated_at
   };
+}
+
+function mapAuditEventRow(row: AuditEventRow): AuditEvent {
+  return {
+    id: row.id,
+    ...(row.user_id ? { userId: row.user_id } : {}),
+    eventType: row.event_type,
+    level: row.level,
+    ...(row.route ? { route: row.route } : {}),
+    ...(row.method ? { method: row.method } : {}),
+    ...(typeof row.status_code === "number" ? { statusCode: row.status_code } : {}),
+    ...(row.ip ? { ip: row.ip } : {}),
+    ...(row.details_json ? { details: parseAuditDetails(row.details_json) } : {}),
+    createdAt: row.created_at
+  };
+}
+
+function parseAuditDetails(raw: string): Record<string, unknown> {
+  try {
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    if (parsed && typeof parsed === "object") {
+      return parsed;
+    }
+  } catch {
+    // ignore parse errors and return fallback
+  }
+  return { raw };
 }

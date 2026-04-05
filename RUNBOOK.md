@@ -20,6 +20,7 @@
 - `https_required`: disable `SURF_AI_REQUIRE_HTTPS` for local HTTP, or put bridge behind TLS reverse proxy and set `SURF_AI_TRUST_PROXY=1`.
 - `rate_limited` (`429`): raise `SURF_AI_RATE_LIMIT_MAX_REQUESTS` or widen `SURF_AI_RATE_LIMIT_WINDOW_MS`.
 - CORS blocked: verify `SURF_AI_CORS_ALLOW_ORIGINS` includes your exact origin pattern.
+- Need security timeline: query `GET /audit/events?limit=100` with your user headers.
 
 ## Extension Troubleshooting
 

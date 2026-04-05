@@ -73,3 +73,4 @@ Progress update:
 - 2026-04-05: Phase 4 handoff memory layer (`session_memories`, adaptive handoff package, summary reuse) completed.
 - 2026-04-05: Phase 5 step 1 completed (`keywords/BM25 retrieval`, low-confidence expansion, context preview endpoint).
 - 2026-04-05: Phase 6 step 1 completed (`CORS allowlist`, `write-route rate limit`, optional `HTTPS required` gate).
+- 2026-04-05: Phase 6 step 2 completed (`audit_events` persistence + security event logging + `/audit/events` query API).

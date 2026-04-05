@@ -49,6 +49,19 @@ await app.register(cors, {
 
 app.addHook("onRequest", async (request, reply) => {
   if (config.security.requireHttps && !isHttpsRequest(request.protocol, request.headers)) {
+    recordAuditEvent({
+      userId: resolveAuditUserId(request.headers),
+      eventType: "https_required_blocked",
+      level: "WARN",
+      route: getPathFromUrl(request.url),
+      method: request.method,
+      statusCode: 426,
+      ip: request.ip,
+      details: {
+        protocol: request.protocol,
+        forwardedProto: normalizeHeaderValue(request.headers["x-forwarded-proto"])
+      }
+    });
     return reply.code(426).send({
       error: "https_required",
       message: "HTTPS is required. Use a TLS reverse proxy or set SURF_AI_REQUIRE_HTTPS=0."
@@ -63,6 +76,15 @@ app.addHook("onRequest", async (request, reply) => {
 
   const token = request.headers["x-surf-token"];
   if (token !== config.token) {
+    recordAuditEvent({
+      userId: resolveAuditUserId(request.headers),
+      eventType: "token_auth_failed",
+      level: "WARN",
+      route: getPathFromUrl(request.url),
+      method: request.method,
+      statusCode: 401,
+      ip: request.ip
+    });
     return reply.code(401).send({ error: "unauthorized" });
   }
 });
@@ -87,6 +109,19 @@ app.addHook("onRequest", async (request, reply) => {
 
   const retryAfterSeconds = Math.max(1, Math.ceil(decision.retryAfterMs / 1_000));
   reply.header("retry-after", String(retryAfterSeconds));
+  recordAuditEvent({
+    userId: resolveAuditUserId(request.headers),
+    eventType: "rate_limited",
+    level: "WARN",
+    route: getPathFromUrl(request.url),
+    method: request.method,
+    statusCode: 429,
+    ip: request.ip,
+    details: {
+      bucket,
+      retryAfterMs: decision.retryAfterMs
+    }
+  });
   return reply.code(429).send({
     error: "rate_limited",
     bucket,
@@ -173,8 +208,13 @@ const previewContextQuerySchema = z.object({
   query: z.string().trim().min(1).max(800)
 });
 
+const listAuditEventsQuerySchema = z.object({
+  limit: z.coerce.number().int().min(1).max(200).optional(),
+  eventType: z.string().trim().min(1).max(120).optional()
+});
+
 app.get("/sessions", async (request, reply) => {
-  const userId = requireAuthedUserId(request.headers, reply);
+  const userId = requireAuthedUserId(request, reply);
   if (!userId) {
     return;
   }
@@ -186,7 +226,7 @@ app.get("/sessions", async (request, reply) => {
 });
 
 app.post("/sessions", async (request, reply) => {
-  const userId = requireAuthedUserId(request.headers, reply);
+  const userId = requireAuthedUserId(request, reply);
   if (!userId) {
     return;
   }
@@ -205,7 +245,7 @@ app.post("/sessions", async (request, reply) => {
 });
 
 app.post("/sessions/:id/star", async (request, reply) => {
-  const userId = requireAuthedUserId(request.headers, reply);
+  const userId = requireAuthedUserId(request, reply);
   if (!userId) {
     return;
   }
@@ -228,7 +268,7 @@ app.post("/sessions/:id/star", async (request, reply) => {
 });
 
 app.post("/sessions/:id/close", async (request, reply) => {
-  const userId = requireAuthedUserId(request.headers, reply);
+  const userId = requireAuthedUserId(request, reply);
   if (!userId) {
     return;
   }
@@ -244,7 +284,7 @@ app.post("/sessions/:id/close", async (request, reply) => {
 });
 
 app.get("/sessions/:id/messages", async (request, reply) => {
-  const userId = requireAuthedUserId(request.headers, reply);
+  const userId = requireAuthedUserId(request, reply);
   if (!userId) {
     return;
   }
@@ -273,7 +313,7 @@ app.get("/sessions/:id/messages", async (request, reply) => {
 });
 
 app.get("/sessions/:id/context", async (request, reply) => {
-  const userId = requireAuthedUserId(request.headers, reply);
+  const userId = requireAuthedUserId(request, reply);
   if (!userId) {
     return;
   }
@@ -295,8 +335,28 @@ app.get("/sessions/:id/context", async (request, reply) => {
   return { session, context };
 });
 
+app.get("/audit/events", async (request, reply) => {
+  const userId = requireAuthedUserId(request, reply);
+  if (!userId) {
+    return;
+  }
+
+  const parsed = listAuditEventsQuerySchema.safeParse(request.query);
+  if (!parsed.success) {
+    reply.code(400);
+    return { error: "invalid_request", details: parsed.error.flatten() };
+  }
+
+  const events = store.listAuditEvents(
+    userId,
+    parsed.data.limit ?? 100,
+    parsed.data.eventType
+  );
+  return { events };
+});
+
 app.post("/sessions/:id/messages", async (request, reply) => {
-  const userId = requireAuthedUserId(request.headers, reply);
+  const userId = requireAuthedUserId(request, reply);
   if (!userId) {
     return;
   }
@@ -353,6 +413,20 @@ app.post("/sessions/:id/messages", async (request, reply) => {
     return response;
   } catch (error) {
     request.log.error(error);
+    recordAuditEvent({
+      userId,
+      eventType: "session_adapter_failed",
+      level: "ERROR",
+      route: getPathFromUrl(request.url),
+      method: request.method,
+      statusCode: 500,
+      ip: request.ip,
+      details: {
+        sessionId,
+        adapter: parsed.data.adapter,
+        message: error instanceof Error ? error.message.slice(0, 500) : "unknown adapter error"
+      }
+    });
     reply.code(500);
     return {
       error: "adapter_failed",
@@ -392,6 +466,20 @@ app.post("/chat", async (request, reply) => {
     return response;
   } catch (error) {
     request.log.error(error);
+    recordAuditEvent({
+      userId: resolveAuditUserId(request.headers),
+      eventType: "chat_adapter_failed",
+      level: "ERROR",
+      route: getPathFromUrl(request.url),
+      method: request.method,
+      statusCode: 500,
+      ip: request.ip,
+      details: {
+        adapter: parsed.data.adapter,
+        sessionId: parsed.data.sessionId,
+        message: error instanceof Error ? error.message.slice(0, 500) : "unknown adapter error"
+      }
+    });
     reply.code(500);
     return {
       error: "adapter_failed",
@@ -424,6 +512,19 @@ app.post("/tts", async (request, reply) => {
     return response;
   } catch (error) {
     if (error instanceof TtsError) {
+      recordAuditEvent({
+        userId: resolveAuditUserId(request.headers),
+        eventType: "tts_failed",
+        level: "WARN",
+        route: getPathFromUrl(request.url),
+        method: request.method,
+        statusCode: error.statusCode,
+        ip: request.ip,
+        details: {
+          code: error.code,
+          message: error.message.slice(0, 500)
+        }
+      });
       request.log.warn(
         {
           code: error.code,
@@ -441,6 +542,18 @@ app.post("/tts", async (request, reply) => {
     }
 
     request.log.error(error, "Unexpected TTS error");
+    recordAuditEvent({
+      userId: resolveAuditUserId(request.headers),
+      eventType: "tts_internal_error",
+      level: "ERROR",
+      route: getPathFromUrl(request.url),
+      method: request.method,
+      statusCode: 500,
+      ip: request.ip,
+      details: {
+        message: error instanceof Error ? error.message.slice(0, 500) : "Unknown TTS error"
+      }
+    });
     reply.code(500);
     return {
       error: "tts_internal_error",
@@ -450,19 +563,43 @@ app.post("/tts", async (request, reply) => {
 });
 
 function requireAuthedUserId(
-  headers: Record<string, unknown>,
+  request: {
+    headers: Record<string, unknown>;
+    method: string;
+    url: string;
+    ip: string;
+  },
   reply: { code: (statusCode: number) => { send: (body: unknown) => unknown } }
 ): string | null {
-  const headerUserId = normalizeHeaderValue(headers["x-surf-user-id"]);
-  const headerToken = normalizeHeaderValue(headers["x-surf-token"]);
+  const headerUserId = normalizeHeaderValue(request.headers["x-surf-user-id"]);
+  const headerToken = normalizeHeaderValue(request.headers["x-surf-token"]);
 
   if (config.users.length > 1 && !headerUserId) {
+    recordAuditEvent({
+      eventType: "missing_user_id",
+      level: "WARN",
+      route: getPathFromUrl(request.url),
+      method: request.method,
+      statusCode: 401,
+      ip: request.ip
+    });
     reply.code(401).send({ error: "missing_user_id" });
     return null;
   }
 
   const userId = store.authenticateUser(headerUserId, headerToken);
   if (!userId) {
+    recordAuditEvent({
+      eventType: "unauthorized_user",
+      level: "WARN",
+      route: getPathFromUrl(request.url),
+      method: request.method,
+      statusCode: 401,
+      ip: request.ip,
+      details: {
+        providedUserId: headerUserId ?? null
+      }
+    });
     reply.code(401).send({ error: "unauthorized_user" });
     return null;
   }
@@ -548,7 +685,7 @@ function isHttpsRequest(protocol: string, headers: Record<string, unknown>): boo
 }
 
 function getRateLimitBucket(method: string, rawUrl: string): string | null {
-  const path = rawUrl.split("?")[0] ?? "/";
+  const path = getPathFromUrl(rawUrl);
   if (method !== "POST") {
     return null;
   }
@@ -564,6 +701,40 @@ function getRateLimitBucket(method: string, rawUrl: string): string | null {
   }
 
   return null;
+}
+
+function getPathFromUrl(rawUrl: string): string {
+  return rawUrl.split("?")[0] ?? "/";
+}
+
+function resolveAuditUserId(headers: Record<string, unknown>): string | undefined {
+  const headerUserId = normalizeHeaderValue(headers["x-surf-user-id"]);
+  const headerToken = normalizeHeaderValue(headers["x-surf-token"]);
+  const userId = store.authenticateUser(headerUserId, headerToken);
+  return userId ?? undefined;
+}
+
+function recordAuditEvent(input: {
+  userId?: string | undefined;
+  eventType: string;
+  level: "INFO" | "WARN" | "ERROR";
+  route?: string | undefined;
+  method?: string | undefined;
+  statusCode?: number | undefined;
+  ip?: string | undefined;
+  details?: Record<string, unknown> | undefined;
+}): void {
+  try {
+    store.appendAuditEvent(input);
+  } catch (error) {
+    app.log.warn(
+      {
+        eventType: input.eventType,
+        error: error instanceof Error ? error.message : "unknown error"
+      },
+      "Failed to persist audit event"
+    );
+  }
 }
 
 await app.listen({ host: config.host, port: config.port });

@@ -227,7 +227,11 @@
   - CORS 白名单（`SURF_AI_CORS_ALLOW_ORIGINS`，支持通配符）
   - 写接口限流（`/chat`、`/sessions/:id/messages`、`/tts`）
   - 可选 HTTPS 强制（`SURF_AI_REQUIRE_HTTPS` + `SURF_AI_TRUST_PROXY`）
-- Phase 6 第二步/第三步（审计、保留策略）待实现。
+- Phase 6 第二步已落地（最小审计版）：
+  - `audit_events` 持久化表
+  - 安全关键事件入库（`rate_limited`、`https_required_blocked`、`unauthorized_user` 等）
+  - 查询接口：`GET /audit/events?limit=...&eventType=...`
+- Phase 6 第三步（数据保留与删除策略）待实现。
 
 验收：
 - 多用户环境下不串数据，未授权访问返回 401/403。

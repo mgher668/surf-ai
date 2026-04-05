@@ -74,6 +74,7 @@ pnpm dev:extension
 - Adaptive handoff memory layer (`session_memories`: summary/facts/todos) for cross-adapter continuity
 - On-demand history retrieval (keywords/BM25 + evidence refs) for old-context questions
 - Security baseline for production mode (CORS allowlist patterns + per-route rate limit + optional HTTPS-required gate)
+- Audit event persistence (`audit_events`) + query endpoint (`GET /audit/events`)
 - `MiniMax TTS` integration via bridge `/tts` (API key only in bridge env)
 - Local-Agent-first backend strategy (`codex` / `claude`), provider-mode adapters are compatibility placeholders in current version
 

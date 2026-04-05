@@ -15,6 +15,7 @@ Security defaults:
   - `POST /sessions/:id/messages`
   - `POST /tts`
 - Optional HTTPS enforcement via `SURF_AI_REQUIRE_HTTPS=1` (typically with reverse proxy + `SURF_AI_TRUST_PROXY=1`).
+- Security events are persisted into `audit_events` and queryable via `GET /audit/events`.
 
 Current positioning:
 
@@ -94,6 +95,34 @@ Headers:
 
 - `x-surf-user-id: <user-id>`
 - `x-surf-token: <token>` (if user account has token configured)
+
+### GET /audit/events?limit=100&eventType=rate_limited
+
+Security/audit timeline query (user-scoped).
+
+Response:
+
+```json
+{
+  "events": [
+    {
+      "id": "uuid",
+      "userId": "local",
+      "eventType": "rate_limited",
+      "level": "WARN",
+      "route": "/chat",
+      "method": "POST",
+      "statusCode": 429,
+      "ip": "127.0.0.1",
+      "details": {
+        "bucket": "chat",
+        "retryAfterMs": 59984
+      },
+      "createdAt": 1775369895657
+    }
+  ]
+}
+```
 
 ### POST /sessions
 
