@@ -44,6 +44,26 @@ interface AgentSessionLinkRow {
   updated_at: number;
 }
 
+export type SessionMemoryKind = "summary" | "facts" | "todos";
+
+export interface SessionMemory {
+  sessionId: string;
+  kind: SessionMemoryKind;
+  content: string;
+  sourceSeqStart: number;
+  sourceSeqEnd: number;
+  updatedAt: number;
+}
+
+interface SessionMemoryRow {
+  session_id: string;
+  kind: SessionMemoryKind;
+  content: string;
+  source_seq_start: number;
+  source_seq_end: number;
+  updated_at: number;
+}
+
 export class BridgeStore {
   private readonly db: DatabaseSync;
   private readonly defaultUserId: string;
@@ -254,6 +274,52 @@ export class BridgeStore {
     return this.getAgentSessionLink(userId, sessionId, provider);
   }
 
+  public getSessionMemory(
+    userId: string,
+    sessionId: string,
+    kind: SessionMemoryKind
+  ): SessionMemory | null {
+    const row = this.db.prepare(
+      `SELECT m.session_id, m.kind, m.content, m.source_seq_start, m.source_seq_end, m.updated_at
+       FROM session_memories m
+       JOIN sessions s ON s.id = m.session_id
+       WHERE m.session_id = ? AND m.kind = ? AND s.user_id = ?`
+    ).get(sessionId, kind, userId) as SessionMemoryRow | undefined;
+
+    return row ? mapSessionMemoryRow(row) : null;
+  }
+
+  public upsertSessionMemory(
+    userId: string,
+    input: Omit<SessionMemory, "updatedAt">
+  ): SessionMemory {
+    this.assertSessionOwnership(userId, input.sessionId);
+    const now = Date.now();
+    this.db.prepare(
+      `INSERT INTO session_memories (
+        session_id, kind, content, source_seq_start, source_seq_end, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?)
+      ON CONFLICT(session_id, kind) DO UPDATE SET
+        content = excluded.content,
+        source_seq_start = excluded.source_seq_start,
+        source_seq_end = excluded.source_seq_end,
+        updated_at = excluded.updated_at`
+    ).run(
+      input.sessionId,
+      input.kind,
+      input.content,
+      input.sourceSeqStart,
+      input.sourceSeqEnd,
+      now
+    );
+
+    const row = this.getSessionMemory(userId, input.sessionId, input.kind);
+    if (!row) {
+      throw new Error("session_memory_upsert_failed");
+    }
+    return row;
+  }
+
   private getNextSeq(userId: string, sessionId: string): number {
     const row = this.db.prepare(
       "SELECT COALESCE(MAX(seq), 0) AS seq FROM messages WHERE user_id = ? AND session_id = ?"
@@ -319,6 +385,17 @@ export class BridgeStore {
         PRIMARY KEY(session_id, provider),
         FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE
       );
+
+      CREATE TABLE IF NOT EXISTS session_memories (
+        session_id TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        content TEXT NOT NULL,
+        source_seq_start INTEGER NOT NULL,
+        source_seq_end INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY(session_id, kind),
+        FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE
+      );
     `);
   }
 
@@ -367,6 +444,17 @@ function mapAgentSessionLinkRow(row: AgentSessionLinkRow): AgentSessionLink {
     syncedSeq: row.synced_seq,
     state: row.state,
     ...(row.last_error ? { lastError: row.last_error } : {}),
+    updatedAt: row.updated_at
+  };
+}
+
+function mapSessionMemoryRow(row: SessionMemoryRow): SessionMemory {
+  return {
+    sessionId: row.session_id,
+    kind: row.kind,
+    content: row.content,
+    sourceSeqStart: row.source_seq_start,
+    sourceSeqEnd: row.source_seq_end,
     updatedAt: row.updated_at
   };
 }

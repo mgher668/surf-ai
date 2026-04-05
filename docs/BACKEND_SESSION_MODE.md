@@ -186,6 +186,17 @@
 2. 实现自适应 handoff 打包。
 3. 切换 adapter 时做增量同步并更新 `synced_seq`。
 
+当前状态（2026-04-05）：
+
+- `session_memories` 已落地（`summary` / `facts` / `todos`）。
+- resume handoff 已升级为自适应结构：
+  - `latest_user_request`
+  - 可选 `delta_summary`
+  - 动态 `recent_verbatim`（窗口与预算控制）
+  - 可选 `pinned_facts` / `open_todos`
+  - `evidence_refs`
+- 摘要由当前可用本地 Agent 一次性生成并落库复用（小增量不强制摘要）。
+
 验收：
 - 多次切换 adapter 后，对话上下文保持连续且无明显遗失。
 

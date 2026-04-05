@@ -185,9 +185,11 @@ Note:
 
 - `openai-compatible` / `anthropic` / `gemini` adapter values are compatibility placeholders in current version and route to configured local fallback adapter.
 - For codex/claude in backend session mode, bridge keeps `agent_session_links` (`provider_session_id`, `synced_seq`).
+- Bridge also keeps `session_memories` (`summary` / `facts` / `todos`) for adaptive handoff packaging.
 - When codex link is healthy, bridge uses `codex exec resume <provider_session_id>` with delta handoff payload.
 - When claude link is healthy, bridge uses `claude -p --output-format json --resume <provider_session_id>` with delta handoff payload.
 - If resume fails, link is marked `BROKEN`, and bridge auto-falls back to a fresh provider session for that request.
+- Handoff payload now includes: `latest_user_request`, optional `delta_summary`, `recent_verbatim`, optional `pinned_facts/open_todos`, and `evidence_refs`.
 
 ## POST /chat
 
