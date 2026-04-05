@@ -20,7 +20,7 @@ import type {
   UiToExtensionMessage,
   UiToExtensionResponse
 } from "@surf-ai/shared";
-import { listMessagesBySession, saveMessage } from "../../lib/db";
+import { listMessagesBySession, saveMessage, saveMessages } from "../../lib/db";
 import {
   getActiveConnectionId,
   getConnections,
@@ -193,6 +193,7 @@ export function App(): JSX.Element {
       const backendSessions = await fetchSessionsFromBackend(resolvedActiveConnection);
       if (backendSessions) {
         setSessionMode("backend");
+        await setSessions(backendSessions);
         setSessionsState(backendSessions);
         setActiveSessionId((current) => current ?? backendSessions[0]?.id);
         return;
@@ -296,6 +297,7 @@ export function App(): JSX.Element {
         throw new Error(`messages_request_failed:${response.status}`);
       }
       setMessages(response.data.messages);
+      await saveMessages(response.data.messages);
     } catch (error) {
       setMessages([
         {
@@ -379,8 +381,11 @@ export function App(): JSX.Element {
     if (sessionMode === "backend" && activeConnection) {
       const backendSession = await createSessionOnBackend(activeConnection, `Chat ${sessions.length + 1}`);
       if (backendSession) {
-        const next = [backendSession, ...sessions];
-        setSessionsState(next);
+        setSessionsState((prev) => {
+          const next = [backendSession, ...prev];
+          void setSessions(next);
+          return next;
+        });
         setActiveSessionId(backendSession.id);
         return;
       }
@@ -401,7 +406,11 @@ export function App(): JSX.Element {
       }
       const updated = await updateSessionStarOnBackend(activeConnection, id, !current.starred);
       if (updated) {
-        setSessionsState((prev) => prev.map((item) => (item.id === id ? updated : item)));
+        setSessionsState((prev) => {
+          const next = prev.map((item) => (item.id === id ? updated : item));
+          void setSessions(next);
+          return next;
+        });
       }
       return;
     }
@@ -515,9 +524,14 @@ export function App(): JSX.Element {
       const payload = (await response.json()) as BridgeSessionSendMessageResponse;
       setInput("");
       setMessages((prev) => [...prev, payload.userMessage, payload.assistantMessage]);
-      setSessionsState((prev) =>
-        prev.map((item) => (item.id === payload.session.id ? payload.session : item))
-      );
+      await saveMessages([payload.userMessage, payload.assistantMessage]);
+      setSessionsState((prev) => {
+        const next = prev.map((item) =>
+          item.id === payload.session.id ? payload.session : item
+        );
+        void setSessions(next);
+        return next;
+      });
     } catch (error) {
       const errMessage: ChatMessage = {
         id: crypto.randomUUID(),

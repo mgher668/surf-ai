@@ -38,6 +38,23 @@ export async function saveMessage(message: ChatMessage): Promise<void> {
   });
 }
 
+export async function saveMessages(messages: ChatMessage[]): Promise<void> {
+  if (messages.length === 0) {
+    return;
+  }
+
+  const db = await getDb();
+  await new Promise<void>((resolve, reject) => {
+    const tx = db.transaction(STORE_MESSAGES, "readwrite");
+    const store = tx.objectStore(STORE_MESSAGES);
+    for (const message of messages) {
+      store.put(message);
+    }
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error ?? new Error("Failed to save messages"));
+  });
+}
+
 export async function listMessagesBySession(sessionId: string): Promise<ChatMessage[]> {
   const db = await getDb();
 
