@@ -3,6 +3,7 @@ import type {
   PageContentPayload,
   QuickAction,
   SelectionPayload,
+  UiStatusBadgeLevel,
   UiToExtensionMessage,
   UiToExtensionResponse
 } from "@surf-ai/shared";
@@ -146,6 +147,20 @@ chrome.runtime.onMessage.addListener((rawMessage, sender, sendResponse) => {
       });
     return true;
   }
+
+  if (message.type === "set_status_badge") {
+    void setStatusBadge(message.level, message.text)
+      .then(() => {
+        sendResponse({ ok: true } satisfies UiToExtensionResponse);
+      })
+      .catch((error: unknown) => {
+        sendResponse({
+          ok: false,
+          error: error instanceof Error ? error.message : "set_badge_failed"
+        } satisfies UiToExtensionResponse);
+      });
+    return true;
+  }
 });
 
 function mapMenuIdToAction(menuId: string): QuickAction | null {
@@ -263,4 +278,16 @@ async function extractPageContentFromTab(tabId: number, maxChars: number): Promi
     throw new Error("page_content_empty_or_unavailable");
   }
   return payload;
+}
+
+async function setStatusBadge(level: UiStatusBadgeLevel, text?: string): Promise<void> {
+  if (level === "clear") {
+    await chrome.action.setBadgeText({ text: "" });
+    return;
+  }
+
+  await chrome.action.setBadgeText({ text: text?.trim().slice(0, 4) || "!" });
+  await chrome.action.setBadgeBackgroundColor({
+    color: level === "error" ? "#B91C1C" : "#B45309"
+  });
 }

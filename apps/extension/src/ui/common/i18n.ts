@@ -24,7 +24,12 @@ const dictionary = {
     extractPage: "提取当前页",
     extractingPage: "提取中...",
     pageContextReady: "已附加页面全文上下文",
-    includePageContext: "发送时附带页面全文"
+    includePageContext: "发送时附带页面全文",
+    alertBackendUnreachable: "后端不可达，请检查 bridge 是否已启动",
+    alertAuthFailed: "鉴权失败，请检查 User ID 或 Token",
+    alertRateLimited: "请求过于频繁，请稍后重试",
+    alertBridgeRequestFailed: "后端请求失败",
+    recentAuditEvents: "最近安全事件"
   },
   "en-US": {
     appTitle: "Surf AI",
@@ -49,7 +54,12 @@ const dictionary = {
     extractPage: "Extract Page",
     extractingPage: "Extracting...",
     pageContextReady: "Page full-text context attached",
-    includePageContext: "Include full page text on send"
+    includePageContext: "Include full page text on send",
+    alertBackendUnreachable: "Bridge is unreachable. Check whether the backend is running.",
+    alertAuthFailed: "Authentication failed. Check User ID or token.",
+    alertRateLimited: "Rate limited. Please retry later.",
+    alertBridgeRequestFailed: "Bridge request failed",
+    recentAuditEvents: "Recent security events"
   }
 } as const;
 

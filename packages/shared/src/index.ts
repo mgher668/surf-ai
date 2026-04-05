@@ -83,6 +83,11 @@ export type UiToExtensionMessage =
   | {
       type: "extract_active_tab_content";
       maxChars?: number;
+    }
+  | {
+      type: "set_status_badge";
+      level: UiStatusBadgeLevel;
+      text?: string;
     };
 
 export interface UiToExtensionResponse {
@@ -203,6 +208,27 @@ export interface BridgeTtsResponse {
   provider?: "minimax";
   traceId?: string;
 }
+
+export type AuditLevel = "INFO" | "WARN" | "ERROR";
+
+export interface BridgeAuditEvent {
+  id: string;
+  userId?: string;
+  eventType: string;
+  level: AuditLevel;
+  route?: string;
+  method?: string;
+  statusCode?: number;
+  ip?: string;
+  details?: Record<string, unknown>;
+  createdAt: number;
+}
+
+export interface BridgeAuditEventsResponse {
+  events: BridgeAuditEvent[];
+}
+
+export type UiStatusBadgeLevel = "clear" | "warn" | "error";
 
 export const STORAGE_KEYS = {
   connections: "surf.connections",

@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState, type CSSProperties } from "react";
 import { STORAGE_KEYS } from "@surf-ai/shared";
 import type {
+  BridgeAuditEvent,
+  BridgeAuditEventsResponse,
   BridgeCapabilitiesResponse,
   BridgeChatRequest,
   BridgeConnection,
@@ -18,6 +20,7 @@ import type {
   PageContentPayload,
   QuickAction,
   SelectionPayload,
+  UiStatusBadgeLevel,
   UiToExtensionMessage,
   UiToExtensionResponse
 } from "@surf-ai/shared";
@@ -43,6 +46,20 @@ const ACTION_PROMPT_PREFIX: Record<QuickAction, string> = {
 const FALLBACK_ADAPTER_OPTIONS: BridgeModel["adapter"][] = ["mock", "codex", "claude"];
 const BACKEND_DRAFT_SESSION_ID = "__backend_draft__";
 type SessionMode = "backend" | "local";
+type RuntimeAlertLevel = "warn" | "error";
+type RuntimeAlertCode =
+  | "backend_unreachable"
+  | "auth_failed"
+  | "rate_limited"
+  | "bridge_request_failed";
+
+interface RuntimeAlert {
+  code: RuntimeAlertCode;
+  level: RuntimeAlertLevel;
+  message: string;
+  statusCode?: number;
+  updatedAt: number;
+}
 
 export function App(): JSX.Element {
   const locale = resolveLocale(navigator.language);
@@ -57,6 +74,8 @@ export function App(): JSX.Element {
   const [adapter, setAdapter] = useState<BridgeChatRequest["adapter"]>("mock");
   const [capabilities, setCapabilities] = useState<BridgeCapabilitiesResponse | undefined>();
   const [capabilitiesError, setCapabilitiesError] = useState<string | undefined>();
+  const [runtimeAlert, setRuntimeAlert] = useState<RuntimeAlert | undefined>();
+  const [recentAuditEvents, setRecentAuditEvents] = useState<BridgeAuditEvent[]>([]);
   const [pending, setPending] = useState(false);
   const [extractingPage, setExtractingPage] = useState(false);
   const [extractError, setExtractError] = useState<string | undefined>();
@@ -91,6 +110,36 @@ export function App(): JSX.Element {
     }
     return capabilities.tts.minimax.enabled && capabilities.tts.minimax.configured;
   }, [capabilities]);
+
+  const reportRuntimeAlert = (
+    code: RuntimeAlertCode,
+    level: RuntimeAlertLevel,
+    message: string,
+    statusCode?: number
+  ): void => {
+    setRuntimeAlert((previous) => {
+      if (
+        previous &&
+        previous.code === code &&
+        previous.level === level &&
+        previous.message === message &&
+        previous.statusCode === statusCode
+      ) {
+        return previous;
+      }
+      return {
+        code,
+        level,
+        message,
+        ...(typeof statusCode === "number" ? { statusCode } : {}),
+        updatedAt: Date.now()
+      };
+    });
+  };
+
+  const clearRuntimeAlert = (): void => {
+    setRuntimeAlert(undefined);
+  };
 
   useEffect(() => {
     void bootstrap();
@@ -195,6 +244,51 @@ export function App(): JSX.Element {
   useEffect(() => {
     void bootstrapCapabilities(activeConnection);
   }, [activeConnection]);
+
+  useEffect(() => {
+    const level: UiStatusBadgeLevel =
+      runtimeAlert?.level === "error"
+        ? "error"
+        : runtimeAlert?.level === "warn"
+          ? "warn"
+          : "clear";
+
+    void chrome.runtime
+      .sendMessage({
+        type: "set_status_badge",
+        level,
+        ...(level !== "clear" ? { text: "!" } : {})
+      } satisfies UiToExtensionMessage)
+      .catch(() => undefined);
+  }, [runtimeAlert?.code, runtimeAlert?.level]);
+
+  useEffect(() => {
+    if (!runtimeAlert || !activeConnection) {
+      setRecentAuditEvents([]);
+      return;
+    }
+
+    let cancelled = false;
+
+    const load = async (): Promise<void> => {
+      const response = await fetchBridgeJson<BridgeAuditEventsResponse>(
+        activeConnection,
+        "/audit/events?limit=5"
+      ).catch(() => ({ ok: false as const, status: 0 }));
+
+      if (cancelled || !response.ok) {
+        return;
+      }
+
+      setRecentAuditEvents(response.data.events);
+    };
+
+    void load();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [runtimeAlert?.code, activeConnection?.id, activeConnection?.baseUrl, activeConnection?.userId, activeConnection?.token]);
 
   useEffect(() => {
     if (sessionMode !== "backend" || !activeConnection) {
@@ -339,7 +433,21 @@ export function App(): JSX.Element {
       if (capabilityResponse.ok) {
         setCapabilities(capabilityResponse.data);
         setCapabilitiesError(undefined);
+        clearRuntimeAlert();
         return;
+      }
+
+      if (capabilityResponse.status === 401 || capabilityResponse.status === 403) {
+        reportRuntimeAlert("auth_failed", "error", t(locale, "alertAuthFailed"), capabilityResponse.status);
+      } else if (capabilityResponse.status === 429) {
+        reportRuntimeAlert("rate_limited", "warn", t(locale, "alertRateLimited"), capabilityResponse.status);
+      } else {
+        reportRuntimeAlert(
+          "bridge_request_failed",
+          "warn",
+          `${t(locale, "alertBridgeRequestFailed")} (${capabilityResponse.status})`,
+          capabilityResponse.status
+        );
       }
 
       if (capabilityResponse.status !== 404) {
@@ -379,9 +487,11 @@ export function App(): JSX.Element {
         }
       });
       setCapabilitiesError(undefined);
+      clearRuntimeAlert();
     } catch (error) {
       setCapabilities(undefined);
       setCapabilitiesError(error instanceof Error ? error.message : "capabilities_unavailable");
+      reportRuntimeAlert("backend_unreachable", "error", t(locale, "alertBackendUnreachable"));
     }
   }
 
@@ -391,13 +501,25 @@ export function App(): JSX.Element {
       try {
         const response = await fetchBridgeJson<BridgeSessionListResponse>(connection, "/sessions");
         if (response.ok) {
+          clearRuntimeAlert();
           return response.data.sessions;
         }
         if (response.status === 401 || response.status === 403) {
+          reportRuntimeAlert("auth_failed", "error", t(locale, "alertAuthFailed"), response.status);
           return null;
         }
+        if (response.status === 429) {
+          reportRuntimeAlert("rate_limited", "warn", t(locale, "alertRateLimited"), response.status);
+        } else {
+          reportRuntimeAlert(
+            "bridge_request_failed",
+            "warn",
+            `${t(locale, "alertBridgeRequestFailed")} (${response.status})`,
+            response.status
+          );
+        }
       } catch {
-        // retry below
+        reportRuntimeAlert("backend_unreachable", "error", t(locale, "alertBackendUnreachable"));
       }
 
       if (attempt < maxAttempts - 1) {
@@ -414,11 +536,27 @@ export function App(): JSX.Element {
         `/sessions/${sessionId}/messages?afterSeq=0&limit=500`
       );
       if (!response.ok) {
+        if (response.status === 401 || response.status === 403) {
+          reportRuntimeAlert("auth_failed", "error", t(locale, "alertAuthFailed"), response.status);
+        } else if (response.status === 429) {
+          reportRuntimeAlert("rate_limited", "warn", t(locale, "alertRateLimited"), response.status);
+        } else {
+          reportRuntimeAlert(
+            "bridge_request_failed",
+            "warn",
+            `${t(locale, "alertBridgeRequestFailed")} (${response.status})`,
+            response.status
+          );
+        }
         throw new Error(`messages_request_failed:${response.status}`);
       }
       setMessages(response.data.messages);
       await saveMessages(response.data.messages);
+      clearRuntimeAlert();
     } catch (error) {
+      if (error instanceof TypeError) {
+        reportRuntimeAlert("backend_unreachable", "error", t(locale, "alertBackendUnreachable"));
+      }
       setMessages([
         {
           id: crypto.randomUUID(),
@@ -439,11 +577,25 @@ export function App(): JSX.Element {
         body: JSON.stringify({ title })
       });
       if (!response.ok) {
+        if (response.status === 401 || response.status === 403) {
+          reportRuntimeAlert("auth_failed", "error", t(locale, "alertAuthFailed"), response.status);
+        } else if (response.status === 429) {
+          reportRuntimeAlert("rate_limited", "warn", t(locale, "alertRateLimited"), response.status);
+        } else {
+          reportRuntimeAlert(
+            "bridge_request_failed",
+            "warn",
+            `${t(locale, "alertBridgeRequestFailed")} (${response.status})`,
+            response.status
+          );
+        }
         return null;
       }
       const payload = (await response.json()) as BridgeSessionCreateResponse;
+      clearRuntimeAlert();
       return payload.session;
     } catch {
+      reportRuntimeAlert("backend_unreachable", "error", t(locale, "alertBackendUnreachable"));
       return null;
     }
   }
@@ -461,11 +613,18 @@ export function App(): JSX.Element {
         body: JSON.stringify(body)
       });
       if (!response.ok) {
+        if (response.status === 401 || response.status === 403) {
+          reportRuntimeAlert("auth_failed", "error", t(locale, "alertAuthFailed"), response.status);
+        } else if (response.status === 429) {
+          reportRuntimeAlert("rate_limited", "warn", t(locale, "alertRateLimited"), response.status);
+        }
         return null;
       }
       const payload = (await response.json()) as { session: ChatSession };
+      clearRuntimeAlert();
       return payload.session;
     } catch {
+      reportRuntimeAlert("backend_unreachable", "error", t(locale, "alertBackendUnreachable"));
       return null;
     }
   }
@@ -476,8 +635,18 @@ export function App(): JSX.Element {
         method: "DELETE",
         headers: buildBridgeHeaders(connection)
       });
-      return response.ok;
+      if (response.ok) {
+        clearRuntimeAlert();
+        return true;
+      }
+      if (response.status === 401 || response.status === 403) {
+        reportRuntimeAlert("auth_failed", "error", t(locale, "alertAuthFailed"), response.status);
+      } else if (response.status === 429) {
+        reportRuntimeAlert("rate_limited", "warn", t(locale, "alertRateLimited"), response.status);
+      }
+      return false;
     } catch {
+      reportRuntimeAlert("backend_unreachable", "error", t(locale, "alertBackendUnreachable"));
       return false;
     }
   }
@@ -694,11 +863,24 @@ export function App(): JSX.Element {
       });
 
       if (!response.ok) {
+        if (response.status === 401 || response.status === 403) {
+          reportRuntimeAlert("auth_failed", "error", t(locale, "alertAuthFailed"), response.status);
+        } else if (response.status === 429) {
+          reportRuntimeAlert("rate_limited", "warn", t(locale, "alertRateLimited"), response.status);
+        } else {
+          reportRuntimeAlert(
+            "bridge_request_failed",
+            "warn",
+            `${t(locale, "alertBridgeRequestFailed")} (${response.status})`,
+            response.status
+          );
+        }
         const failedText = await response.text();
         throw new Error(`Bridge request failed: ${response.status} ${failedText}`);
       }
 
       const result = (await response.json()) as { output: string };
+      clearRuntimeAlert();
 
       const assistantMessage: ChatMessage = {
         id: crypto.randomUUID(),
@@ -711,6 +893,9 @@ export function App(): JSX.Element {
       await saveMessage(assistantMessage);
       setMessages((prev) => [...prev, assistantMessage]);
     } catch (error) {
+      if (error instanceof TypeError) {
+        reportRuntimeAlert("backend_unreachable", "error", t(locale, "alertBackendUnreachable"));
+      }
       const errMessage: ChatMessage = {
         id: crypto.randomUUID(),
         sessionId: activeSessionId,
@@ -748,11 +933,24 @@ export function App(): JSX.Element {
       });
 
       if (!response.ok) {
+        if (response.status === 401 || response.status === 403) {
+          reportRuntimeAlert("auth_failed", "error", t(locale, "alertAuthFailed"), response.status);
+        } else if (response.status === 429) {
+          reportRuntimeAlert("rate_limited", "warn", t(locale, "alertRateLimited"), response.status);
+        } else {
+          reportRuntimeAlert(
+            "bridge_request_failed",
+            "warn",
+            `${t(locale, "alertBridgeRequestFailed")} (${response.status})`,
+            response.status
+          );
+        }
         const failedText = await response.text();
         throw new Error(`Bridge session message failed: ${response.status} ${failedText}`);
       }
 
       const payload = (await response.json()) as BridgeSessionSendMessageResponse;
+      clearRuntimeAlert();
       setInput("");
       setMessages((prev) => [...prev, payload.userMessage, payload.assistantMessage]);
       await saveMessages([payload.userMessage, payload.assistantMessage]);
@@ -766,6 +964,9 @@ export function App(): JSX.Element {
         return next;
       });
     } catch (error) {
+      if (error instanceof TypeError) {
+        reportRuntimeAlert("backend_unreachable", "error", t(locale, "alertBackendUnreachable"));
+      }
       const errMessage: ChatMessage = {
         id: crypto.randomUUID(),
         sessionId,
@@ -975,6 +1176,22 @@ export function App(): JSX.Element {
         <section style={{ padding: 14, overflow: "auto", display: "grid", gap: 12, alignContent: "start" }}>
           {!activeConnection ? (
             <div style={hintErrorStyle}>No active bridge connection. Please select or add one in the left panel.</div>
+          ) : null}
+          {runtimeAlert ? (
+            <div style={runtimeAlert.level === "error" ? hintErrorStyle : hintWarnStyle}>
+              <div>{runtimeAlert.message}</div>
+              {recentAuditEvents.length > 0 ? (
+                <div style={{ marginTop: 6, display: "grid", gap: 4 }}>
+                  <strong style={{ fontSize: 11, opacity: 0.9 }}>{t(locale, "recentAuditEvents")}</strong>
+                  {recentAuditEvents.slice(0, 3).map((event) => (
+                    <div key={event.id} style={{ fontSize: 11, opacity: 0.9 }}>
+                      [{event.level}] {event.eventType}
+                      {typeof event.statusCode === "number" ? ` (${event.statusCode})` : ""}
+                    </div>
+                  ))}
+                </div>
+              ) : null}
+            </div>
           ) : null}
           {capabilitiesError ? <div style={hintErrorStyle}>Capabilities sync failed: {capabilitiesError}</div> : null}
           {capabilities && !ttsReady ? (
@@ -1200,6 +1417,15 @@ const hintErrorStyle: CSSProperties = {
   padding: "8px 10px",
   background: "#fff2f2",
   color: "#9b2d2d",
+  fontSize: 12
+};
+
+const hintWarnStyle: CSSProperties = {
+  border: "1px solid #f3dfb4",
+  borderRadius: 10,
+  padding: "8px 10px",
+  background: "#fff8ea",
+  color: "#8a5a16",
   fontSize: 12
 };
 

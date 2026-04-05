@@ -2,6 +2,13 @@ import type { ChatMessage, MessageRole } from "@surf-ai/shared";
 
 const BM25_K1 = 1.2;
 const BM25_B = 0.75;
+const HYBRID_LEXICAL_WEIGHT = 0.68;
+const HYBRID_SEMANTIC_WEIGHT = 0.32;
+const LOW_CONFIDENCE_THRESHOLD = 0.45;
+const SEMANTIC_RECALL_MIN = 0.08;
+const MARKER_BOOST_PER_HIT = 0.2;
+const MARKER_BOOST_MAX = 0.8;
+const CHAR_NGRAM_SIZE = 3;
 const TOP_DIRECT_LIMIT_DEFAULT = 6;
 const NEIGHBOR_WINDOW_DEFAULT = 1;
 
@@ -49,6 +56,8 @@ const STOPWORDS = new Set([
 interface ScoredDoc {
   message: ChatMessage & { seq: number };
   score: number;
+  lexicalScore: number;
+  semanticScore: number;
 }
 
 export interface RetrievedMessage {
@@ -107,7 +116,7 @@ export function retrieveSessionMessages(params: {
     .slice(0, topDirectLimit);
 
   const topScore = direct[0]?.score ?? scored[0]?.score ?? 0;
-  const lowConfidence = topScore < 0.85;
+  const lowConfidence = topScore < LOW_CONFIDENCE_THRESHOLD;
 
   const directItems: RetrievedMessage[] = direct.map((item) => ({
     seq: item.message.seq,
@@ -182,10 +191,15 @@ function scoreDocuments(input: {
   query: string;
 }): ScoredDoc[] {
   const docTerms: Array<Map<string, number>> = [];
+  const docSemanticVectors: Array<Map<string, number>> = [];
+  const docSemanticNorms: number[] = [];
   const docLengths: number[] = [];
   const docFreq = new Map<string, number>();
   const totalDocs = input.docs.length;
   const maxSeq = input.docs.at(-1)?.seq ?? 1;
+  const markerTerms = extractMarkerTerms(input.query);
+  const querySemantic = buildSemanticVector(input.query, input.queryTokens);
+  const querySemanticNorm = vectorNorm(querySemantic);
 
   for (const doc of input.docs) {
     const terms = tokenize(doc.content);
@@ -195,6 +209,9 @@ function scoreDocuments(input: {
     }
     docTerms.push(tf);
     docLengths.push(terms.length || 1);
+    const semanticVector = buildSemanticVector(doc.content, terms);
+    docSemanticVectors.push(semanticVector);
+    docSemanticNorms.push(vectorNorm(semanticVector));
 
     const uniqueTerms = new Set(terms);
     for (const term of uniqueTerms) {
@@ -203,12 +220,10 @@ function scoreDocuments(input: {
   }
 
   const avgdl = docLengths.reduce((sum, item) => sum + item, 0) / totalDocs;
-  const markerTerms = extractMarkerTerms(input.query);
-
-  const scored: ScoredDoc[] = input.docs.map((doc, index) => {
+  const scoredRaw = input.docs.map((doc, index) => {
     const tf = docTerms[index] ?? new Map<string, number>();
     const dl = docLengths[index] ?? 1;
-    let score = 0;
+    let bm25Score = 0;
 
     for (const term of input.queryTokens) {
       const termTf = tf.get(term) ?? 0;
@@ -221,22 +236,53 @@ function scoreDocuments(input: {
       const bm25 =
         (termTf * (BM25_K1 + 1)) /
         (termTf + BM25_K1 * (1 - BM25_B + BM25_B * (dl / Math.max(1, avgdl))));
-      score += idf * bm25;
+      bm25Score += idf * bm25;
     }
 
     const lowerContent = doc.content.toLowerCase();
+    let markerBoost = 0;
     for (const marker of markerTerms) {
       if (lowerContent.includes(marker)) {
-        score += 0.9;
+        markerBoost += MARKER_BOOST_PER_HIT;
       }
     }
 
-    score *= roleWeight(doc.role);
-    score *= 1 + 0.12 * (doc.seq / Math.max(1, maxSeq));
+    const semanticScore = cosineSimilarity(
+      querySemantic,
+      querySemanticNorm,
+      docSemanticVectors[index] ?? new Map<string, number>(),
+      docSemanticNorms[index] ?? 0
+    );
 
     return {
       message: doc,
-      score
+      bm25Score: bm25Score + Math.min(markerBoost, MARKER_BOOST_MAX),
+      semanticScore
+    };
+  });
+
+  const maxBm25 = scoredRaw.reduce((max, item) => Math.max(max, item.bm25Score), 0);
+
+  const scored: ScoredDoc[] = scoredRaw.map((item) => {
+    const lexicalScore = maxBm25 > 0 ? item.bm25Score / maxBm25 : 0;
+    const semanticScore = item.semanticScore;
+
+    let hybrid =
+      lexicalScore * HYBRID_LEXICAL_WEIGHT +
+      semanticScore * HYBRID_SEMANTIC_WEIGHT;
+
+    if (lexicalScore === 0 && semanticScore < SEMANTIC_RECALL_MIN) {
+      hybrid = 0;
+    }
+
+    hybrid *= roleWeight(item.message.role);
+    hybrid *= 1 + 0.12 * (item.message.seq / Math.max(1, maxSeq));
+
+    return {
+      message: item.message,
+      score: hybrid,
+      lexicalScore,
+      semanticScore
     };
   });
 
@@ -291,6 +337,68 @@ function tokenize(text: string): string[] {
   }
 
   return tokens;
+}
+
+function buildSemanticVector(text: string, baseTokens: string[]): Map<string, number> {
+  const vector = new Map<string, number>();
+  const normalizedText = normalizeForSemantic(text);
+  const ngrams = buildCharNgrams(normalizedText, CHAR_NGRAM_SIZE);
+
+  for (const gram of ngrams) {
+    vector.set(`g:${gram}`, (vector.get(`g:${gram}`) ?? 0) + 1);
+  }
+
+  for (const token of baseTokens) {
+    vector.set(`t:${token}`, (vector.get(`t:${token}`) ?? 0) + 1);
+  }
+
+  return vector;
+}
+
+function vectorNorm(vector: Map<string, number>): number {
+  let sum = 0;
+  for (const value of vector.values()) {
+    sum += value * value;
+  }
+  return Math.sqrt(sum);
+}
+
+function cosineSimilarity(
+  left: Map<string, number>,
+  leftNorm: number,
+  right: Map<string, number>,
+  rightNorm: number
+): number {
+  if (leftNorm === 0 || rightNorm === 0) {
+    return 0;
+  }
+
+  let dot = 0;
+  const [small, large] = left.size <= right.size ? [left, right] : [right, left];
+  for (const [key, value] of small.entries()) {
+    dot += value * (large.get(key) ?? 0);
+  }
+
+  return dot / (leftNorm * rightNorm);
+}
+
+function normalizeForSemantic(text: string): string {
+  return text
+    .toLowerCase()
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function buildCharNgrams(text: string, size: number): string[] {
+  if (size <= 1 || text.length < size) {
+    return text ? [text] : [];
+  }
+
+  const grams: string[] = [];
+  for (let index = 0; index <= text.length - size; index += 1) {
+    grams.push(text.slice(index, index + size));
+  }
+  return grams;
 }
 
 function extractMarkerTerms(query: string): string[] {

@@ -75,3 +75,22 @@ Progress update:
 - 2026-04-05: Phase 6 step 1 completed (`CORS allowlist`, `write-route rate limit`, optional `HTTPS required` gate).
 - 2026-04-05: Phase 6 step 2 completed (`audit_events` persistence + security event logging + `/audit/events` query API).
 - 2026-04-05: Phase 6 step 3 completed (`retention config` + `/admin/maintenance/purge` dry-run/execute + scoped cleanup).
+
+## 7. Priority Update (2026-04-06)
+
+Re-prioritized by current product goal ("local self-use first, fast feedback"):
+
+1. `IDLE` automatic status transition is deferred (not required in current UX path).
+2. Next implementation priority is retrieval enhancement:
+   - keep retrieval scope strictly session-local,
+   - add semantic recall on top of BM25 (hybrid ranking),
+   - keep evidence refs for traceability.
+3. Next implementation priority is lightweight security alert UX:
+   - sidepanel status hint for `backend_unreachable` / `auth_failed` / `rate_limited`,
+   - extension badge marker for actionable errors,
+   - recent audit event quick view (based on `/audit/events`).
+
+Progress update:
+
+- 2026-04-06: retrieval enhancement completed (session-local hybrid recall/ranking on top of BM25).
+- 2026-04-06: lightweight security alert UX completed (sidepanel runtime alert + extension badge + recent audit preview).
