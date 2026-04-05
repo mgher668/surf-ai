@@ -231,7 +231,10 @@
   - `audit_events` 持久化表
   - 安全关键事件入库（`rate_limited`、`https_required_blocked`、`unauthorized_user` 等）
   - 查询接口：`GET /audit/events?limit=...&eventType=...`
-- Phase 6 第三步（数据保留与删除策略）待实现。
+- Phase 6 第三步已落地（手动维护版）：
+  - retention 配置：`SURF_AI_RETENTION_SESSION_DAYS`、`SURF_AI_RETENTION_AUDIT_DAYS`
+  - 清理接口：`POST /admin/maintenance/purge`（默认 `dryRun=true`）
+  - 支持范围控制：`includeSessions` / `includeAudit`
 
 验收：
 - 多用户环境下不串数据，未授权访问返回 401/403。

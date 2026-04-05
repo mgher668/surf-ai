@@ -213,6 +213,14 @@ const listAuditEventsQuerySchema = z.object({
   eventType: z.string().trim().min(1).max(120).optional()
 });
 
+const purgeMaintenanceSchema = z.object({
+  dryRun: z.boolean().optional(),
+  includeSessions: z.boolean().optional(),
+  includeAudit: z.boolean().optional(),
+  sessionDays: z.coerce.number().int().min(1).max(3_650).optional(),
+  auditDays: z.coerce.number().int().min(1).max(3_650).optional()
+});
+
 app.get("/sessions", async (request, reply) => {
   const userId = requireAuthedUserId(request, reply);
   if (!userId) {
@@ -353,6 +361,77 @@ app.get("/audit/events", async (request, reply) => {
     parsed.data.eventType
   );
   return { events };
+});
+
+app.post("/admin/maintenance/purge", async (request, reply) => {
+  const userId = requireAuthedUserId(request, reply);
+  if (!userId) {
+    return;
+  }
+
+  const parsed = purgeMaintenanceSchema.safeParse((request.body ?? {}) as unknown);
+  if (!parsed.success) {
+    reply.code(400);
+    return { error: "invalid_request", details: parsed.error.flatten() };
+  }
+
+  if (!config.security.retention.enabled) {
+    reply.code(409);
+    return {
+      error: "retention_disabled",
+      message: "Set SURF_AI_RETENTION_ENABLED=1 to enable purge endpoint."
+    };
+  }
+
+  const dryRun = parsed.data.dryRun ?? true;
+  const includeSessions = parsed.data.includeSessions ?? true;
+  const includeAudit = parsed.data.includeAudit ?? true;
+  if (!includeSessions && !includeAudit) {
+    reply.code(400);
+    return { error: "invalid_scope", message: "At least one of includeSessions/includeAudit must be true." };
+  }
+
+  const sessionDays = parsed.data.sessionDays ?? config.security.retention.sessionDays;
+  const auditDays = parsed.data.auditDays ?? config.security.retention.auditDays;
+  const now = Date.now();
+
+  const result = store.purgeExpiredData(userId, {
+    dryRun,
+    includeSessions,
+    includeAudit,
+    sessionCutoffMs: now - daysToMs(sessionDays),
+    auditCutoffMs: now - daysToMs(auditDays)
+  });
+
+  recordAuditEvent({
+    userId,
+    eventType: dryRun ? "retention_purge_preview" : "retention_purge_executed",
+    level: "INFO",
+    route: getPathFromUrl(request.url),
+    method: request.method,
+    statusCode: 200,
+    ip: request.ip,
+    details: {
+      includeSessions,
+      includeAudit,
+      sessionDays,
+      auditDays,
+      counts: result.counts
+    }
+  });
+
+  return {
+    retention: {
+      enabled: config.security.retention.enabled,
+      sessionDays,
+      auditDays
+    },
+    result,
+    cutoffs: {
+      sessionBefore: new Date(result.sessionCutoffMs).toISOString(),
+      auditBefore: new Date(result.auditCutoffMs).toISOString()
+    }
+  };
 });
 
 app.post("/sessions/:id/messages", async (request, reply) => {
@@ -696,6 +775,9 @@ function getRateLimitBucket(method: string, rawUrl: string): string | null {
   if (path === "/tts") {
     return "tts";
   }
+  if (path === "/admin/maintenance/purge") {
+    return "maintenance-purge";
+  }
   if (/^\/sessions\/[^/]+\/messages$/.test(path)) {
     return "session-message";
   }
@@ -705,6 +787,10 @@ function getRateLimitBucket(method: string, rawUrl: string): string | null {
 
 function getPathFromUrl(rawUrl: string): string {
   return rawUrl.split("?")[0] ?? "/";
+}
+
+function daysToMs(days: number): number {
+  return Math.max(1, days) * 24 * 60 * 60 * 1_000;
 }
 
 function resolveAuditUserId(headers: Record<string, unknown>): string | undefined {

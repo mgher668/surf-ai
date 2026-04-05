@@ -21,6 +21,8 @@
 - `rate_limited` (`429`): raise `SURF_AI_RATE_LIMIT_MAX_REQUESTS` or widen `SURF_AI_RATE_LIMIT_WINDOW_MS`.
 - CORS blocked: verify `SURF_AI_CORS_ALLOW_ORIGINS` includes your exact origin pattern.
 - Need security timeline: query `GET /audit/events?limit=100` with your user headers.
+- Retention dry-run: `POST /admin/maintenance/purge` with `{ "dryRun": true }` before actual purge.
+- Retention execute: `POST /admin/maintenance/purge` with `{ "dryRun": false }`.
 
 ## Extension Troubleshooting
 

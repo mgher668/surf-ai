@@ -36,12 +36,19 @@ export interface BridgeSecurityConfig {
   requireHttps: boolean;
   trustProxy: boolean;
   rateLimit: BridgeRateLimitConfig;
+  retention: BridgeRetentionConfig;
 }
 
 export interface BridgeRateLimitConfig {
   enabled: boolean;
   windowMs: number;
   maxRequests: number;
+}
+
+export interface BridgeRetentionConfig {
+  enabled: boolean;
+  sessionDays: number;
+  auditDays: number;
 }
 
 export function readConfig(): BridgeConfig {
@@ -192,6 +199,19 @@ function readSecurityConfig(): BridgeSecurityConfig {
     1,
     10_000
   );
+  const retentionEnabled = parseBoolean(process.env.SURF_AI_RETENTION_ENABLED, true);
+  const retentionSessionDays = parseNumber(
+    process.env.SURF_AI_RETENTION_SESSION_DAYS,
+    90,
+    1,
+    3_650
+  );
+  const retentionAuditDays = parseNumber(
+    process.env.SURF_AI_RETENTION_AUDIT_DAYS,
+    30,
+    1,
+    3_650
+  );
 
   return {
     corsAllowedOriginPatterns,
@@ -201,6 +221,11 @@ function readSecurityConfig(): BridgeSecurityConfig {
       enabled: rateLimitEnabled,
       windowMs: rateLimitWindowMs,
       maxRequests: rateLimitMaxRequests
+    },
+    retention: {
+      enabled: retentionEnabled,
+      sessionDays: retentionSessionDays,
+      auditDays: retentionAuditDays
     }
   };
 }

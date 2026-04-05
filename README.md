@@ -75,6 +75,7 @@ pnpm dev:extension
 - On-demand history retrieval (keywords/BM25 + evidence refs) for old-context questions
 - Security baseline for production mode (CORS allowlist patterns + per-route rate limit + optional HTTPS-required gate)
 - Audit event persistence (`audit_events`) + query endpoint (`GET /audit/events`)
+- Retention maintenance endpoint (`POST /admin/maintenance/purge`) with dry-run support
 - `MiniMax TTS` integration via bridge `/tts` (API key only in bridge env)
 - Local-Agent-first backend strategy (`codex` / `claude`), provider-mode adapters are compatibility placeholders in current version
 
@@ -103,6 +104,7 @@ Defaults:
 - CORS allowlist: `SURF_AI_CORS_ALLOW_ORIGINS` (wildcard patterns supported)
 - Rate limit: `SURF_AI_RATE_LIMIT_WINDOW_MS=60000`, `SURF_AI_RATE_LIMIT_MAX_REQUESTS=120`
 - Optional HTTPS gate: `SURF_AI_REQUIRE_HTTPS=1` (typically with reverse proxy + `SURF_AI_TRUST_PROXY=1`)
+- Retention policy: `SURF_AI_RETENTION_SESSION_DAYS=90`, `SURF_AI_RETENTION_AUDIT_DAYS=30`
 - MiniMax endpoint: `https://api.minimax.io/v1/t2a_v2`
 
 ## Notes

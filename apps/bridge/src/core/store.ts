@@ -92,6 +92,30 @@ interface AuditEventRow {
   created_at: number;
 }
 
+export interface PurgeExpiredDataInput {
+  sessionCutoffMs: number;
+  auditCutoffMs: number;
+  dryRun: boolean;
+  includeSessions: boolean;
+  includeAudit: boolean;
+}
+
+export interface PurgeExpiredDataResult {
+  dryRun: boolean;
+  includeSessions: boolean;
+  includeAudit: boolean;
+  sessionCutoffMs: number;
+  auditCutoffMs: number;
+  counts: {
+    sessions: number;
+    messages: number;
+    agentSessionLinks: number;
+    sessionMemories: number;
+    auditEvents: number;
+  };
+  executedAt: number;
+}
+
 export class BridgeStore {
   private readonly db: DatabaseSync;
   private readonly defaultUserId: string;
@@ -413,6 +437,97 @@ export class BridgeStore {
     return rows.map(mapAuditEventRow);
   }
 
+  public purgeExpiredData(userId: string, input: PurgeExpiredDataInput): PurgeExpiredDataResult {
+    const sessionsCount = input.includeSessions
+      ? readCount(
+          this.db.prepare(
+            "SELECT COUNT(*) AS count FROM sessions WHERE user_id = ? AND updated_at < ?"
+          ).get(userId, input.sessionCutoffMs) as { count: number }
+        )
+      : 0;
+
+    const messagesCount = input.includeSessions
+      ? readCount(
+          this.db.prepare(
+            `SELECT COUNT(*) AS count
+             FROM messages
+             WHERE user_id = ?
+               AND session_id IN (
+                 SELECT id FROM sessions WHERE user_id = ? AND updated_at < ?
+               )`
+          ).get(userId, userId, input.sessionCutoffMs) as { count: number }
+        )
+      : 0;
+
+    const linksCount = input.includeSessions
+      ? readCount(
+          this.db.prepare(
+            `SELECT COUNT(*) AS count
+             FROM agent_session_links
+             WHERE session_id IN (
+               SELECT id FROM sessions WHERE user_id = ? AND updated_at < ?
+             )`
+          ).get(userId, input.sessionCutoffMs) as { count: number }
+        )
+      : 0;
+
+    const memoriesCount = input.includeSessions
+      ? readCount(
+          this.db.prepare(
+            `SELECT COUNT(*) AS count
+             FROM session_memories
+             WHERE session_id IN (
+               SELECT id FROM sessions WHERE user_id = ? AND updated_at < ?
+             )`
+          ).get(userId, input.sessionCutoffMs) as { count: number }
+        )
+      : 0;
+
+    const auditCount = input.includeAudit
+      ? readCount(
+          this.db.prepare(
+            "SELECT COUNT(*) AS count FROM audit_events WHERE user_id = ? AND created_at < ?"
+          ).get(userId, input.auditCutoffMs) as { count: number }
+        )
+      : 0;
+
+    if (!input.dryRun) {
+      this.db.exec("BEGIN");
+      try {
+        if (input.includeAudit) {
+          this.db.prepare(
+            "DELETE FROM audit_events WHERE user_id = ? AND created_at < ?"
+          ).run(userId, input.auditCutoffMs);
+        }
+        if (input.includeSessions) {
+          this.db.prepare(
+            "DELETE FROM sessions WHERE user_id = ? AND updated_at < ?"
+          ).run(userId, input.sessionCutoffMs);
+        }
+        this.db.exec("COMMIT");
+      } catch (error) {
+        this.db.exec("ROLLBACK");
+        throw error;
+      }
+    }
+
+    return {
+      dryRun: input.dryRun,
+      includeSessions: input.includeSessions,
+      includeAudit: input.includeAudit,
+      sessionCutoffMs: input.sessionCutoffMs,
+      auditCutoffMs: input.auditCutoffMs,
+      counts: {
+        sessions: sessionsCount,
+        messages: messagesCount,
+        agentSessionLinks: linksCount,
+        sessionMemories: memoriesCount,
+        auditEvents: auditCount
+      },
+      executedAt: Date.now()
+    };
+  }
+
   private getNextSeq(userId: string, sessionId: string): number {
     const row = this.db.prepare(
       "SELECT COALESCE(MAX(seq), 0) AS seq FROM messages WHERE user_id = ? AND session_id = ?"
@@ -596,4 +711,8 @@ function parseAuditDetails(raw: string): Record<string, unknown> {
     // ignore parse errors and return fallback
   }
   return { raw };
+}
+
+function readCount(row: { count: number }): number {
+  return Number.isFinite(row.count) ? row.count : 0;
 }

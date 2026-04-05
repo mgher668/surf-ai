@@ -16,6 +16,7 @@ Security defaults:
   - `POST /tts`
 - Optional HTTPS enforcement via `SURF_AI_REQUIRE_HTTPS=1` (typically with reverse proxy + `SURF_AI_TRUST_PROXY=1`).
 - Security events are persisted into `audit_events` and queryable via `GET /audit/events`.
+- Retention maintenance is available via `POST /admin/maintenance/purge` (dry-run default).
 
 Current positioning:
 
@@ -121,6 +122,54 @@ Response:
       "createdAt": 1775369895657
     }
   ]
+}
+```
+
+### POST /admin/maintenance/purge
+
+Manual retention cleanup endpoint (user-scoped).  
+Defaults to dry-run.
+
+Request:
+
+```json
+{
+  "dryRun": true,
+  "includeSessions": true,
+  "includeAudit": true,
+  "sessionDays": 90,
+  "auditDays": 30
+}
+```
+
+Response:
+
+```json
+{
+  "retention": {
+    "enabled": true,
+    "sessionDays": 90,
+    "auditDays": 30
+  },
+  "result": {
+    "dryRun": true,
+    "includeSessions": true,
+    "includeAudit": true,
+    "sessionCutoffMs": 1770000000000,
+    "auditCutoffMs": 1775000000000,
+    "counts": {
+      "sessions": 2,
+      "messages": 34,
+      "agentSessionLinks": 2,
+      "sessionMemories": 6,
+      "auditEvents": 20
+    },
+    "executedAt": 1777000000000
+  },
+  "cutoffs": {
+    "sessionBefore": "2026-01-01T00:00:00.000Z",
+    "auditBefore": "2026-03-01T00:00:00.000Z"
+  }
 }
 ```
 
