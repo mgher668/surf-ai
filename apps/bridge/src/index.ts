@@ -8,6 +8,8 @@ import type {
   BridgeSessionCreateResponse,
   BridgeHealthResponse,
   BridgeSessionListResponse,
+  BridgeSessionAdapterRequest,
+  BridgeSessionAdapterResponse,
   BridgeSessionMessagesResponse,
   BridgeSessionRenameRequest,
   BridgeSessionRenameResponse,
@@ -198,6 +200,10 @@ const updateStarSchema = z.object({
   starred: z.boolean()
 });
 
+const updateAdapterSchema = z.object({
+  adapter: z.enum(["codex", "claude", "openai-compatible", "anthropic", "gemini", "mock"])
+});
+
 const sendSessionMessageSchema = z.object({
   adapter: z.enum(["codex", "claude", "openai-compatible", "anthropic", "gemini", "mock"]),
   model: z.string().optional(),
@@ -305,6 +311,30 @@ app.post("/sessions/:id/star", async (request, reply) => {
   return { session };
 });
 
+app.post("/sessions/:id/adapter", async (request, reply) => {
+  const userId = requireAuthedUserId(request, reply);
+  if (!userId) {
+    return;
+  }
+
+  const parsed = updateAdapterSchema.safeParse(request.body);
+  if (!parsed.success) {
+    reply.code(400);
+    return { error: "invalid_request", details: parsed.error.flatten() };
+  }
+
+  const sessionId = String((request.params as { id: string }).id);
+  const payload: BridgeSessionAdapterRequest = parsed.data;
+  const session = store.updateSessionLastAdapter(userId, sessionId, payload.adapter);
+  if (!session) {
+    reply.code(404);
+    return { error: "session_not_found" };
+  }
+
+  const response: BridgeSessionAdapterResponse = { session };
+  return response;
+});
+
 app.delete("/sessions/:id", async (request, reply) => {
   const userId = requireAuthedUserId(request, reply);
   if (!userId) {
@@ -328,11 +358,13 @@ app.get("/sessions/:id/messages", async (request, reply) => {
   }
 
   const sessionId = String((request.params as { id: string }).id);
-  const session = store.getSession(userId, sessionId);
-  if (!session) {
+  const existingSession = store.getSession(userId, sessionId);
+  if (!existingSession) {
     reply.code(404);
     return { error: "session_not_found" };
   }
+
+  const session = existingSession;
 
   const parsed = listSessionMessagesQuerySchema.safeParse(request.query);
   if (!parsed.success) {
@@ -363,11 +395,12 @@ app.get("/sessions/:id/context", async (request, reply) => {
   }
 
   const sessionId = String((request.params as { id: string }).id);
-  const session = store.getSession(userId, sessionId);
-  if (!session) {
+  const existingSession = store.getSession(userId, sessionId);
+  if (!existingSession) {
     reply.code(404);
     return { error: "session_not_found" };
   }
+  const session = existingSession;
 
   const context = sessionManager.previewContext(userId, sessionId, parsed.data.query);
   return { session, context };
@@ -477,11 +510,13 @@ app.post("/sessions/:id/messages", async (request, reply) => {
   }
 
   const sessionId = String((request.params as { id: string }).id);
-  const session = store.getSession(userId, sessionId);
-  if (!session) {
+  const existingSession = store.getSession(userId, sessionId);
+  if (!existingSession) {
     reply.code(404);
     return { error: "session_not_found" };
   }
+  const session =
+    store.updateSessionLastAdapter(userId, sessionId, parsed.data.adapter) ?? existingSession;
 
   const userMessage = store.appendMessage(userId, sessionId, "user", parsed.data.content);
   const normalizedContext = normalizeChatContext(parsed.data.context);

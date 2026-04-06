@@ -16,6 +16,8 @@ import type {
   BridgeModelsResponse,
   BridgeSessionCreateResponse,
   BridgeSessionListResponse,
+  BridgeSessionAdapterRequest,
+  BridgeSessionAdapterResponse,
   BridgeSessionMessagesResponse,
   BridgeSessionRenameRequest,
   BridgeSessionRenameResponse,
@@ -370,11 +372,12 @@ export function App(): JSX.Element {
       }
 
       setSessionsState((prev) => {
-        if (areSessionListsEqual(prev, backendSessions)) {
+        const mergedSessions = mergeSessionsWithLocalAdapters(prev, backendSessions);
+        if (areSessionListsEqual(prev, mergedSessions)) {
           return prev;
         }
-        void setSessions(backendSessions);
-        return backendSessions;
+        void setSessions(mergedSessions);
+        return mergedSessions;
       });
       setActiveSessionId((current) => {
         if (current === BACKEND_DRAFT_SESSION_ID) {
@@ -421,6 +424,24 @@ export function App(): JSX.Element {
     }
   }, [adapter, availableAdapters, capabilities]);
 
+  useEffect(() => {
+    if (!activeSessionId || activeSessionId === BACKEND_DRAFT_SESSION_ID) {
+      return;
+    }
+    const activeSession = sessions.find((item) => item.id === activeSessionId);
+    const lastAdapter = activeSession?.lastAdapter;
+    if (!lastAdapter) {
+      return;
+    }
+    if (!availableAdapters.some((item) => item.adapter === lastAdapter)) {
+      return;
+    }
+    if (adapter === lastAdapter) {
+      return;
+    }
+    setAdapter(lastAdapter);
+  }, [activeSessionId, sessions, availableAdapters, adapter]);
+
   async function bootstrap(): Promise<void> {
     await bootstrapConnectionsAndSessions();
   }
@@ -444,16 +465,17 @@ export function App(): JSX.Element {
       const backendSessions = await fetchSessionsFromBackend(resolvedActiveConnection);
       setSessionMode("backend");
       if (backendSessions) {
-        await setSessions(backendSessions);
-        setSessionsState(backendSessions);
+        const mergedSessions = mergeSessionsWithLocalAdapters(storedSessions, backendSessions);
+        await setSessions(mergedSessions);
+        setSessionsState(mergedSessions);
         setActiveSessionId((current) => {
           if (current === BACKEND_DRAFT_SESSION_ID) {
             return BACKEND_DRAFT_SESSION_ID;
           }
-          if (current && backendSessions.some((item) => item.id === current)) {
+          if (current && mergedSessions.some((item) => item.id === current)) {
             return current;
           }
-          return backendSessions[0]?.id ?? BACKEND_DRAFT_SESSION_ID;
+          return mergedSessions[0]?.id ?? BACKEND_DRAFT_SESSION_ID;
         });
       } else {
         setSessionsState(storedSessions);
@@ -695,6 +717,35 @@ export function App(): JSX.Element {
     }
   }
 
+  async function updateSessionAdapterOnBackend(
+    connection: BridgeConnection,
+    sessionId: string,
+    nextAdapter: BridgeChatRequest["adapter"]
+  ): Promise<ChatSession | null> {
+    try {
+      const body: BridgeSessionAdapterRequest = { adapter: nextAdapter };
+      const response = await fetch(`${connection.baseUrl}/sessions/${sessionId}/adapter`, {
+        method: "POST",
+        headers: buildBridgeHeaders(connection, true),
+        body: JSON.stringify(body)
+      });
+      if (!response.ok) {
+        if (response.status === 401 || response.status === 403) {
+          reportRuntimeAlert("auth_failed", "error", t(locale, "alertAuthFailed"), response.status);
+        } else if (response.status === 429) {
+          reportRuntimeAlert("rate_limited", "warn", t(locale, "alertRateLimited"), response.status);
+        }
+        return null;
+      }
+      const payload = (await response.json()) as BridgeSessionAdapterResponse;
+      clearRuntimeAlert();
+      return payload.session;
+    } catch {
+      reportRuntimeAlert("backend_unreachable", "error", t(locale, "alertBackendUnreachable"));
+      return null;
+    }
+  }
+
   async function renameSessionOnBackend(
     connection: BridgeConnection,
     sessionId: string,
@@ -796,6 +847,30 @@ export function App(): JSX.Element {
     await setSessions(next);
     setSessionsState(next);
     setActiveSessionId(session.id);
+  }
+
+  function rememberSessionAdapter(sessionId: string, nextAdapter: BridgeChatRequest["adapter"]): void {
+    if (sessionId === BACKEND_DRAFT_SESSION_ID) {
+      return;
+    }
+    setSessionsState((prev) => {
+      let changed = false;
+      const next = prev.map((item) => {
+        if (item.id !== sessionId || item.lastAdapter === nextAdapter) {
+          return item;
+        }
+        changed = true;
+        return {
+          ...item,
+          lastAdapter: nextAdapter
+        };
+      });
+      if (!changed) {
+        return prev;
+      }
+      void setSessions(next);
+      return next;
+    });
   }
 
   async function toggleStarSession(id: string): Promise<void> {
@@ -1421,7 +1496,36 @@ export function App(): JSX.Element {
             <span className="text-xs text-muted-foreground">{t(locale, "adapter")}</span>
             <Select
               value={adapter}
-              onValueChange={(value) => setAdapter(value as BridgeChatRequest["adapter"])}
+              onValueChange={(value) => {
+                const nextAdapter = value as BridgeChatRequest["adapter"];
+                setAdapter(nextAdapter);
+                if (!activeSessionId) {
+                  return;
+                }
+                rememberSessionAdapter(activeSessionId, nextAdapter);
+                if (
+                  sessionMode === "backend" &&
+                  activeConnection &&
+                  activeSessionId !== BACKEND_DRAFT_SESSION_ID
+                ) {
+                  void updateSessionAdapterOnBackend(
+                    activeConnection,
+                    activeSessionId,
+                    nextAdapter
+                  ).then((updatedSession) => {
+                    if (!updatedSession) {
+                      return;
+                    }
+                    setSessionsState((prev) => {
+                      const next = prev.map((item) =>
+                        item.id === updatedSession.id ? updatedSession : item
+                      );
+                      void setSessions(next);
+                      return next;
+                    });
+                  });
+                }
+              }}
             >
               <SelectTrigger className="h-8 w-[160px] bg-card text-xs">
                 <SelectValue placeholder={t(locale, "adapter")} />
@@ -1613,6 +1717,36 @@ function createSession(title: string): ChatSession {
   };
 }
 
+function mergeSessionsWithLocalAdapters(
+  localSessions: ChatSession[],
+  backendSessions: ChatSession[]
+): ChatSession[] {
+  if (localSessions.length === 0 || backendSessions.length === 0) {
+    return backendSessions;
+  }
+  const adapterBySessionId = new Map(
+    localSessions
+      .filter((item) => Boolean(item.lastAdapter))
+      .map((item) => [item.id, item.lastAdapter])
+  );
+  if (adapterBySessionId.size === 0) {
+    return backendSessions;
+  }
+  return backendSessions.map((session) => {
+    if (session.lastAdapter) {
+      return session;
+    }
+    const localAdapter = adapterBySessionId.get(session.id);
+    if (!localAdapter) {
+      return session;
+    }
+    return {
+      ...session,
+      lastAdapter: localAdapter
+    };
+  });
+}
+
 function areSessionListsEqual(left: ChatSession[], right: ChatSession[]): boolean {
   if (left.length !== right.length) {
     return false;
@@ -1628,6 +1762,7 @@ function areSessionListsEqual(left: ChatSession[], right: ChatSession[]): boolea
       a.id !== b.id ||
       a.title !== b.title ||
       a.starred !== b.starred ||
+      a.lastAdapter !== b.lastAdapter ||
       a.status !== b.status ||
       a.lastActiveAt !== b.lastActiveAt ||
       a.createdAt !== b.createdAt ||

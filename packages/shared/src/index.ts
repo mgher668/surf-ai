@@ -14,11 +14,19 @@ export interface BridgeConnection {
 }
 
 export type SessionStatus = "ACTIVE" | "IDLE";
+export type BridgeAdapter =
+  | "codex"
+  | "claude"
+  | "openai-compatible"
+  | "anthropic"
+  | "gemini"
+  | "mock";
 
 export interface ChatSession {
   id: string;
   title: string;
   starred: boolean;
+  lastAdapter?: BridgeAdapter;
   status?: SessionStatus;
   lastActiveAt?: number;
   createdAt: number;
@@ -107,7 +115,7 @@ export interface BridgeHealthResponse {
 export interface BridgeModel {
   id: string;
   label: string;
-  adapter: "codex" | "claude" | "openai-compatible" | "anthropic" | "gemini" | "mock";
+  adapter: BridgeAdapter;
 }
 
 export interface BridgeModelsResponse {
@@ -141,7 +149,7 @@ export interface BridgeCapabilitiesResponse {
 }
 
 export interface BridgeChatRequest {
-  adapter: BridgeModel["adapter"];
+  adapter: BridgeAdapter;
   model?: string;
   sessionId: string;
   messages: Array<{ role: MessageRole; content: string }>;
@@ -180,7 +188,7 @@ export interface BridgeSessionMessagesResponse {
 }
 
 export interface BridgeSessionSendMessageRequest {
-  adapter: BridgeModel["adapter"];
+  adapter: BridgeAdapter;
   content: string;
   model?: string;
   context?: BridgeChatRequest["context"];
@@ -194,6 +202,14 @@ export interface BridgeSessionSendMessageResponse {
 
 export interface BridgeSessionStarRequest {
   starred: boolean;
+}
+
+export interface BridgeSessionAdapterRequest {
+  adapter: BridgeAdapter;
+}
+
+export interface BridgeSessionAdapterResponse {
+  session: ChatSession;
 }
 
 export interface BridgeSessionRenameRequest {

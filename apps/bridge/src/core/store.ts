@@ -2,13 +2,14 @@ import { mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { randomUUID, createHash } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
-import type { ChatMessage, ChatSession, MessageRole, SessionStatus } from "@surf-ai/shared";
+import type { BridgeAdapter, ChatMessage, ChatSession, MessageRole, SessionStatus } from "@surf-ai/shared";
 import type { BridgeUserAccount } from "./config";
 
 interface SessionRow {
   id: string;
   title: string;
   starred: number;
+  last_adapter: BridgeAdapter | null;
   status: SessionStatus;
   created_at: number;
   updated_at: number;
@@ -177,19 +178,53 @@ export class BridgeStore {
 
   public listSessions(userId: string): ChatSession[] {
     const rows = this.db.prepare(
-      `SELECT id, title, starred, status, created_at, updated_at, last_active_at
-       FROM sessions
-       WHERE user_id = ?
-       ORDER BY updated_at DESC`
+      `SELECT
+         s.id,
+         s.title,
+         s.starred,
+         COALESCE(
+           s.last_adapter,
+           (
+             SELECT l.provider
+             FROM agent_session_links l
+             WHERE l.session_id = s.id
+             ORDER BY l.updated_at DESC
+             LIMIT 1
+           )
+         ) AS last_adapter,
+         s.status,
+         s.created_at,
+         s.updated_at,
+         s.last_active_at
+       FROM sessions s
+       WHERE s.user_id = ?
+       ORDER BY s.updated_at DESC`
     ).all(userId) as unknown as SessionRow[];
     return rows.map(mapSessionRow);
   }
 
   public getSession(userId: string, sessionId: string): ChatSession | null {
     const row = this.db.prepare(
-      `SELECT id, title, starred, status, created_at, updated_at, last_active_at
-       FROM sessions
-       WHERE id = ? AND user_id = ?`
+      `SELECT
+         s.id,
+         s.title,
+         s.starred,
+         COALESCE(
+           s.last_adapter,
+           (
+             SELECT l.provider
+             FROM agent_session_links l
+             WHERE l.session_id = s.id
+             ORDER BY l.updated_at DESC
+             LIMIT 1
+           )
+         ) AS last_adapter,
+         s.status,
+         s.created_at,
+         s.updated_at,
+         s.last_active_at
+       FROM sessions s
+       WHERE s.id = ? AND s.user_id = ?`
     ).get(sessionId, userId) as SessionRow | undefined;
     return row ? mapSessionRow(row) : null;
   }
@@ -207,6 +242,18 @@ export class BridgeStore {
     this.db.prepare(
       "UPDATE sessions SET starred = ?, updated_at = ? WHERE id = ? AND user_id = ?"
     ).run(starred ? 1 : 0, now, sessionId, userId);
+    return this.getSession(userId, sessionId);
+  }
+
+  public updateSessionLastAdapter(
+    userId: string,
+    sessionId: string,
+    lastAdapter: BridgeAdapter
+  ): ChatSession | null {
+    const now = Date.now();
+    this.db.prepare(
+      "UPDATE sessions SET last_adapter = ?, updated_at = ? WHERE id = ? AND user_id = ?"
+    ).run(lastAdapter, now, sessionId, userId);
     return this.getSession(userId, sessionId);
   }
 
@@ -565,6 +612,7 @@ export class BridgeStore {
         user_id TEXT NOT NULL,
         title TEXT NOT NULL,
         starred INTEGER NOT NULL DEFAULT 0,
+        last_adapter TEXT,
         status TEXT NOT NULL DEFAULT 'ACTIVE',
         created_at INTEGER NOT NULL,
         updated_at INTEGER NOT NULL,
@@ -631,6 +679,8 @@ export class BridgeStore {
       CREATE INDEX IF NOT EXISTS idx_audit_events_type_created
         ON audit_events(event_type, created_at DESC);
     `);
+
+    this.ensureColumnExists("sessions", "last_adapter", "TEXT");
   }
 
   private seedUsers(users: BridgeUserAccount[]): void {
@@ -645,6 +695,14 @@ export class BridgeStore {
       insert.run(user.id, user.name, user.token ? hashToken(user.token) : null);
     }
   }
+
+  private ensureColumnExists(tableName: string, columnName: string, definition: string): void {
+    const rows = this.db.prepare(`PRAGMA table_info(${tableName})`).all() as Array<{ name: string }>;
+    if (rows.some((row) => row.name === columnName)) {
+      return;
+    }
+    this.db.exec(`ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${definition}`);
+  }
 }
 
 function mapSessionRow(row: SessionRow): ChatSession {
@@ -652,6 +710,7 @@ function mapSessionRow(row: SessionRow): ChatSession {
     id: row.id,
     title: row.title,
     starred: row.starred === 1,
+    ...(row.last_adapter ? { lastAdapter: row.last_adapter } : {}),
     status: row.status,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
