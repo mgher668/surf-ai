@@ -44,6 +44,26 @@ import {
 } from "../../lib/storage";
 import { resolveLocale, t } from "../common/i18n";
 import { MarkdownMessage } from "./MarkdownMessage";
+import { Button } from "../components/ui/button";
+import { Input } from "../components/ui/input";
+import { Textarea } from "../components/ui/textarea";
+import { Separator } from "../components/ui/separator";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger
+} from "../components/ui/dropdown-menu";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "../components/ui/tooltip";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle
+} from "../components/ui/dialog";
 
 const ACTION_PROMPT_PREFIX: Record<QuickAction, string> = {
   summarize: "Please summarize this content:",
@@ -92,8 +112,12 @@ export function App(): JSX.Element {
   const [includePageContext, setIncludePageContext] = useState(false);
   const [selectionContext, setSelectionContext] = useState<SelectionPayload | undefined>();
   const [rawViewByMessageId, setRawViewByMessageId] = useState<Record<string, boolean>>({});
-  const [openSessionMenuId, setOpenSessionMenuId] = useState<string | undefined>();
-  const [hoverSessionMenuId, setHoverSessionMenuId] = useState<string | undefined>();
+  const [hoverSessionId, setHoverSessionId] = useState<string | undefined>();
+  const [truncatedTitleSessionId, setTruncatedTitleSessionId] = useState<string | undefined>();
+  const [renameDialogOpen, setRenameDialogOpen] = useState(false);
+  const [renameTargetSession, setRenameTargetSession] = useState<ChatSession | null>(null);
+  const [renameTitleInput, setRenameTitleInput] = useState("");
+  const [renameError, setRenameError] = useState<string | undefined>();
 
   const [newConnName, setNewConnName] = useState("");
   const [newConnUrl, setNewConnUrl] = useState("http://127.0.0.1:43127");
@@ -193,18 +217,6 @@ export function App(): JSX.Element {
     };
   }, []);
 
-  useEffect(() => {
-    const onDocumentClick = () => {
-      setOpenSessionMenuId(undefined);
-      setHoverSessionMenuId(undefined);
-    };
-
-    document.addEventListener("click", onDocumentClick);
-    return () => {
-      document.removeEventListener("click", onDocumentClick);
-    };
-  }, []);
-
   async function consumePendingSelectionPayload(): Promise<void> {
     try {
       const activeTab = await getActiveTab();
@@ -237,8 +249,6 @@ export function App(): JSX.Element {
     if (!activeSessionId || isBackendDraftActive) {
       setMessages([]);
       setRawViewByMessageId({});
-      setOpenSessionMenuId(undefined);
-      setHoverSessionMenuId(undefined);
       setSelectionContext(undefined);
       setPageContent(undefined);
       setExtractError(undefined);
@@ -247,8 +257,6 @@ export function App(): JSX.Element {
     }
 
     setRawViewByMessageId({});
-    setOpenSessionMenuId(undefined);
-    setHoverSessionMenuId(undefined);
     setSelectionContext(undefined);
     setPageContent(undefined);
     setExtractError(undefined);
@@ -262,8 +270,18 @@ export function App(): JSX.Element {
     }));
   }
 
-  function toggleSessionMenu(sessionId: string): void {
-    setOpenSessionMenuId((previous) => (previous === sessionId ? undefined : sessionId));
+  function openRenameDialog(session: ChatSession): void {
+    setRenameTargetSession(session);
+    setRenameTitleInput(session.title);
+    setRenameError(undefined);
+    setRenameDialogOpen(true);
+  }
+
+  function closeRenameDialog(): void {
+    setRenameDialogOpen(false);
+    setRenameTargetSession(null);
+    setRenameTitleInput("");
+    setRenameError(undefined);
   }
 
   useEffect(() => {
@@ -795,29 +813,9 @@ export function App(): JSX.Element {
     setSessionsState(next);
   }
 
-  async function renameSession(session: ChatSession): Promise<void> {
-    const rawTitle = window.prompt(t(locale, "renameSessionPrompt"), session.title);
-    if (rawTitle === null) {
-      return;
-    }
-
-    const title = rawTitle.trim();
+  async function renameSession(session: ChatSession, title: string): Promise<boolean> {
     if (!title || title === session.title) {
-      return;
-    }
-
-    if (title.length > 120) {
-      setMessages((prev) => [
-        ...prev,
-        {
-          id: crypto.randomUUID(),
-          sessionId: activeSessionId ?? session.id,
-          role: "assistant",
-          content: `${t(locale, "renameSessionFailed")}: title_too_long (max 120)`,
-          createdAt: Date.now()
-        }
-      ]);
-      return;
+      return true;
     }
 
     if (sessionMode === "backend") {
@@ -832,7 +830,7 @@ export function App(): JSX.Element {
             createdAt: Date.now()
           }
         ]);
-        return;
+        return false;
       }
 
       const updated = await renameSessionOnBackend(activeConnection, session.id, title);
@@ -847,7 +845,7 @@ export function App(): JSX.Element {
             createdAt: Date.now()
           }
         ]);
-        return;
+        return false;
       }
 
       setSessionsState((prev) => {
@@ -855,7 +853,7 @@ export function App(): JSX.Element {
         void setSessions(next);
         return next;
       });
-      return;
+      return true;
     }
 
     const next = sessions.map((item) =>
@@ -869,6 +867,32 @@ export function App(): JSX.Element {
     );
     await setSessions(next);
     setSessionsState(next);
+    return true;
+  }
+
+  async function submitRenameDialog(): Promise<void> {
+    if (!renameTargetSession) {
+      closeRenameDialog();
+      return;
+    }
+
+    const title = renameTitleInput.trim();
+    if (!title) {
+      setRenameError(t(locale, "renameSessionEmpty"));
+      return;
+    }
+    if (title.length > 120) {
+      setRenameError(t(locale, "renameSessionTooLong"));
+      return;
+    }
+
+    const renamed = await renameSession(renameTargetSession, title);
+    if (!renamed) {
+      setRenameError(t(locale, "renameSessionFailed"));
+      return;
+    }
+
+    closeRenameDialog();
   }
 
   async function deleteSession(id: string): Promise<void> {
@@ -1199,128 +1223,145 @@ export function App(): JSX.Element {
 
   return (
     <div style={{ display: "grid", gridTemplateColumns: "220px 1fr", height: "100vh" }}>
-      <aside style={{ borderRight: "1px solid var(--line)", background: "var(--panel)", padding: 12, overflow: "auto" }}>
+      <aside
+        style={{
+          borderRight: "1px solid var(--line)",
+          background: "var(--panel)",
+          padding: 12,
+          overflowY: "auto",
+          overflowX: "hidden"
+        }}
+      >
         <h2 style={{ margin: "0 0 10px", fontSize: 16 }}>{t(locale, "sessions")}</h2>
-        <button
-          type="button"
-          onClick={() => void createNewSession()}
-          style={solidButtonStyle}
-        >
+        <Button type="button" onClick={() => void createNewSession()} className="w-full">
           {t(locale, "newSession")}
-        </button>
+        </Button>
 
-        <div style={{ marginTop: 10, display: "grid", gap: 8 }}>
-          {sessionMode === "backend" ? (
-            <button
-              key={BACKEND_DRAFT_SESSION_ID}
-              type="button"
-              onClick={() => setActiveSessionId(BACKEND_DRAFT_SESSION_ID)}
-              style={{
-                ...rowButtonStyle,
-                background: activeSessionId === BACKEND_DRAFT_SESSION_ID ? "#e8f8ff" : "#fff"
-              }}
-            >
-              <span style={{ flex: 1, textAlign: "left", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                {t(locale, "newSession")}
-              </span>
-            </button>
-          ) : null}
-          {sessions.map((session) => (
-            <div
-              key={session.id}
-              style={{
-                position: "relative",
-                ...rowButtonStyle,
-                background: activeSessionId === session.id ? "#e8f8ff" : "#fff",
-                cursor: "default",
-                padding: "6px 6px 6px 10px",
-                gap: 4
-              }}
-            >
-              <button
-                type="button"
-                onClick={() => setActiveSessionId(session.id)}
-                style={sessionTitleButtonStyle}
+        <TooltipProvider delayDuration={240}>
+          <div style={{ marginTop: 8, display: "grid", gap: 3 }}>
+            {sessions.map((session) => (
+              <Tooltip
+                key={session.id}
+                open={hoverSessionId === session.id && truncatedTitleSessionId === session.id}
               >
-                <span style={{ flex: 1, textAlign: "left", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                  {session.title}
-                </span>
-              </button>
+                <TooltipTrigger asChild>
+                  <div
+                    onClick={() => setActiveSessionId(session.id)}
+                    style={{
+                      position: "relative",
+                      ...rowButtonStyle,
+                      background:
+                        activeSessionId === session.id
+                          ? "rgba(13,95,120,0.14)"
+                          : hoverSessionId === session.id
+                            ? "rgba(13,95,120,0.08)"
+                            : "transparent",
+                      transition: "background-color 150ms ease",
+                      cursor: "pointer",
+                      padding: "2px 4px 2px 8px",
+                      gap: 4,
+                      overflow: "hidden"
+                    }}
+                    onMouseEnter={(event) => {
+                      setHoverSessionId(session.id);
+                      const titleElement = event.currentTarget.querySelector(
+                        "[data-session-title='true']"
+                      ) as HTMLElement | null;
 
-              <button
-                type="button"
-                aria-label={t(locale, "moreActions")}
-                style={{
-                  ...sessionMenuButtonStyle,
-                  ...(hoverSessionMenuId === session.id || openSessionMenuId === session.id
-                    ? sessionMenuButtonHoverStyle
-                    : null)
-                }}
-                onClick={(event) => {
-                  event.stopPropagation();
-                  toggleSessionMenu(session.id);
-                }}
-                onMouseEnter={() => setHoverSessionMenuId(session.id)}
-                onMouseLeave={() =>
-                  setHoverSessionMenuId((previous) =>
-                    previous === session.id ? undefined : previous
-                  )
-                }
-              >
-                <Icon icon={dotsVertical} width={16} height={16} />
-              </button>
+                      if (!titleElement || titleElement.scrollWidth <= titleElement.clientWidth) {
+                        setTruncatedTitleSessionId((previous) =>
+                          previous === session.id ? undefined : previous
+                        );
+                        return;
+                      }
 
-              {openSessionMenuId === session.id ? (
-                <div
-                  style={sessionMenuStyle}
-                  onClick={(event) => event.stopPropagation()}
+                      setTruncatedTitleSessionId(session.id);
+                    }}
+                    onMouseLeave={() => {
+                      setHoverSessionId((previous) =>
+                        previous === session.id ? undefined : previous
+                      );
+                      setTruncatedTitleSessionId((previous) =>
+                        previous === session.id ? undefined : previous
+                      );
+                    }}
+                  >
+                    <button
+                      type="button"
+                      onClick={() => setActiveSessionId(session.id)}
+                      style={sessionTitleButtonStyle}
+                    >
+                      <span
+                        data-session-title="true"
+                        style={{
+                          display: "block",
+                          width: "100%",
+                          minWidth: 0,
+                          textAlign: "left",
+                          overflow: "hidden",
+                          textOverflow: "ellipsis",
+                          whiteSpace: "nowrap"
+                        }}
+                      >
+                        {session.title}
+                      </span>
+                    </button>
+
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <Button
+                          type="button"
+                          aria-label={t(locale, "moreActions")}
+                          variant="ghost"
+                          size="icon"
+                          className="h-7 w-7 rounded-md p-0 text-[hsl(var(--muted-foreground))] hover:bg-accent"
+                          onClick={(event) => event.stopPropagation()}
+                          onPointerDown={(event) => event.stopPropagation()}
+                        >
+                          <Icon icon={dotsVertical} width={16} height={16} />
+                        </Button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="end" className="min-w-[150px]">
+                        <DropdownMenuItem onSelect={() => void toggleStarSession(session.id)}>
+                          <Icon
+                            icon={session.starred ? starOutlineIcon : starIcon}
+                            width={16}
+                            height={16}
+                          />
+                          <span>{session.starred ? t(locale, "unfavorite") : t(locale, "favorite")}</span>
+                        </DropdownMenuItem>
+
+                        <DropdownMenuItem onSelect={() => openRenameDialog(session)}>
+                          <Icon icon={pencilOutline} width={16} height={16} />
+                          <span>{t(locale, "renameSession")}</span>
+                        </DropdownMenuItem>
+
+                        <DropdownMenuSeparator />
+
+                        <DropdownMenuItem
+                          onSelect={() => void deleteSession(session.id)}
+                          className="text-red-700 focus:text-red-700"
+                        >
+                          <Icon icon={deleteOutline} width={16} height={16} />
+                          <span>{t(locale, "deleteSession")}</span>
+                        </DropdownMenuItem>
+                      </DropdownMenuContent>
+                    </DropdownMenu>
+                  </div>
+                </TooltipTrigger>
+                <TooltipContent
+                  side="right"
+                  sideOffset={8}
+                  className="max-w-[280px] whitespace-normal break-words"
                 >
-                  <button
-                    type="button"
-                    style={sessionMenuItemStyle}
-                    onClick={() => {
-                      setOpenSessionMenuId(undefined);
-                      void toggleStarSession(session.id);
-                    }}
-                  >
-                    <Icon
-                      icon={session.starred ? starOutlineIcon : starIcon}
-                      width={16}
-                      height={16}
-                    />
-                    <span>{session.starred ? t(locale, "unfavorite") : t(locale, "favorite")}</span>
-                  </button>
+                  {session.title}
+                </TooltipContent>
+              </Tooltip>
+            ))}
+          </div>
+        </TooltipProvider>
 
-                  <button
-                    type="button"
-                    style={sessionMenuItemStyle}
-                    onClick={() => {
-                      setOpenSessionMenuId(undefined);
-                      void renameSession(session);
-                    }}
-                  >
-                    <Icon icon={pencilOutline} width={16} height={16} />
-                    <span>{t(locale, "renameSession")}</span>
-                  </button>
-
-                  <button
-                    type="button"
-                    style={sessionMenuItemDangerStyle}
-                    onClick={() => {
-                      setOpenSessionMenuId(undefined);
-                      void deleteSession(session.id);
-                    }}
-                  >
-                    <Icon icon={deleteOutline} width={16} height={16} />
-                    <span>{t(locale, "deleteSession")}</span>
-                  </button>
-                </div>
-              ) : null}
-            </div>
-          ))}
-        </div>
-
-        <hr style={{ margin: "12px 0", border: "none", borderTop: "1px solid var(--line)" }} />
+        <Separator className="my-3" />
 
         <h3 style={{ margin: "0 0 6px", fontSize: 14 }}>{t(locale, "connection")}</h3>
         <select
@@ -1340,20 +1381,20 @@ export function App(): JSX.Element {
         </select>
 
         <label style={labelStyle}>{t(locale, "connectionName")}</label>
-        <input value={newConnName} onChange={(e) => setNewConnName(e.target.value)} style={inputStyle} />
+        <Input value={newConnName} onChange={(e) => setNewConnName(e.target.value)} />
 
         <label style={labelStyle}>{t(locale, "baseUrl")}</label>
-        <input value={newConnUrl} onChange={(e) => setNewConnUrl(e.target.value)} style={inputStyle} />
+        <Input value={newConnUrl} onChange={(e) => setNewConnUrl(e.target.value)} />
 
         <label style={labelStyle}>{t(locale, "connectionUserId")}</label>
-        <input value={newConnUserId} onChange={(e) => setNewConnUserId(e.target.value)} style={inputStyle} />
+        <Input value={newConnUserId} onChange={(e) => setNewConnUserId(e.target.value)} />
 
         <label style={labelStyle}>{t(locale, "token")}</label>
-        <input value={newConnToken} onChange={(e) => setNewConnToken(e.target.value)} style={inputStyle} />
+        <Input value={newConnToken} onChange={(e) => setNewConnToken(e.target.value)} />
 
-        <button type="button" onClick={() => void addConnection()} style={{ ...solidButtonStyle, marginTop: 8 }}>
+        <Button type="button" onClick={() => void addConnection()} className="mt-2 w-full">
           {t(locale, "addConnection")}
-        </button>
+        </Button>
       </aside>
 
       <main style={{ display: "grid", gridTemplateRows: "auto 1fr auto", minHeight: 0 }}>
@@ -1377,9 +1418,9 @@ export function App(): JSX.Element {
               </option>
             ))}
           </select>
-          <button type="button" onClick={() => void extractCurrentPage()} disabled={extractingPage} style={ghostButtonStyle}>
+          <Button type="button" variant="outline" size="sm" onClick={() => void extractCurrentPage()} disabled={extractingPage}>
             {extractingPage ? t(locale, "extractingPage") : t(locale, "extractPage")}
-          </button>
+          </Button>
         </header>
 
         <section style={{ padding: 14, overflow: "auto", display: "grid", gap: 12, alignContent: "start" }}>
@@ -1421,7 +1462,7 @@ export function App(): JSX.Element {
           ) : null}
           {extractError ? <div style={hintErrorStyle}>{extractError}</div> : null}
           {messages.length === 0 ? (
-            <div style={{ color: "var(--muted)", fontSize: 13 }}>{t(locale, "empty")}</div>
+            <div style={{ color: "var(--muted-text)", fontSize: 13 }}>{t(locale, "empty")}</div>
           ) : (
             messages.map((msg) => {
               const showRaw = msg.role === "assistant" && Boolean(rawViewByMessageId[msg.id]);
@@ -1466,23 +1507,73 @@ export function App(): JSX.Element {
         </section>
 
         <footer style={{ padding: 12, borderTop: "1px solid var(--line)", display: "grid", gap: 8 }}>
-          <textarea
+          <Textarea
             rows={4}
             value={input}
             onChange={(e) => setInput(e.target.value)}
             placeholder={t(locale, "placeholder")}
-            style={{ ...inputStyle, resize: "vertical", minHeight: 76 }}
+            className="min-h-[76px] resize-y"
           />
-          <button
+          <Button
             type="button"
             disabled={pending}
             onClick={() => void send()}
-            style={{ ...solidButtonStyle, opacity: pending ? 0.6 : 1 }}
+            style={{ opacity: pending ? 0.6 : 1 }}
           >
             {pending ? "..." : t(locale, "send")}
-          </button>
+          </Button>
         </footer>
       </main>
+
+      <Dialog
+        open={renameDialogOpen}
+        onOpenChange={(open) => {
+          if (!open) {
+            closeRenameDialog();
+          }
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>{t(locale, "renameSession")}</DialogTitle>
+            <DialogDescription>{t(locale, "renameSessionDescription")}</DialogDescription>
+          </DialogHeader>
+
+          <form
+            className="grid gap-3"
+            onSubmit={(event) => {
+              event.preventDefault();
+              void submitRenameDialog();
+            }}
+          >
+            <Input
+              value={renameTitleInput}
+              onChange={(event) => {
+                setRenameTitleInput(event.target.value);
+                if (renameError) {
+                  setRenameError(undefined);
+                }
+              }}
+              maxLength={120}
+              autoFocus
+            />
+            {renameError ? (
+              <div className="text-xs text-red-700">{renameError}</div>
+            ) : null}
+
+            <DialogFooter>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => closeRenameDialog()}
+              >
+                {t(locale, "cancel")}
+              </Button>
+              <Button type="submit">{t(locale, "save")}</Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
@@ -1585,25 +1676,15 @@ function sleep(ms: number): Promise<void> {
   });
 }
 
-const solidButtonStyle: CSSProperties = {
-  border: "1px solid var(--brand)",
-  borderRadius: 10,
-  padding: "8px 10px",
-  background: "linear-gradient(180deg, #11a4a6 0%, #0f7a8a 100%)",
-  color: "#fff",
-  fontWeight: 600,
-  cursor: "pointer"
-};
-
 const rowButtonStyle: CSSProperties = {
   display: "flex",
   alignItems: "center",
   gap: 6,
   width: "100%",
-  border: "1px solid var(--line)",
-  borderRadius: 10,
-  padding: "8px 10px",
-  background: "#fff",
+  border: "none",
+  borderRadius: 8,
+  padding: "2px 4px",
+  background: "transparent",
   color: "var(--ink)",
   cursor: "pointer"
 };
@@ -1621,17 +1702,8 @@ const labelStyle: CSSProperties = {
   marginTop: 8,
   marginBottom: 4,
   fontSize: 12,
-  color: "var(--muted)",
+  color: "var(--muted-text)",
   display: "block"
-};
-
-const ghostButtonStyle: CSSProperties = {
-  border: "1px solid var(--line)",
-  borderRadius: 10,
-  padding: "8px 10px",
-  background: "#fff",
-  color: "var(--ink)",
-  cursor: "pointer"
 };
 
 const hintInfoStyle: CSSProperties = {
@@ -1669,25 +1741,6 @@ const inlineCheckboxLabelStyle: CSSProperties = {
   fontSize: 12
 };
 
-const sessionMenuButtonStyle: CSSProperties = {
-  border: "none",
-  borderRadius: 8,
-  padding: 0,
-  width: 28,
-  height: 28,
-  display: "inline-flex",
-  alignItems: "center",
-  justifyContent: "center",
-  background: "transparent",
-  color: "var(--muted)",
-  cursor: "pointer",
-  transition: "background-color 120ms ease"
-};
-
-const sessionMenuButtonHoverStyle: CSSProperties = {
-  background: "rgba(17, 38, 50, 0.08)"
-};
-
 const sessionTitleButtonStyle: CSSProperties = {
   flex: 1,
   minWidth: 0,
@@ -1697,41 +1750,8 @@ const sessionTitleButtonStyle: CSSProperties = {
   cursor: "pointer",
   padding: "2px 0",
   display: "inline-flex",
-  alignItems: "center"
-};
-
-const sessionMenuStyle: CSSProperties = {
-  position: "absolute",
-  right: 6,
-  top: "calc(100% + 4px)",
-  zIndex: 20,
-  minWidth: 138,
-  padding: 6,
-  border: "1px solid var(--line)",
-  borderRadius: 10,
-  background: "#fff",
-  boxShadow: "0 6px 18px rgba(17, 38, 50, 0.12)",
-  display: "grid",
-  gap: 4
-};
-
-const sessionMenuItemStyle: CSSProperties = {
-  border: "none",
-  borderRadius: 8,
-  background: "transparent",
-  color: "var(--ink)",
-  cursor: "pointer",
-  fontSize: 12,
-  padding: "6px 8px",
-  display: "inline-flex",
   alignItems: "center",
-  gap: 8,
-  textAlign: "left"
-};
-
-const sessionMenuItemDangerStyle: CSSProperties = {
-  ...sessionMenuItemStyle,
-  color: "#9b2d2d"
+  overflow: "hidden"
 };
 
 const messageRenderToggleStyle: CSSProperties = {

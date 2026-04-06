@@ -1,28 +1,57 @@
-:root {
-  color-scheme: light;
-  font-family: "Noto Sans", "PingFang SC", "Segoe UI", sans-serif;
-  --bg: #f4f9fb;
-  --panel: #ffffff;
-  --ink: #112632;
-  --muted: #547080;
-  --line: #d1e2eb;
-  --brand: #0f7a8a;
-  --brand-2: #0d5f78;
-}
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
 
-* {
-  box-sizing: border-box;
-}
+@layer base {
+  :root {
+    color-scheme: light;
+    font-family: "Noto Sans", "PingFang SC", "Segoe UI", sans-serif;
 
-body {
-  margin: 0;
-  background: radial-gradient(circle at 8% 0%, #dcf4ff 0%, #f4f9fb 40%, #f2f8f8 100%);
-  color: var(--ink);
-}
+    --background: 195 54% 97%;
+    --foreground: 203 49% 13%;
+    --card: 0 0% 100%;
+    --card-foreground: 203 49% 13%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 203 49% 13%;
+    --primary: 187 80% 30%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 194 47% 92%;
+    --secondary-foreground: 203 49% 20%;
+    --muted: 196 34% 92%;
+    --muted-foreground: 203 22% 38%;
+    --accent: 194 47% 92%;
+    --accent-foreground: 203 49% 20%;
+    --destructive: 0 62% 47%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 199 41% 86%;
+    --input: 199 41% 86%;
+    --ring: 187 80% 30%;
+    --radius: 0.625rem;
 
-button,
-input,
-textarea,
-select {
-  font: inherit;
+    --bg: hsl(var(--background));
+    --panel: hsl(var(--card));
+    --ink: hsl(var(--foreground));
+    --line: hsl(var(--border));
+    --brand: #0f7a8a;
+    --brand-2: #0d5f78;
+    --muted-text: hsl(var(--muted-foreground));
+  }
+
+  * {
+    @apply border-border;
+    box-sizing: border-box;
+  }
+
+  body {
+    margin: 0;
+    background: radial-gradient(circle at 8% 0%, #dcf4ff 0%, #f4f9fb 40%, #f2f8f8 100%);
+    color: var(--ink);
+  }
+
+  button,
+  input,
+  textarea,
+  select {
+    font: inherit;
+  }
 }
