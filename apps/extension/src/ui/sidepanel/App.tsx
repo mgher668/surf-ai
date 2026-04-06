@@ -46,6 +46,13 @@ import { resolveLocale, t } from "../common/i18n";
 import { MarkdownMessage } from "./MarkdownMessage";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue
+} from "../components/ui/select";
 import { Textarea } from "../components/ui/textarea";
 import { Separator } from "../components/ui/separator";
 import {
@@ -1410,15 +1417,32 @@ export function App(): JSX.Element {
           }}
         >
           <strong style={{ flex: 1 }}>{t(locale, "appTitle")}</strong>
-          <label>{t(locale, "adapter")}</label>
-          <select value={adapter} onChange={(e) => setAdapter(e.target.value as BridgeChatRequest["adapter"])} style={{ ...inputStyle, width: 150 }}>
-            {availableAdapters.map((item) => (
-              <option key={item.adapter} value={item.adapter}>
-                {item.label}
-              </option>
-            ))}
-          </select>
-          <Button type="button" variant="outline" size="sm" onClick={() => void extractCurrentPage()} disabled={extractingPage}>
+          <div className="flex items-center gap-2">
+            <span className="text-xs text-muted-foreground">{t(locale, "adapter")}</span>
+            <Select
+              value={adapter}
+              onValueChange={(value) => setAdapter(value as BridgeChatRequest["adapter"])}
+            >
+              <SelectTrigger className="h-8 w-[160px] bg-card text-xs">
+                <SelectValue placeholder={t(locale, "adapter")} />
+              </SelectTrigger>
+              <SelectContent>
+                {availableAdapters.map((item) => (
+                  <SelectItem key={item.adapter} value={item.adapter}>
+                    {item.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="h-8"
+            onClick={() => void extractCurrentPage()}
+            disabled={extractingPage}
+          >
             {extractingPage ? t(locale, "extractingPage") : t(locale, "extractPage")}
           </Button>
         </header>
