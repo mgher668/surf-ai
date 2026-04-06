@@ -1545,63 +1545,6 @@ export function App(): JSX.Element {
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
-          <div className="flex items-center gap-2">
-            <span className="text-xs text-muted-foreground">{t(locale, "adapter")}</span>
-            <Select
-              value={adapter}
-              onValueChange={(value) => {
-                const nextAdapter = value as BridgeChatRequest["adapter"];
-                setAdapter(nextAdapter);
-                if (!activeSessionId) {
-                  return;
-                }
-                rememberSessionAdapter(activeSessionId, nextAdapter);
-                if (
-                  sessionMode === "backend" &&
-                  activeConnection &&
-                  activeSessionId !== BACKEND_DRAFT_SESSION_ID
-                ) {
-                  void updateSessionAdapterOnBackend(
-                    activeConnection,
-                    activeSessionId,
-                    nextAdapter
-                  ).then((updatedSession) => {
-                    if (!updatedSession) {
-                      return;
-                    }
-                    setSessionsState((prev) => {
-                      const next = prev.map((item) =>
-                        item.id === updatedSession.id ? updatedSession : item
-                      );
-                      void setSessions(next);
-                      return next;
-                    });
-                  });
-                }
-              }}
-            >
-              <SelectTrigger className="h-8 w-[136px] bg-card text-xs">
-                <SelectValue placeholder={t(locale, "adapter")} />
-              </SelectTrigger>
-              <SelectContent>
-                {availableAdapters.map((item) => (
-                  <SelectItem key={item.adapter} value={item.adapter}>
-                    {item.label}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            className="h-8"
-            onClick={() => void extractCurrentPage()}
-            disabled={extractingPage}
-          >
-            {extractingPage ? t(locale, "extractingPage") : t(locale, "extractPage")}
-          </Button>
           <Button
             type="button"
             variant="outline"
@@ -1711,6 +1654,65 @@ export function App(): JSX.Element {
         </section>
 
         <footer style={{ padding: 12, borderTop: "1px solid var(--line)", display: "grid", gap: 8 }}>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-muted-foreground">{t(locale, "adapter")}</span>
+              <Select
+                value={adapter}
+                onValueChange={(value) => {
+                  const nextAdapter = value as BridgeChatRequest["adapter"];
+                  setAdapter(nextAdapter);
+                  if (!activeSessionId) {
+                    return;
+                  }
+                  rememberSessionAdapter(activeSessionId, nextAdapter);
+                  if (
+                    sessionMode === "backend" &&
+                    activeConnection &&
+                    activeSessionId !== BACKEND_DRAFT_SESSION_ID
+                  ) {
+                    void updateSessionAdapterOnBackend(
+                      activeConnection,
+                      activeSessionId,
+                      nextAdapter
+                    ).then((updatedSession) => {
+                      if (!updatedSession) {
+                        return;
+                      }
+                      setSessionsState((prev) => {
+                        const next = prev.map((item) =>
+                          item.id === updatedSession.id ? updatedSession : item
+                        );
+                        void setSessions(next);
+                        return next;
+                      });
+                    });
+                  }
+                }}
+              >
+                <SelectTrigger className="h-8 w-[136px] bg-card text-xs">
+                  <SelectValue placeholder={t(locale, "adapter")} />
+                </SelectTrigger>
+                <SelectContent>
+                  {availableAdapters.map((item) => (
+                    <SelectItem key={item.adapter} value={item.adapter}>
+                      {item.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="h-8"
+              onClick={() => void extractCurrentPage()}
+              disabled={extractingPage}
+            >
+              {extractingPage ? t(locale, "extractingPage") : t(locale, "extractPage")}
+            </Button>
+          </div>
           <Textarea
             rows={4}
             value={input}
