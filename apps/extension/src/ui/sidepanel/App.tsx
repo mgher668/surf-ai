@@ -35,6 +35,7 @@ import {
   setSessions
 } from "../../lib/storage";
 import { resolveLocale, t } from "../common/i18n";
+import { MarkdownMessage } from "./MarkdownMessage";
 
 const ACTION_PROMPT_PREFIX: Record<QuickAction, string> = {
   summarize: "Please summarize this content:",
@@ -82,6 +83,7 @@ export function App(): JSX.Element {
   const [pageContent, setPageContent] = useState<PageContentPayload | undefined>();
   const [includePageContext, setIncludePageContext] = useState(false);
   const [selectionContext, setSelectionContext] = useState<SelectionPayload | undefined>();
+  const [rawViewByMessageId, setRawViewByMessageId] = useState<Record<string, boolean>>({});
 
   const [newConnName, setNewConnName] = useState("");
   const [newConnUrl, setNewConnUrl] = useState("http://127.0.0.1:43127");
@@ -212,6 +214,7 @@ export function App(): JSX.Element {
   useEffect(() => {
     if (!activeSessionId || isBackendDraftActive) {
       setMessages([]);
+      setRawViewByMessageId({});
       setSelectionContext(undefined);
       setPageContent(undefined);
       setExtractError(undefined);
@@ -219,11 +222,19 @@ export function App(): JSX.Element {
       return;
     }
 
+    setRawViewByMessageId({});
     setSelectionContext(undefined);
     setPageContent(undefined);
     setExtractError(undefined);
     setIncludePageContext(false);
   }, [activeSessionId, isBackendDraftActive]);
+
+  function toggleRawView(messageId: string): void {
+    setRawViewByMessageId((previous) => ({
+      ...previous,
+      [messageId]: !previous[messageId]
+    }));
+  }
 
   useEffect(() => {
     if (!activeSessionId) {
@@ -1214,22 +1225,45 @@ export function App(): JSX.Element {
           {messages.length === 0 ? (
             <div style={{ color: "var(--muted)", fontSize: 13 }}>{t(locale, "empty")}</div>
           ) : (
-            messages.map((msg) => (
-              <article
-                key={msg.id}
-                style={{
-                  maxWidth: "85%",
-                  padding: "10px 12px",
-                  borderRadius: 12,
-                  lineHeight: 1.45,
-                  border: "1px solid var(--line)",
-                  background: msg.role === "user" ? "#dff4ff" : "#fff",
-                  marginLeft: msg.role === "user" ? "auto" : 0
-                }}
-              >
-                {msg.content}
-              </article>
-            ))
+            messages.map((msg) => {
+              const showRaw = msg.role === "assistant" && Boolean(rawViewByMessageId[msg.id]);
+
+              return (
+                <article
+                  key={msg.id}
+                  style={{
+                    maxWidth: "85%",
+                    padding: "10px 12px",
+                    borderRadius: 12,
+                    lineHeight: 1.45,
+                    border: "1px solid var(--line)",
+                    background: msg.role === "user" ? "#dff4ff" : "#fff",
+                    marginLeft: msg.role === "user" ? "auto" : 0
+                  }}
+                >
+                  {msg.role === "assistant" ? (
+                    <div style={{ display: "grid", gap: 8 }}>
+                      <button
+                        type="button"
+                        onClick={() => toggleRawView(msg.id)}
+                        style={messageRenderToggleStyle}
+                      >
+                        {showRaw ? "格式化" : "查看原文"}
+                      </button>
+                      {showRaw ? (
+                        <pre style={rawMessageContentStyle}>
+                          <code>{msg.content}</code>
+                        </pre>
+                      ) : (
+                        <MarkdownMessage content={msg.content} />
+                      )}
+                    </div>
+                  ) : (
+                    <span style={{ whiteSpace: "pre-wrap" }}>{msg.content}</span>
+                  )}
+                </article>
+              );
+            })
           )}
         </section>
 
@@ -1441,4 +1475,29 @@ const sessionInlineActionStyle: CSSProperties = {
   cursor: "pointer",
   fontSize: 12,
   color: "var(--muted)"
+};
+
+const messageRenderToggleStyle: CSSProperties = {
+  border: "none",
+  background: "transparent",
+  color: "#0d5f78",
+  padding: 0,
+  margin: 0,
+  width: "fit-content",
+  cursor: "pointer",
+  fontSize: 12,
+  textDecoration: "underline",
+  textUnderlineOffset: 2
+};
+
+const rawMessageContentStyle: CSSProperties = {
+  margin: 0,
+  padding: "8px 10px",
+  border: "1px solid var(--line)",
+  borderRadius: 8,
+  background: "#f6f9fb",
+  whiteSpace: "pre-wrap",
+  wordBreak: "break-word",
+  fontSize: 12,
+  fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace"
 };
