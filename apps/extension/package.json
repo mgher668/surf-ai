@@ -10,6 +10,8 @@
     "lint": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
+    "@iconify-icons/mdi": "^1.2.48",
+    "@iconify/react": "^6.0.2",
     "@mozilla/readability": "^0.6.0",
     "@surf-ai/shared": "workspace:*",
     "katex": "^0.16.45",

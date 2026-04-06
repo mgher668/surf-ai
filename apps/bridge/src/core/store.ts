@@ -194,6 +194,14 @@ export class BridgeStore {
     return row ? mapSessionRow(row) : null;
   }
 
+  public updateSessionTitle(userId: string, sessionId: string, title: string): ChatSession | null {
+    const now = Date.now();
+    this.db.prepare(
+      "UPDATE sessions SET title = ?, updated_at = ? WHERE id = ? AND user_id = ?"
+    ).run(title, now, sessionId, userId);
+    return this.getSession(userId, sessionId);
+  }
+
   public updateSessionStar(userId: string, sessionId: string, starred: boolean): ChatSession | null {
     const now = Date.now();
     this.db.prepare(

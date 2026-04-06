@@ -9,6 +9,8 @@ import type {
   BridgeHealthResponse,
   BridgeSessionListResponse,
   BridgeSessionMessagesResponse,
+  BridgeSessionRenameRequest,
+  BridgeSessionRenameResponse,
   BridgeSessionSendMessageResponse,
   BridgeSessionStarRequest,
   BridgeModelsResponse,
@@ -188,6 +190,10 @@ const createSessionSchema = z.object({
   title: z.string().trim().min(1).max(120).optional()
 });
 
+const updateTitleSchema = z.object({
+  title: z.string().trim().min(1).max(120)
+});
+
 const updateStarSchema = z.object({
   starred: z.boolean()
 });
@@ -249,6 +255,30 @@ app.post("/sessions", async (request, reply) => {
   const response: BridgeSessionCreateResponse = {
     session: store.createSession(userId, title ?? "New chat")
   };
+  return response;
+});
+
+app.patch("/sessions/:id", async (request, reply) => {
+  const userId = requireAuthedUserId(request, reply);
+  if (!userId) {
+    return;
+  }
+
+  const parsed = updateTitleSchema.safeParse(request.body);
+  if (!parsed.success) {
+    reply.code(400);
+    return { error: "invalid_request", details: parsed.error.flatten() };
+  }
+
+  const sessionId = String((request.params as { id: string }).id);
+  const payload: BridgeSessionRenameRequest = parsed.data;
+  const session = store.updateSessionTitle(userId, sessionId, payload.title);
+  if (!session) {
+    reply.code(404);
+    return { error: "session_not_found" };
+  }
+
+  const response: BridgeSessionRenameResponse = { session };
   return response;
 });
 

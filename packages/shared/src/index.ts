@@ -196,6 +196,14 @@ export interface BridgeSessionStarRequest {
   starred: boolean;
 }
 
+export interface BridgeSessionRenameRequest {
+  title: string;
+}
+
+export interface BridgeSessionRenameResponse {
+  session: ChatSession;
+}
+
 export interface BridgeTtsRequest {
   text: string;
   voiceId?: string;

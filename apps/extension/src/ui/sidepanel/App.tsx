@@ -1,4 +1,10 @@
 import { useEffect, useMemo, useState, type CSSProperties } from "react";
+import { Icon } from "@iconify/react/dist/offline";
+import dotsVertical from "@iconify-icons/mdi/dots-vertical";
+import starIcon from "@iconify-icons/mdi/star";
+import starOutlineIcon from "@iconify-icons/mdi/star-outline";
+import pencilOutline from "@iconify-icons/mdi/pencil-outline";
+import deleteOutline from "@iconify-icons/mdi/delete-outline";
 import { STORAGE_KEYS } from "@surf-ai/shared";
 import type {
   BridgeAuditEvent,
@@ -11,6 +17,8 @@ import type {
   BridgeSessionCreateResponse,
   BridgeSessionListResponse,
   BridgeSessionMessagesResponse,
+  BridgeSessionRenameRequest,
+  BridgeSessionRenameResponse,
   BridgeSessionSendMessageResponse,
   BridgeSessionStarRequest,
   ChatMessage,
@@ -84,6 +92,8 @@ export function App(): JSX.Element {
   const [includePageContext, setIncludePageContext] = useState(false);
   const [selectionContext, setSelectionContext] = useState<SelectionPayload | undefined>();
   const [rawViewByMessageId, setRawViewByMessageId] = useState<Record<string, boolean>>({});
+  const [openSessionMenuId, setOpenSessionMenuId] = useState<string | undefined>();
+  const [hoverSessionMenuId, setHoverSessionMenuId] = useState<string | undefined>();
 
   const [newConnName, setNewConnName] = useState("");
   const [newConnUrl, setNewConnUrl] = useState("http://127.0.0.1:43127");
@@ -183,6 +193,18 @@ export function App(): JSX.Element {
     };
   }, []);
 
+  useEffect(() => {
+    const onDocumentClick = () => {
+      setOpenSessionMenuId(undefined);
+      setHoverSessionMenuId(undefined);
+    };
+
+    document.addEventListener("click", onDocumentClick);
+    return () => {
+      document.removeEventListener("click", onDocumentClick);
+    };
+  }, []);
+
   async function consumePendingSelectionPayload(): Promise<void> {
     try {
       const activeTab = await getActiveTab();
@@ -215,6 +237,8 @@ export function App(): JSX.Element {
     if (!activeSessionId || isBackendDraftActive) {
       setMessages([]);
       setRawViewByMessageId({});
+      setOpenSessionMenuId(undefined);
+      setHoverSessionMenuId(undefined);
       setSelectionContext(undefined);
       setPageContent(undefined);
       setExtractError(undefined);
@@ -223,6 +247,8 @@ export function App(): JSX.Element {
     }
 
     setRawViewByMessageId({});
+    setOpenSessionMenuId(undefined);
+    setHoverSessionMenuId(undefined);
     setSelectionContext(undefined);
     setPageContent(undefined);
     setExtractError(undefined);
@@ -234,6 +260,10 @@ export function App(): JSX.Element {
       ...previous,
       [messageId]: !previous[messageId]
     }));
+  }
+
+  function toggleSessionMenu(sessionId: string): void {
+    setOpenSessionMenuId((previous) => (previous === sessionId ? undefined : sessionId));
   }
 
   useEffect(() => {
@@ -640,6 +670,42 @@ export function App(): JSX.Element {
     }
   }
 
+  async function renameSessionOnBackend(
+    connection: BridgeConnection,
+    sessionId: string,
+    title: string
+  ): Promise<ChatSession | null> {
+    try {
+      const body: BridgeSessionRenameRequest = { title };
+      const response = await fetch(`${connection.baseUrl}/sessions/${sessionId}`, {
+        method: "PATCH",
+        headers: buildBridgeHeaders(connection, true),
+        body: JSON.stringify(body)
+      });
+      if (!response.ok) {
+        if (response.status === 401 || response.status === 403) {
+          reportRuntimeAlert("auth_failed", "error", t(locale, "alertAuthFailed"), response.status);
+        } else if (response.status === 429) {
+          reportRuntimeAlert("rate_limited", "warn", t(locale, "alertRateLimited"), response.status);
+        } else {
+          reportRuntimeAlert(
+            "bridge_request_failed",
+            "warn",
+            `${t(locale, "alertBridgeRequestFailed")} (${response.status})`,
+            response.status
+          );
+        }
+        return null;
+      }
+      const payload = (await response.json()) as BridgeSessionRenameResponse;
+      clearRuntimeAlert();
+      return payload.session;
+    } catch {
+      reportRuntimeAlert("backend_unreachable", "error", t(locale, "alertBackendUnreachable"));
+      return null;
+    }
+  }
+
   async function deleteSessionOnBackend(connection: BridgeConnection, sessionId: string): Promise<boolean> {
     try {
       const response = await fetch(`${connection.baseUrl}/sessions/${sessionId}`, {
@@ -725,6 +791,82 @@ export function App(): JSX.Element {
     }
 
     const next = sessions.map((item) => (item.id === id ? { ...item, starred: !item.starred, updatedAt: Date.now() } : item));
+    await setSessions(next);
+    setSessionsState(next);
+  }
+
+  async function renameSession(session: ChatSession): Promise<void> {
+    const rawTitle = window.prompt(t(locale, "renameSessionPrompt"), session.title);
+    if (rawTitle === null) {
+      return;
+    }
+
+    const title = rawTitle.trim();
+    if (!title || title === session.title) {
+      return;
+    }
+
+    if (title.length > 120) {
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: crypto.randomUUID(),
+          sessionId: activeSessionId ?? session.id,
+          role: "assistant",
+          content: `${t(locale, "renameSessionFailed")}: title_too_long (max 120)`,
+          createdAt: Date.now()
+        }
+      ]);
+      return;
+    }
+
+    if (sessionMode === "backend") {
+      if (!activeConnection) {
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: crypto.randomUUID(),
+            sessionId: activeSessionId ?? session.id,
+            role: "assistant",
+            content: "Error: no active bridge connection. Please select or add one first.",
+            createdAt: Date.now()
+          }
+        ]);
+        return;
+      }
+
+      const updated = await renameSessionOnBackend(activeConnection, session.id, title);
+      if (!updated) {
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: crypto.randomUUID(),
+            sessionId: activeSessionId ?? session.id,
+            role: "assistant",
+            content: `${t(locale, "renameSessionFailed")}.`,
+            createdAt: Date.now()
+          }
+        ]);
+        return;
+      }
+
+      setSessionsState((prev) => {
+        const next = prev.map((item) => (item.id === session.id ? updated : item));
+        void setSessions(next);
+        return next;
+      });
+      return;
+    }
+
+    const next = sessions.map((item) =>
+      item.id === session.id
+        ? {
+            ...item,
+            title,
+            updatedAt: Date.now()
+          }
+        : item
+    );
     await setSessions(next);
     setSessionsState(next);
   }
@@ -1084,41 +1226,97 @@ export function App(): JSX.Element {
             </button>
           ) : null}
           {sessions.map((session) => (
-            <button
+            <div
               key={session.id}
-              type="button"
-              onClick={() => setActiveSessionId(session.id)}
               style={{
+                position: "relative",
                 ...rowButtonStyle,
-                background: activeSessionId === session.id ? "#e8f8ff" : "#fff"
+                background: activeSessionId === session.id ? "#e8f8ff" : "#fff",
+                cursor: "default",
+                padding: "6px 6px 6px 10px",
+                gap: 4
               }}
             >
-              <span style={{ flex: 1, textAlign: "left", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                {session.title}
-              </span>
-              <span
-                role="button"
-                aria-label={t(locale, "favorite")}
-                style={sessionInlineActionStyle}
+              <button
+                type="button"
+                onClick={() => setActiveSessionId(session.id)}
+                style={sessionTitleButtonStyle}
+              >
+                <span style={{ flex: 1, textAlign: "left", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                  {session.title}
+                </span>
+              </button>
+
+              <button
+                type="button"
+                aria-label={t(locale, "moreActions")}
+                style={{
+                  ...sessionMenuButtonStyle,
+                  ...(hoverSessionMenuId === session.id || openSessionMenuId === session.id
+                    ? sessionMenuButtonHoverStyle
+                    : null)
+                }}
                 onClick={(event) => {
                   event.stopPropagation();
-                  void toggleStarSession(session.id);
+                  toggleSessionMenu(session.id);
                 }}
+                onMouseEnter={() => setHoverSessionMenuId(session.id)}
+                onMouseLeave={() =>
+                  setHoverSessionMenuId((previous) =>
+                    previous === session.id ? undefined : previous
+                  )
+                }
               >
-                {session.starred ? "★" : "☆"}
-              </span>
-              <span
-                role="button"
-                aria-label={t(locale, "deleteSession")}
-                style={sessionInlineActionStyle}
-                onClick={(event) => {
-                  event.stopPropagation();
-                  void deleteSession(session.id);
-                }}
-              >
-                {t(locale, "deleteSession")}
-              </span>
-            </button>
+                <Icon icon={dotsVertical} width={16} height={16} />
+              </button>
+
+              {openSessionMenuId === session.id ? (
+                <div
+                  style={sessionMenuStyle}
+                  onClick={(event) => event.stopPropagation()}
+                >
+                  <button
+                    type="button"
+                    style={sessionMenuItemStyle}
+                    onClick={() => {
+                      setOpenSessionMenuId(undefined);
+                      void toggleStarSession(session.id);
+                    }}
+                  >
+                    <Icon
+                      icon={session.starred ? starOutlineIcon : starIcon}
+                      width={16}
+                      height={16}
+                    />
+                    <span>{session.starred ? t(locale, "unfavorite") : t(locale, "favorite")}</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    style={sessionMenuItemStyle}
+                    onClick={() => {
+                      setOpenSessionMenuId(undefined);
+                      void renameSession(session);
+                    }}
+                  >
+                    <Icon icon={pencilOutline} width={16} height={16} />
+                    <span>{t(locale, "renameSession")}</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    style={sessionMenuItemDangerStyle}
+                    onClick={() => {
+                      setOpenSessionMenuId(undefined);
+                      void deleteSession(session.id);
+                    }}
+                  >
+                    <Icon icon={deleteOutline} width={16} height={16} />
+                    <span>{t(locale, "deleteSession")}</span>
+                  </button>
+                </div>
+              ) : null}
+            </div>
           ))}
         </div>
 
@@ -1471,10 +1669,69 @@ const inlineCheckboxLabelStyle: CSSProperties = {
   fontSize: 12
 };
 
-const sessionInlineActionStyle: CSSProperties = {
+const sessionMenuButtonStyle: CSSProperties = {
+  border: "none",
+  borderRadius: 8,
+  padding: 0,
+  width: 28,
+  height: 28,
+  display: "inline-flex",
+  alignItems: "center",
+  justifyContent: "center",
+  background: "transparent",
+  color: "var(--muted)",
+  cursor: "pointer",
+  transition: "background-color 120ms ease"
+};
+
+const sessionMenuButtonHoverStyle: CSSProperties = {
+  background: "rgba(17, 38, 50, 0.08)"
+};
+
+const sessionTitleButtonStyle: CSSProperties = {
+  flex: 1,
+  minWidth: 0,
+  border: "none",
+  background: "transparent",
+  color: "inherit",
+  cursor: "pointer",
+  padding: "2px 0",
+  display: "inline-flex",
+  alignItems: "center"
+};
+
+const sessionMenuStyle: CSSProperties = {
+  position: "absolute",
+  right: 6,
+  top: "calc(100% + 4px)",
+  zIndex: 20,
+  minWidth: 138,
+  padding: 6,
+  border: "1px solid var(--line)",
+  borderRadius: 10,
+  background: "#fff",
+  boxShadow: "0 6px 18px rgba(17, 38, 50, 0.12)",
+  display: "grid",
+  gap: 4
+};
+
+const sessionMenuItemStyle: CSSProperties = {
+  border: "none",
+  borderRadius: 8,
+  background: "transparent",
+  color: "var(--ink)",
   cursor: "pointer",
   fontSize: 12,
-  color: "var(--muted)"
+  padding: "6px 8px",
+  display: "inline-flex",
+  alignItems: "center",
+  gap: 8,
+  textAlign: "left"
+};
+
+const sessionMenuItemDangerStyle: CSSProperties = {
+  ...sessionMenuItemStyle,
+  color: "#9b2d2d"
 };
 
 const messageRenderToggleStyle: CSSProperties = {
