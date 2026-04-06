@@ -4,8 +4,12 @@ const dictionary = {
   "zh-CN": {
     appTitle: "Surf AI",
     openSidePanel: "打开侧边栏",
+    openStandalone: "打开独立页",
+    openSettings: "打开设置",
+    backToChat: "返回聊天页",
     connection: "连接",
     noConnection: "未连接",
+    currentConnection: "当前连接",
     addConnection: "添加连接",
     connectionName: "名称",
     connectionUserId: "用户ID",
@@ -16,7 +20,11 @@ const dictionary = {
     send: "发送",
     placeholder: "输入你的问题，或使用网页选区触发",
     adapter: "适配器",
+    defaultAdapter: "默认适配器",
     model: "模型",
+    language: "界面语言",
+    languageZhCn: "中文",
+    languageEnUs: "English",
     favorite: "收藏",
     unfavorite: "取消收藏",
     moreActions: "更多操作",
@@ -39,13 +47,21 @@ const dictionary = {
     alertAuthFailed: "鉴权失败，请检查 User ID 或 Token",
     alertRateLimited: "请求过于频繁，请稍后重试",
     alertBridgeRequestFailed: "后端请求失败",
-    recentAuditEvents: "最近安全事件"
+    recentAuditEvents: "最近安全事件",
+    settingsTitle: "设置",
+    settingsDescription: "管理连接、默认适配器与界面语言。",
+    noActiveConnectionHint: "当前没有可用连接，请先到设置页添加连接。",
+    popupTipSelection: "提示：选中网页文本可触发快速操作。"
   },
   "en-US": {
     appTitle: "Surf AI",
     openSidePanel: "Open Side Panel",
+    openStandalone: "Open Standalone",
+    openSettings: "Open Settings",
+    backToChat: "Back to Chat",
     connection: "Connection",
     noConnection: "Not connected",
+    currentConnection: "Current Connection",
     addConnection: "Add Connection",
     connectionName: "Name",
     connectionUserId: "User ID",
@@ -56,7 +72,11 @@ const dictionary = {
     send: "Send",
     placeholder: "Ask anything or use selected text from webpage",
     adapter: "Adapter",
+    defaultAdapter: "Default Adapter",
     model: "Model",
+    language: "Language",
+    languageZhCn: "中文",
+    languageEnUs: "English",
     favorite: "Favorite",
     unfavorite: "Unfavorite",
     moreActions: "More actions",
@@ -79,7 +99,11 @@ const dictionary = {
     alertAuthFailed: "Authentication failed. Check User ID or token.",
     alertRateLimited: "Rate limited. Please retry later.",
     alertBridgeRequestFailed: "Bridge request failed",
-    recentAuditEvents: "Recent security events"
+    recentAuditEvents: "Recent security events",
+    settingsTitle: "Settings",
+    settingsDescription: "Manage connections, default adapter, and UI language.",
+    noActiveConnectionHint: "No active connection. Add one from Settings first.",
+    popupTipSelection: "Tip: select text on page to trigger quick actions."
   }
 } as const;
 

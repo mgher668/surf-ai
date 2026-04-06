@@ -1,12 +1,43 @@
-import { resolveLocale, t } from "../common/i18n";
+import { useEffect, useState } from "react";
+import { STORAGE_KEYS } from "@surf-ai/shared";
+import { getLocale, onStorageChanged } from "../../lib/storage";
+import { type Locale, resolveLocale, t } from "../common/i18n";
 import { Button } from "../components/ui/button";
 
 export function App(): JSX.Element {
-  const locale = resolveLocale(navigator.language);
+  const [locale, setLocaleState] = useState<Locale>(resolveLocale(navigator.language));
+
+  useEffect(() => {
+    void getLocale().then((stored) => {
+      if (stored) {
+        setLocaleState(resolveLocale(stored));
+      }
+    });
+
+    const removeStorageListener = onStorageChanged((changes) => {
+      const localeChange = changes[STORAGE_KEYS.locale];
+      if (localeChange) {
+        const nextLocale = localeChange.newValue as string | undefined;
+        setLocaleState(resolveLocale(nextLocale || navigator.language));
+      }
+    });
+
+    return () => {
+      removeStorageListener();
+    };
+  }, []);
+
+  async function openStandalone(): Promise<void> {
+    await chrome.tabs.create({ url: chrome.runtime.getURL("src/ui/sidepanel/index.html") });
+  }
+
+  async function openSettings(): Promise<void> {
+    await chrome.tabs.create({ url: chrome.runtime.getURL("src/ui/settings/index.html") });
+  }
 
   return (
-    <main style={{ width: 320, padding: 14 }}>
-      <h1 style={{ margin: "0 0 12px", fontSize: 18 }}>{t(locale, "appTitle")}</h1>
+    <main className="grid w-[320px] gap-2 p-3">
+      <h1 className="text-base font-semibold">{t(locale, "appTitle")}</h1>
       <Button
         type="button"
         className="w-full"
@@ -19,9 +50,13 @@ export function App(): JSX.Element {
       >
         {t(locale, "openSidePanel")}
       </Button>
-      <p style={{ margin: "10px 0 0", color: "var(--muted-text)", fontSize: 12 }}>
-        Tip: select text on page to trigger quick actions.
-      </p>
+      <Button type="button" variant="outline" className="w-full" onClick={() => void openStandalone()}>
+        {t(locale, "openStandalone")}
+      </Button>
+      <Button type="button" variant="outline" className="w-full" onClick={() => void openSettings()}>
+        {t(locale, "openSettings")}
+      </Button>
+      <p className="mt-1 text-xs text-muted-foreground">{t(locale, "popupTipSelection")}</p>
     </main>
   );
 }

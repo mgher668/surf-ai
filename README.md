@@ -64,6 +64,8 @@ pnpm dev:extension
 - Selection handle in any webpage (`Summarize / Translate / Read`)
 - Context menu and keyboard command entrypoints
 - Side panel as main chat UI
+- Standalone tab mode reusing the same chat UI as side panel
+- Settings page for connection management, default adapter, and locale
 - Local bridge connection management (`baseURL`, optional token)
 - Session list + starred sessions + message persistence
 - Adapter routing skeleton (`mock`, `codex`, `claude`)

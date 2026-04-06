@@ -258,5 +258,6 @@ export const STORAGE_KEYS = {
   connections: "surf.connections",
   activeConnectionId: "surf.activeConnectionId",
   sessions: "surf.sessions",
-  locale: "surf.locale"
+  locale: "surf.locale",
+  defaultAdapter: "surf.defaultAdapter"
 } as const;

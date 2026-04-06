@@ -1,6 +1,7 @@
 import {
   BRIDGE_DEFAULT_BASE_URL,
   STORAGE_KEYS,
+  type BridgeAdapter,
   type BridgeConnection,
   type ChatSession
 } from "@surf-ai/shared";
@@ -10,6 +11,7 @@ interface ExtensionStorageShape {
   [STORAGE_KEYS.activeConnectionId]?: string;
   [STORAGE_KEYS.sessions]?: ChatSession[];
   [STORAGE_KEYS.locale]?: string;
+  [STORAGE_KEYS.defaultAdapter]?: BridgeAdapter;
 }
 
 export async function getConnections(): Promise<BridgeConnection[]> {
@@ -65,6 +67,15 @@ export async function getLocale(): Promise<string | undefined> {
 
 export async function setLocale(locale: string): Promise<void> {
   await chrome.storage.local.set({ [STORAGE_KEYS.locale]: locale });
+}
+
+export async function getDefaultAdapter(): Promise<BridgeAdapter | undefined> {
+  const data = await chrome.storage.local.get(STORAGE_KEYS.defaultAdapter);
+  return data[STORAGE_KEYS.defaultAdapter] as BridgeAdapter | undefined;
+}
+
+export async function setDefaultAdapter(adapter: BridgeAdapter): Promise<void> {
+  await chrome.storage.local.set({ [STORAGE_KEYS.defaultAdapter]: adapter });
 }
 
 export function onStorageChanged(

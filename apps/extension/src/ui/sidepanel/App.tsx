@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState, type CSSProperties } from "react";
 import { Icon } from "@iconify/react/dist/offline";
 import dotsVertical from "@iconify-icons/mdi/dots-vertical";
+import cogOutline from "@iconify-icons/mdi/cog-outline";
+import openInNew from "@iconify-icons/mdi/open-in-new";
 import starIcon from "@iconify-icons/mdi/star";
 import starOutlineIcon from "@iconify-icons/mdi/star-outline";
 import pencilOutline from "@iconify-icons/mdi/pencil-outline";
@@ -37,14 +39,14 @@ import type {
 import { deleteMessagesBySession, listMessagesBySession, saveMessage, saveMessages } from "../../lib/db";
 import {
   getActiveConnectionId,
+  getDefaultAdapter,
   getConnections,
+  getLocale,
   getSessions,
   onStorageChanged,
-  setActiveConnectionId,
-  setConnections,
   setSessions
 } from "../../lib/storage";
-import { resolveLocale, t } from "../common/i18n";
+import { type Locale, resolveLocale, t } from "../common/i18n";
 import { MarkdownMessage } from "./MarkdownMessage";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
@@ -100,10 +102,11 @@ interface RuntimeAlert {
 }
 
 export function App(): JSX.Element {
-  const locale = resolveLocale(navigator.language);
+  const [locale, setLocaleState] = useState<Locale>(resolveLocale(navigator.language));
 
   const [connections, setConnectionsState] = useState<BridgeConnection[]>([]);
   const [activeConnectionId, setActiveConnectionIdState] = useState<string | undefined>();
+  const [defaultAdapter, setDefaultAdapterState] = useState<BridgeChatRequest["adapter"] | undefined>();
   const [sessions, setSessionsState] = useState<ChatSession[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<string | undefined>();
   const [sessionMode, setSessionMode] = useState<SessionMode>("local");
@@ -127,11 +130,6 @@ export function App(): JSX.Element {
   const [renameTargetSession, setRenameTargetSession] = useState<ChatSession | null>(null);
   const [renameTitleInput, setRenameTitleInput] = useState("");
   const [renameError, setRenameError] = useState<string | undefined>();
-
-  const [newConnName, setNewConnName] = useState("");
-  const [newConnUrl, setNewConnUrl] = useState("http://127.0.0.1:43127");
-  const [newConnUserId, setNewConnUserId] = useState("local");
-  const [newConnToken, setNewConnToken] = useState("");
 
   const isBackendDraftActive =
     sessionMode === "backend" && activeSessionId === BACKEND_DRAFT_SESSION_ID;
@@ -191,13 +189,26 @@ export function App(): JSX.Element {
     void consumePendingSelectionPayload();
 
     const removeStorageListener = onStorageChanged((changes) => {
+      const localeChange = changes[STORAGE_KEYS.locale];
+      if (localeChange) {
+        const nextLocale = localeChange.newValue as string | undefined;
+        setLocaleState(resolveLocale(nextLocale || navigator.language));
+      }
+
+      const defaultAdapterChange = changes[STORAGE_KEYS.defaultAdapter];
+      if (defaultAdapterChange) {
+        const nextDefaultAdapter = defaultAdapterChange.newValue as
+          | BridgeChatRequest["adapter"]
+          | undefined;
+        setDefaultAdapterState(nextDefaultAdapter);
+      }
+
       const connectionChanged =
         Boolean(changes[STORAGE_KEYS.connections]) ||
         Boolean(changes[STORAGE_KEYS.activeConnectionId]);
-      if (!connectionChanged) {
-        return;
+      if (connectionChanged) {
+        void bootstrapConnectionsAndSessions();
       }
-      void bootstrapConnectionsAndSessions();
     });
 
     const messageListener = (message: ExtensionToUiMessage) => {
@@ -413,7 +424,7 @@ export function App(): JSX.Element {
       return;
     }
 
-    const preferredAdapter = capabilities?.chat.defaultAdapter;
+    const preferredAdapter = defaultAdapter ?? capabilities?.chat.defaultAdapter;
     if (preferredAdapter && availableAdapters.some((item) => item.adapter === preferredAdapter)) {
       setAdapter(preferredAdapter);
       return;
@@ -422,7 +433,7 @@ export function App(): JSX.Element {
     if (availableAdapters[0]) {
       setAdapter(availableAdapters[0].adapter);
     }
-  }, [adapter, availableAdapters, capabilities]);
+  }, [adapter, availableAdapters, capabilities, defaultAdapter]);
 
   useEffect(() => {
     if (!activeSessionId || activeSessionId === BACKEND_DRAFT_SESSION_ID) {
@@ -443,6 +454,15 @@ export function App(): JSX.Element {
   }, [activeSessionId, sessions, availableAdapters, adapter]);
 
   async function bootstrap(): Promise<void> {
+    const [storedLocale, storedDefaultAdapter] = await Promise.all([
+      getLocale(),
+      getDefaultAdapter()
+    ]);
+    if (storedLocale) {
+      setLocaleState(resolveLocale(storedLocale));
+    }
+    setDefaultAdapterState(storedDefaultAdapter);
+
     await bootstrapConnectionsAndSessions();
   }
 
@@ -804,33 +824,6 @@ export function App(): JSX.Element {
     }
   }
 
-  async function addConnection(): Promise<void> {
-    if (!newConnName.trim() || !newConnUrl.trim()) return;
-
-    const now = Date.now();
-    const connection: BridgeConnection = {
-      id: crypto.randomUUID(),
-      name: newConnName.trim(),
-      baseUrl: newConnUrl.trim().replace(/\/$/, ""),
-      ...(newConnUserId.trim() ? { userId: newConnUserId.trim() } : {}),
-      enabled: true,
-      createdAt: now,
-      updatedAt: now,
-      ...(newConnToken.trim() ? { token: newConnToken.trim() } : {})
-    };
-
-    const next = [connection, ...connections];
-    await setConnections(next);
-    await setActiveConnectionId(connection.id);
-    setConnectionsState(next);
-    setActiveConnectionIdState(connection.id);
-
-    setNewConnName("");
-    setNewConnUrl("http://127.0.0.1:43127");
-    setNewConnUserId("local");
-    setNewConnToken("");
-  }
-
   async function createNewSession(): Promise<void> {
     if (sessionMode === "backend") {
       setActiveSessionId(BACKEND_DRAFT_SESSION_ID);
@@ -908,7 +901,7 @@ export function App(): JSX.Element {
             id: crypto.randomUUID(),
             sessionId: activeSessionId ?? session.id,
             role: "assistant",
-            content: "Error: no active bridge connection. Please select or add one first.",
+            content: "Error: no active bridge connection. Please add/select one in Settings first.",
             createdAt: Date.now()
           }
         ]);
@@ -991,7 +984,7 @@ export function App(): JSX.Element {
             id: crypto.randomUUID(),
             sessionId: activeSessionId ?? "pending",
             role: "assistant",
-            content: "Error: no active bridge connection. Please select or add one first.",
+            content: "Error: no active bridge connection. Please add/select one in Settings first.",
             createdAt: Date.now()
           }
         ]);
@@ -1041,7 +1034,7 @@ export function App(): JSX.Element {
         id: crypto.randomUUID(),
         sessionId: activeSessionId ?? "pending",
         role: "assistant",
-        content: "Error: no active bridge connection. Please select or add one first.",
+        content: "Error: no active bridge connection. Please add/select one in Settings first.",
         createdAt: Date.now()
       };
       setMessages((prev) => [...prev, errMessage]);
@@ -1303,6 +1296,14 @@ export function App(): JSX.Element {
     }
   }
 
+  async function openStandalonePage(): Promise<void> {
+    await chrome.tabs.create({ url: chrome.runtime.getURL("src/ui/sidepanel/index.html") });
+  }
+
+  async function openSettingsPage(): Promise<void> {
+    await chrome.tabs.create({ url: chrome.runtime.getURL("src/ui/settings/index.html") });
+  }
+
   return (
     <div style={{ display: "grid", gridTemplateColumns: "220px 1fr", height: "100vh" }}>
       <aside
@@ -1444,39 +1445,15 @@ export function App(): JSX.Element {
         </TooltipProvider>
 
         <Separator className="my-3" />
-
-        <h3 style={{ margin: "0 0 6px", fontSize: 14 }}>{t(locale, "connection")}</h3>
-        <select
-          value={activeConnectionId}
-          onChange={(event) => {
-            const id = event.target.value;
-            setActiveConnectionIdState(id);
-            void setActiveConnectionId(id);
-          }}
-          style={inputStyle}
-        >
-          {connections.map((conn) => (
-            <option key={conn.id} value={conn.id}>
-              {conn.name}
-            </option>
-          ))}
-        </select>
-
-        <label style={labelStyle}>{t(locale, "connectionName")}</label>
-        <Input value={newConnName} onChange={(e) => setNewConnName(e.target.value)} />
-
-        <label style={labelStyle}>{t(locale, "baseUrl")}</label>
-        <Input value={newConnUrl} onChange={(e) => setNewConnUrl(e.target.value)} />
-
-        <label style={labelStyle}>{t(locale, "connectionUserId")}</label>
-        <Input value={newConnUserId} onChange={(e) => setNewConnUserId(e.target.value)} />
-
-        <label style={labelStyle}>{t(locale, "token")}</label>
-        <Input value={newConnToken} onChange={(e) => setNewConnToken(e.target.value)} />
-
-        <Button type="button" onClick={() => void addConnection()} className="mt-2 w-full">
-          {t(locale, "addConnection")}
-        </Button>
+        <div className="grid gap-2 rounded-md border border-border bg-card p-2">
+          <span className="text-xs text-muted-foreground">{t(locale, "currentConnection")}</span>
+          <span className="truncate text-xs font-medium">
+            {activeConnection?.name ?? t(locale, "noConnection")}
+          </span>
+          <Button type="button" variant="outline" size="sm" onClick={() => void openSettingsPage()}>
+            {t(locale, "openSettings")}
+          </Button>
+        </div>
       </aside>
 
       <main style={{ display: "grid", gridTemplateRows: "auto 1fr auto", minHeight: 0 }}>
@@ -1549,11 +1526,33 @@ export function App(): JSX.Element {
           >
             {extractingPage ? t(locale, "extractingPage") : t(locale, "extractPage")}
           </Button>
+          <Button
+            type="button"
+            variant="outline"
+            size="icon"
+            className="h-8 w-8"
+            onClick={() => void openStandalonePage()}
+            title={t(locale, "openStandalone")}
+            aria-label={t(locale, "openStandalone")}
+          >
+            <Icon icon={openInNew} width={16} height={16} />
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
+            size="icon"
+            className="h-8 w-8"
+            onClick={() => void openSettingsPage()}
+            title={t(locale, "openSettings")}
+            aria-label={t(locale, "openSettings")}
+          >
+            <Icon icon={cogOutline} width={16} height={16} />
+          </Button>
         </header>
 
         <section style={{ padding: 14, overflow: "auto", display: "grid", gap: 12, alignContent: "start" }}>
           {!activeConnection ? (
-            <div style={hintErrorStyle}>No active bridge connection. Please select or add one in the left panel.</div>
+            <div style={hintErrorStyle}>{t(locale, "noActiveConnectionHint")}</div>
           ) : null}
           {runtimeAlert ? (
             <div style={runtimeAlert.level === "error" ? hintErrorStyle : hintWarnStyle}>
@@ -1846,23 +1845,6 @@ const rowButtonStyle: CSSProperties = {
   background: "transparent",
   color: "var(--ink)",
   cursor: "pointer"
-};
-
-const inputStyle: CSSProperties = {
-  width: "100%",
-  border: "1px solid var(--line)",
-  borderRadius: 10,
-  padding: "8px 10px",
-  background: "#fff",
-  color: "var(--ink)"
-};
-
-const labelStyle: CSSProperties = {
-  marginTop: 8,
-  marginBottom: 4,
-  fontSize: 12,
-  color: "var(--muted-text)",
-  display: "block"
 };
 
 const hintInfoStyle: CSSProperties = {
