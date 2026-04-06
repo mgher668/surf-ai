@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type CSSProperties } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { Icon } from "@iconify/react/dist/offline";
 import dotsVertical from "@iconify-icons/mdi/dots-vertical";
 import cogOutline from "@iconify-icons/mdi/cog-outline";
@@ -137,6 +137,9 @@ export function App(): JSX.Element {
   const [renameTargetSession, setRenameTargetSession] = useState<ChatSession | null>(null);
   const [renameTitleInput, setRenameTitleInput] = useState("");
   const [renameError, setRenameError] = useState<string | undefined>();
+  const [loadedMessagesSessionId, setLoadedMessagesSessionId] = useState<string | undefined>();
+  const conversationViewportRef = useRef<HTMLElement | null>(null);
+  const pendingAutoScrollSessionIdRef = useRef<string | undefined>(undefined);
 
   const isBackendDraftActive =
     sessionMode === "backend" && activeSessionId === BACKEND_DRAFT_SESSION_ID;
@@ -294,6 +297,7 @@ export function App(): JSX.Element {
   useEffect(() => {
     if (!activeSessionId || isBackendDraftActive) {
       setMessages([]);
+      setLoadedMessagesSessionId(undefined);
       setRawViewByMessageId({});
       setSelectionContext(undefined);
       setPageContent(undefined);
@@ -308,6 +312,45 @@ export function App(): JSX.Element {
     setExtractError(undefined);
     setIncludePageContext(false);
   }, [activeSessionId, isBackendDraftActive]);
+
+  useEffect(() => {
+    if (!activeSessionId || isBackendDraftActive) {
+      pendingAutoScrollSessionIdRef.current = undefined;
+      return;
+    }
+    pendingAutoScrollSessionIdRef.current = activeSessionId;
+  }, [activeSessionId, isBackendDraftActive]);
+
+  useEffect(() => {
+    const pendingSessionId = pendingAutoScrollSessionIdRef.current;
+    if (!pendingSessionId || !activeSessionId || pendingSessionId !== activeSessionId || isBackendDraftActive) {
+      return;
+    }
+
+    if (loadedMessagesSessionId !== activeSessionId) {
+      return;
+    }
+
+    // Wait until messages belong to the current session to avoid scrolling on stale content.
+    if (messages.length > 0 && messages[messages.length - 1]?.sessionId !== activeSessionId) {
+      return;
+    }
+
+    const rafId = window.requestAnimationFrame(() => {
+      const viewport = conversationViewportRef.current;
+      if (!viewport) {
+        return;
+      }
+      viewport.scrollTop = viewport.scrollHeight;
+      if (pendingAutoScrollSessionIdRef.current === activeSessionId) {
+        pendingAutoScrollSessionIdRef.current = undefined;
+      }
+    });
+
+    return () => {
+      window.cancelAnimationFrame(rafId);
+    };
+  }, [messages, activeSessionId, isBackendDraftActive, loadedMessagesSessionId]);
 
   function toggleRawView(messageId: string): void {
     setRawViewByMessageId((previous) => ({
@@ -337,13 +380,34 @@ export function App(): JSX.Element {
     if (sessionMode === "backend" && activeSessionId === BACKEND_DRAFT_SESSION_ID) {
       return;
     }
+    const sessionId = activeSessionId;
+    let cancelled = false;
+    setLoadedMessagesSessionId(undefined);
 
-    if (sessionMode === "backend" && activeConnection) {
-      void loadMessagesFromBackend(activeConnection, activeSessionId);
-      return;
-    }
+    const load = async (): Promise<void> => {
+      if (sessionMode === "backend" && activeConnection) {
+        const loadedMessages = await loadMessagesFromBackend(activeConnection, sessionId);
+        if (cancelled) {
+          return;
+        }
+        setMessages(loadedMessages);
+        setLoadedMessagesSessionId(sessionId);
+        return;
+      }
 
-    void listMessagesBySession(activeSessionId).then(setMessages);
+      const loadedMessages = await listMessagesBySession(sessionId);
+      if (cancelled) {
+        return;
+      }
+      setMessages(loadedMessages);
+      setLoadedMessagesSessionId(sessionId);
+    };
+
+    void load();
+
+    return () => {
+      cancelled = true;
+    };
   }, [activeConnectionId, activeConnection?.baseUrl, activeSessionId, sessionMode]);
 
   useEffect(() => {
@@ -665,7 +729,10 @@ export function App(): JSX.Element {
     return null;
   }
 
-  async function loadMessagesFromBackend(connection: BridgeConnection, sessionId: string): Promise<void> {
+  async function loadMessagesFromBackend(
+    connection: BridgeConnection,
+    sessionId: string
+  ): Promise<ChatMessage[]> {
     try {
       const response = await fetchBridgeJson<BridgeSessionMessagesResponse>(
         connection,
@@ -686,14 +753,14 @@ export function App(): JSX.Element {
         }
         throw new Error(`messages_request_failed:${response.status}`);
       }
-      setMessages(response.data.messages);
       await saveMessages(response.data.messages);
       clearRuntimeAlert();
+      return response.data.messages;
     } catch (error) {
       if (error instanceof TypeError) {
         reportRuntimeAlert("backend_unreachable", "error", t(locale, "alertBackendUnreachable"));
       }
-      setMessages([
+      return [
         {
           id: crypto.randomUUID(),
           sessionId,
@@ -701,7 +768,7 @@ export function App(): JSX.Element {
           content: `Error: ${error instanceof Error ? error.message : "load_messages_failed"}`,
           createdAt: Date.now()
         }
-      ]);
+      ];
     }
   }
 
@@ -1569,7 +1636,10 @@ export function App(): JSX.Element {
           </Button>
         </header>
 
-        <section style={{ padding: 14, overflow: "auto", display: "grid", gap: 12, alignContent: "start" }}>
+        <section
+          ref={conversationViewportRef}
+          style={{ padding: 14, overflow: "auto", display: "grid", gap: 12, alignContent: "start" }}
+        >
           {!activeConnection ? (
             <div style={hintErrorStyle}>{t(locale, "noActiveConnectionHint")}</div>
           ) : null}
