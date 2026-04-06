@@ -1663,19 +1663,6 @@ export function App(): JSX.Element {
           {capabilities && !ttsReady ? (
             <div style={hintInfoStyle}>TTS is unavailable. Configure MiniMax key in local bridge env.</div>
           ) : null}
-          {pageContent ? (
-            <div style={hintInfoStyle}>
-              {t(locale, "pageContextReady")} · {pageContent.source} · {pageContent.charCount} chars
-              <label style={inlineCheckboxLabelStyle}>
-                <input
-                  type="checkbox"
-                  checked={includePageContext}
-                  onChange={(event) => setIncludePageContext(event.target.checked)}
-                />
-                {t(locale, "includePageContext")}
-              </label>
-            </div>
-          ) : null}
           {extractError ? <div style={hintErrorStyle}>{extractError}</div> : null}
           {messages.length === 0 ? (
             <div style={{ color: "var(--muted-text)", fontSize: 13 }}>{t(locale, "empty")}</div>
@@ -1724,6 +1711,19 @@ export function App(): JSX.Element {
         </section>
 
         <footer style={{ padding: 12, borderTop: "1px solid var(--line)", display: "grid", gap: 8 }}>
+          {pageContent ? (
+            <div style={hintInfoStyle}>
+              {t(locale, "pageContextReady")} · {pageContent.source} · {pageContent.charCount} chars
+              <label style={inlineCheckboxLabelStyle}>
+                <input
+                  type="checkbox"
+                  checked={includePageContext}
+                  onChange={(event) => setIncludePageContext(event.target.checked)}
+                />
+                {t(locale, "includePageContext")}
+              </label>
+            </div>
+          ) : null}
           <div className="flex flex-wrap items-center justify-between gap-2">
             <div className="flex items-center gap-2">
               <span className="text-xs text-muted-foreground">{t(locale, "adapter")}</span>
