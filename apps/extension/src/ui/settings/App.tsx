@@ -1,18 +1,21 @@
 import { useEffect, useMemo, useState } from "react";
-import type { BridgeAdapter, BridgeConnection } from "@surf-ai/shared";
+import type { BridgeAdapter, BridgeConnection, UiThemeMode } from "@surf-ai/shared";
 import { STORAGE_KEYS } from "@surf-ai/shared";
 import {
   getActiveConnectionId,
   getConnections,
   getDefaultAdapter,
   getLocale,
+  getTheme,
   onStorageChanged,
   setActiveConnectionId,
   setConnections,
   setDefaultAdapter,
-  setLocale
+  setLocale,
+  setTheme
 } from "../../lib/storage";
 import { type Locale, resolveLocale, t } from "../common/i18n";
+import { applyTheme, listenSystemThemeChange, normalizeThemeMode } from "../common/theme";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import {
@@ -40,6 +43,7 @@ export function App(): JSX.Element {
   const [connections, setConnectionsState] = useState<BridgeConnection[]>([]);
   const [activeConnectionId, setActiveConnectionIdState] = useState<string | undefined>();
   const [defaultAdapter, setDefaultAdapterState] = useState<BridgeAdapter>("codex");
+  const [themeMode, setThemeModeState] = useState<UiThemeMode>("system");
 
   const [newConnName, setNewConnName] = useState("");
   const [newConnUrl, setNewConnUrl] = useState(DEFAULT_CONNECTION_URL);
@@ -83,6 +87,11 @@ export function App(): JSX.Element {
           setDefaultAdapterState(nextAdapter);
         }
       }
+      const themeChange = changes[STORAGE_KEYS.theme];
+      if (themeChange) {
+        const nextTheme = normalizeThemeMode(themeChange.newValue as string | undefined);
+        setThemeModeState(nextTheme);
+      }
     });
 
     return () => {
@@ -90,13 +99,27 @@ export function App(): JSX.Element {
     };
   }, []);
 
+  useEffect(() => {
+    applyTheme(themeMode);
+  }, [themeMode]);
+
+  useEffect(() => {
+    if (themeMode !== "system") {
+      return;
+    }
+    return listenSystemThemeChange(() => {
+      applyTheme("system");
+    });
+  }, [themeMode]);
+
   async function bootstrap(): Promise<void> {
-    const [storedConnections, storedActiveConnectionId, storedLocale, storedDefaultAdapter] =
+    const [storedConnections, storedActiveConnectionId, storedLocale, storedDefaultAdapter, storedTheme] =
       await Promise.all([
         getConnections(),
         getActiveConnectionId(),
         getLocale(),
-        getDefaultAdapter()
+        getDefaultAdapter(),
+        getTheme()
       ]);
 
     setConnectionsState(storedConnections);
@@ -107,6 +130,7 @@ export function App(): JSX.Element {
     if (storedDefaultAdapter) {
       setDefaultAdapterState(storedDefaultAdapter);
     }
+    setThemeModeState(normalizeThemeMode(storedTheme));
   }
 
   async function addConnection(): Promise<void> {
@@ -151,6 +175,11 @@ export function App(): JSX.Element {
   async function updateLocale(nextLocale: Locale): Promise<void> {
     setLocaleState(nextLocale);
     await setLocale(nextLocale);
+  }
+
+  async function updateThemeMode(nextTheme: UiThemeMode): Promise<void> {
+    setThemeModeState(nextTheme);
+    await setTheme(nextTheme);
   }
 
   async function openChatPage(): Promise<void> {
@@ -251,6 +280,22 @@ export function App(): JSX.Element {
             <SelectContent>
               <SelectItem value="zh-CN">{t(locale, "languageZhCn")}</SelectItem>
               <SelectItem value="en-US">{t(locale, "languageEnUs")}</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+        <div className="grid gap-2">
+          <span className="text-xs text-muted-foreground">{t(locale, "theme")}</span>
+          <Select
+            value={themeMode}
+            onValueChange={(value) => void updateThemeMode(value as UiThemeMode)}
+          >
+            <SelectTrigger>
+              <SelectValue placeholder={t(locale, "theme")} />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="system">{t(locale, "themeSystem")}</SelectItem>
+              <SelectItem value="light">{t(locale, "themeLight")}</SelectItem>
+              <SelectItem value="dark">{t(locale, "themeDark")}</SelectItem>
             </SelectContent>
           </Select>
         </div>

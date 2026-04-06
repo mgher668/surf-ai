@@ -3,7 +3,8 @@ import {
   STORAGE_KEYS,
   type BridgeAdapter,
   type BridgeConnection,
-  type ChatSession
+  type ChatSession,
+  type UiThemeMode
 } from "@surf-ai/shared";
 
 interface ExtensionStorageShape {
@@ -12,6 +13,7 @@ interface ExtensionStorageShape {
   [STORAGE_KEYS.sessions]?: ChatSession[];
   [STORAGE_KEYS.locale]?: string;
   [STORAGE_KEYS.defaultAdapter]?: BridgeAdapter;
+  [STORAGE_KEYS.theme]?: UiThemeMode;
 }
 
 export async function getConnections(): Promise<BridgeConnection[]> {
@@ -76,6 +78,15 @@ export async function getDefaultAdapter(): Promise<BridgeAdapter | undefined> {
 
 export async function setDefaultAdapter(adapter: BridgeAdapter): Promise<void> {
   await chrome.storage.local.set({ [STORAGE_KEYS.defaultAdapter]: adapter });
+}
+
+export async function getTheme(): Promise<UiThemeMode | undefined> {
+  const data = await chrome.storage.local.get(STORAGE_KEYS.theme);
+  return data[STORAGE_KEYS.theme] as UiThemeMode | undefined;
+}
+
+export async function setTheme(theme: UiThemeMode): Promise<void> {
+  await chrome.storage.local.set({ [STORAGE_KEYS.theme]: theme });
 }
 
 export function onStorageChanged(

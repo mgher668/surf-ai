@@ -42,8 +42,8 @@
   margin: 0 0 10px;
   padding: 8px 12px;
   border-left: 3px solid var(--line);
-  background: #f7fbfd;
-  color: #38576a;
+  background: var(--md-blockquote-bg);
+  color: var(--md-blockquote-text);
 }
 
 .surf-md hr {
@@ -53,7 +53,7 @@
 }
 
 .surf-md a {
-  color: #0d5f78;
+  color: var(--link);
   text-decoration: underline;
   text-underline-offset: 2px;
 }
@@ -74,7 +74,7 @@
 }
 
 .surf-md th {
-  background: #eef7fb;
+  background: var(--md-table-head-bg);
 }
 
 .surf-md .katex .katex-html .base {
@@ -87,7 +87,7 @@
   overflow-x: auto;
   border: 1px solid var(--line);
   border-radius: 8px;
-  background: #f6f9fb;
+  background: var(--code-block-bg);
 }
 
 .surf-md pre {
@@ -103,7 +103,7 @@
 .surf-md :not(pre) > code {
   border-radius: 4px;
   padding: 2px 4px;
-  background: #edf3f7;
+  background: var(--inline-code-bg);
 }
 
 .surf-md-mermaid-loading {
@@ -126,12 +126,12 @@
   margin: 0 0 10px;
   border: 1px solid var(--line);
   border-radius: 8px;
-  background: #fdf7f7;
+  background: var(--md-mermaid-fallback-bg);
 }
 
 .surf-md-mermaid-error {
   padding: 8px 10px;
-  color: #8a2727;
-  border-bottom: 1px solid #f1d1d1;
+  color: var(--md-mermaid-error-text);
+  border-bottom: 1px solid var(--md-mermaid-error-border);
   font-size: 12px;
 }

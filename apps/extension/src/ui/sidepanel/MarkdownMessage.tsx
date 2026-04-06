@@ -16,21 +16,13 @@ let mermaidLoader: Promise<Mermaid> | null = null;
 
 function getMermaid(): Promise<Mermaid> {
   if (!mermaidLoader) {
-    mermaidLoader = import("mermaid").then((module) => {
-      const mermaid = module.default;
-      mermaid.initialize({
-        startOnLoad: false,
-        securityLevel: "strict",
-        theme: "default"
-      });
-      return mermaid;
-    });
+    mermaidLoader = import("mermaid").then((module) => module.default);
   }
 
   return mermaidLoader;
 }
 
-function MermaidBlock({ code }: { code: string }): JSX.Element {
+function MermaidBlock({ code, theme }: { code: string; theme: "default" | "dark" }): JSX.Element {
   const [svg, setSvg] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -42,8 +34,13 @@ function MermaidBlock({ code }: { code: string }): JSX.Element {
     void (async () => {
       try {
         const mermaid = await getMermaid();
+        mermaid.initialize({
+          startOnLoad: false,
+          securityLevel: "strict",
+          theme
+        });
         await mermaid.parse(code, { suppressErrors: false });
-        const id = `surf-mermaid-${crypto.randomUUID()}`;
+        const id = `surf-mermaid-${theme}-${crypto.randomUUID()}`;
         const rendered = await mermaid.render(id, code);
         if (!cancelled) {
           setSvg(rendered.svg);
@@ -59,7 +56,7 @@ function MermaidBlock({ code }: { code: string }): JSX.Element {
     return () => {
       cancelled = true;
     };
-  }, [code]);
+  }, [code, theme]);
 
   if (error) {
     return (
@@ -109,7 +106,8 @@ const markdownComponents: Components = {
     const code = String(children).replace(/\n$/, "");
 
     if (language === "mermaid") {
-      return <MermaidBlock code={code} />;
+      const isDark = document.documentElement.classList.contains("dark");
+      return <MermaidBlock code={code} theme={isDark ? "dark" : "default"} />;
     }
 
     return (
@@ -121,8 +119,21 @@ const markdownComponents: Components = {
 };
 
 export function MarkdownMessage({ content }: MarkdownMessageProps): JSX.Element {
+  const [themeVersion, setThemeVersion] = useState(0);
+
+  useEffect(() => {
+    const root = document.documentElement;
+    const observer = new MutationObserver(() => {
+      setThemeVersion((previous) => previous + 1);
+    });
+    observer.observe(root, { attributes: true, attributeFilter: ["class"] });
+    return () => {
+      observer.disconnect();
+    };
+  }, []);
+
   return (
-    <div className="surf-md">
+    <div className="surf-md" key={themeVersion}>
       <ReactMarkdown
         components={markdownComponents}
         remarkPlugins={[remarkGfm, [remarkMath, { singleDollarTextMath: false }]]}

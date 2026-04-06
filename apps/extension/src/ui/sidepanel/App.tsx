@@ -3,6 +3,8 @@ import { Icon } from "@iconify/react/dist/offline";
 import dotsVertical from "@iconify-icons/mdi/dots-vertical";
 import cogOutline from "@iconify-icons/mdi/cog-outline";
 import openInNew from "@iconify-icons/mdi/open-in-new";
+import themeLightDark from "@iconify-icons/mdi/theme-light-dark";
+import checkIcon from "@iconify-icons/mdi/check";
 import starIcon from "@iconify-icons/mdi/star";
 import starOutlineIcon from "@iconify-icons/mdi/star-outline";
 import pencilOutline from "@iconify-icons/mdi/pencil-outline";
@@ -32,6 +34,7 @@ import type {
   PageContentPayload,
   QuickAction,
   SelectionPayload,
+  UiThemeMode,
   UiStatusBadgeLevel,
   UiToExtensionMessage,
   UiToExtensionResponse
@@ -42,11 +45,14 @@ import {
   getDefaultAdapter,
   getConnections,
   getLocale,
+  getTheme,
   getSessions,
   onStorageChanged,
-  setSessions
+  setSessions,
+  setTheme
 } from "../../lib/storage";
 import { type Locale, resolveLocale, t } from "../common/i18n";
+import { applyTheme, listenSystemThemeChange, normalizeThemeMode } from "../common/theme";
 import { MarkdownMessage } from "./MarkdownMessage";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
@@ -103,6 +109,7 @@ interface RuntimeAlert {
 
 export function App(): JSX.Element {
   const [locale, setLocaleState] = useState<Locale>(resolveLocale(navigator.language));
+  const [themeMode, setThemeModeState] = useState<UiThemeMode>("system");
 
   const [connections, setConnectionsState] = useState<BridgeConnection[]>([]);
   const [activeConnectionId, setActiveConnectionIdState] = useState<string | undefined>();
@@ -203,6 +210,12 @@ export function App(): JSX.Element {
         setDefaultAdapterState(nextDefaultAdapter);
       }
 
+      const themeChange = changes[STORAGE_KEYS.theme];
+      if (themeChange) {
+        const nextTheme = normalizeThemeMode(themeChange.newValue as string | undefined);
+        setThemeModeState(nextTheme);
+      }
+
       const connectionChanged =
         Boolean(changes[STORAGE_KEYS.connections]) ||
         Boolean(changes[STORAGE_KEYS.activeConnectionId]);
@@ -236,6 +249,19 @@ export function App(): JSX.Element {
       chrome.runtime.onMessage.removeListener(messageListener);
     };
   }, []);
+
+  useEffect(() => {
+    applyTheme(themeMode);
+  }, [themeMode]);
+
+  useEffect(() => {
+    if (themeMode !== "system") {
+      return;
+    }
+    return listenSystemThemeChange(() => {
+      applyTheme("system");
+    });
+  }, [themeMode]);
 
   async function consumePendingSelectionPayload(): Promise<void> {
     try {
@@ -454,14 +480,16 @@ export function App(): JSX.Element {
   }, [activeSessionId, sessions, availableAdapters, adapter]);
 
   async function bootstrap(): Promise<void> {
-    const [storedLocale, storedDefaultAdapter] = await Promise.all([
+    const [storedLocale, storedDefaultAdapter, storedTheme] = await Promise.all([
       getLocale(),
-      getDefaultAdapter()
+      getDefaultAdapter(),
+      getTheme()
     ]);
     if (storedLocale) {
       setLocaleState(resolveLocale(storedLocale));
     }
     setDefaultAdapterState(storedDefaultAdapter);
+    setThemeModeState(normalizeThemeMode(storedTheme));
 
     await bootstrapConnectionsAndSessions();
   }
@@ -1304,6 +1332,11 @@ export function App(): JSX.Element {
     await chrome.tabs.create({ url: chrome.runtime.getURL("src/ui/settings/index.html") });
   }
 
+  async function updateThemeMode(nextThemeMode: UiThemeMode): Promise<void> {
+    setThemeModeState(nextThemeMode);
+    await setTheme(nextThemeMode);
+  }
+
   return (
     <div style={{ display: "grid", gridTemplateColumns: "220px 1fr", height: "100vh" }}>
       <aside
@@ -1335,9 +1368,9 @@ export function App(): JSX.Element {
                       ...rowButtonStyle,
                       background:
                         activeSessionId === session.id
-                          ? "rgba(13,95,120,0.14)"
+                          ? "var(--session-active-bg)"
                           : hoverSessionId === session.id
-                            ? "rgba(13,95,120,0.08)"
+                            ? "var(--session-hover-bg)"
                             : "transparent",
                       transition: "background-color 150ms ease",
                       cursor: "pointer",
@@ -1423,7 +1456,7 @@ export function App(): JSX.Element {
 
                         <DropdownMenuItem
                           onSelect={() => void deleteSession(session.id)}
-                          className="text-red-700 focus:text-red-700"
+                          className="text-destructive focus:text-destructive"
                         >
                           <Icon icon={deleteOutline} width={16} height={16} />
                           <span>{t(locale, "deleteSession")}</span>
@@ -1464,11 +1497,54 @@ export function App(): JSX.Element {
             gap: 8,
             padding: "10px 12px",
             borderBottom: "1px solid var(--line)",
-            background: "rgba(255, 255, 255, 0.84)",
+            background: "var(--header-glass-bg)",
             backdropFilter: "blur(4px)"
           }}
         >
           <strong style={{ flex: 1 }}>{t(locale, "appTitle")}</strong>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                className="h-8 w-8 rounded-md p-0 text-[hsl(var(--muted-foreground))] hover:bg-accent"
+                title={t(locale, "theme")}
+                aria-label={t(locale, "theme")}
+              >
+                <Icon icon={themeLightDark} width={18} height={18} />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="min-w-[144px]">
+              <DropdownMenuItem onSelect={() => void updateThemeMode("system")}>
+                <Icon
+                  icon={checkIcon}
+                  width={16}
+                  height={16}
+                  className={themeMode === "system" ? "opacity-100" : "opacity-0"}
+                />
+                <span>{t(locale, "themeSystem")}</span>
+              </DropdownMenuItem>
+              <DropdownMenuItem onSelect={() => void updateThemeMode("light")}>
+                <Icon
+                  icon={checkIcon}
+                  width={16}
+                  height={16}
+                  className={themeMode === "light" ? "opacity-100" : "opacity-0"}
+                />
+                <span>{t(locale, "themeLight")}</span>
+              </DropdownMenuItem>
+              <DropdownMenuItem onSelect={() => void updateThemeMode("dark")}>
+                <Icon
+                  icon={checkIcon}
+                  width={16}
+                  height={16}
+                  className={themeMode === "dark" ? "opacity-100" : "opacity-0"}
+                />
+                <span>{t(locale, "themeDark")}</span>
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
           <div className="flex items-center gap-2">
             <span className="text-xs text-muted-foreground">{t(locale, "adapter")}</span>
             <Select
@@ -1504,7 +1580,7 @@ export function App(): JSX.Element {
                 }
               }}
             >
-              <SelectTrigger className="h-8 w-[160px] bg-card text-xs">
+              <SelectTrigger className="h-8 w-[136px] bg-card text-xs">
                 <SelectValue placeholder={t(locale, "adapter")} />
               </SelectTrigger>
               <SelectContent>
@@ -1603,7 +1679,8 @@ export function App(): JSX.Element {
                     borderRadius: 12,
                     lineHeight: 1.45,
                     border: "1px solid var(--line)",
-                    background: msg.role === "user" ? "#dff4ff" : "#fff",
+                    background:
+                      msg.role === "user" ? "var(--message-user-bg)" : "var(--message-assistant-bg)",
                     marginLeft: msg.role === "user" ? "auto" : 0
                   }}
                 >
@@ -1685,7 +1762,7 @@ export function App(): JSX.Element {
               autoFocus
             />
             {renameError ? (
-              <div className="text-xs text-red-700">{renameError}</div>
+              <div className="text-xs text-destructive">{renameError}</div>
             ) : null}
 
             <DialogFooter>
@@ -1848,29 +1925,29 @@ const rowButtonStyle: CSSProperties = {
 };
 
 const hintInfoStyle: CSSProperties = {
-  border: "1px solid #c7e6d9",
+  border: "1px solid var(--hint-info-border)",
   borderRadius: 10,
   padding: "8px 10px",
-  background: "#eefaf4",
-  color: "#246a4b",
+  background: "var(--hint-info-bg)",
+  color: "var(--hint-info-text)",
   fontSize: 12
 };
 
 const hintErrorStyle: CSSProperties = {
-  border: "1px solid #f0b9b9",
+  border: "1px solid var(--hint-error-border)",
   borderRadius: 10,
   padding: "8px 10px",
-  background: "#fff2f2",
-  color: "#9b2d2d",
+  background: "var(--hint-error-bg)",
+  color: "var(--hint-error-text)",
   fontSize: 12
 };
 
 const hintWarnStyle: CSSProperties = {
-  border: "1px solid #f3dfb4",
+  border: "1px solid var(--hint-warn-border)",
   borderRadius: 10,
   padding: "8px 10px",
-  background: "#fff8ea",
-  color: "#8a5a16",
+  background: "var(--hint-warn-bg)",
+  color: "var(--hint-warn-text)",
   fontSize: 12
 };
 
@@ -1898,7 +1975,7 @@ const sessionTitleButtonStyle: CSSProperties = {
 const messageRenderToggleStyle: CSSProperties = {
   border: "none",
   background: "transparent",
-  color: "#0d5f78",
+  color: "var(--link)",
   padding: 0,
   margin: 0,
   width: "fit-content",
@@ -1913,7 +1990,7 @@ const rawMessageContentStyle: CSSProperties = {
   padding: "8px 10px",
   border: "1px solid var(--line)",
   borderRadius: 8,
-  background: "#f6f9fb",
+  background: "var(--code-block-bg)",
   whiteSpace: "pre-wrap",
   wordBreak: "break-word",
   fontSize: 12,

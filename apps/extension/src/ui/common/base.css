@@ -4,7 +4,6 @@
 
 @layer base {
   :root {
-    color-scheme: light;
     font-family: "Noto Sans", "PingFang SC", "Segoe UI", sans-serif;
 
     --background: 195 54% 97%;
@@ -35,6 +34,89 @@
     --brand: #0f7a8a;
     --brand-2: #0d5f78;
     --muted-text: hsl(var(--muted-foreground));
+    --link: var(--brand-2);
+
+    --body-bg-start: #dcf4ff;
+    --body-bg-mid: #f4f9fb;
+    --body-bg-end: #f2f8f8;
+    --header-glass-bg: rgba(255, 255, 255, 0.84);
+    --session-active-bg: rgba(13, 95, 120, 0.14);
+    --session-hover-bg: rgba(13, 95, 120, 0.08);
+    --message-user-bg: #dff4ff;
+    --message-assistant-bg: hsl(var(--card));
+
+    --hint-info-border: #c7e6d9;
+    --hint-info-bg: #eefaf4;
+    --hint-info-text: #246a4b;
+    --hint-error-border: #f0b9b9;
+    --hint-error-bg: #fff2f2;
+    --hint-error-text: #9b2d2d;
+    --hint-warn-border: #f3dfb4;
+    --hint-warn-bg: #fff8ea;
+    --hint-warn-text: #8a5a16;
+
+    --code-block-bg: #f6f9fb;
+    --inline-code-bg: #edf3f7;
+    --md-blockquote-bg: #f7fbfd;
+    --md-blockquote-text: #38576a;
+    --md-table-head-bg: #eef7fb;
+    --md-mermaid-fallback-bg: #fdf7f7;
+    --md-mermaid-error-text: #8a2727;
+    --md-mermaid-error-border: #f1d1d1;
+  }
+
+  .dark {
+    --background: 204 34% 11%;
+    --foreground: 195 27% 92%;
+    --card: 204 30% 14%;
+    --card-foreground: 195 27% 92%;
+    --popover: 204 30% 14%;
+    --popover-foreground: 195 27% 92%;
+    --primary: 186 88% 56%;
+    --primary-foreground: 204 44% 9%;
+    --secondary: 204 23% 20%;
+    --secondary-foreground: 195 26% 88%;
+    --muted: 204 20% 19%;
+    --muted-foreground: 197 12% 66%;
+    --accent: 201 25% 22%;
+    --accent-foreground: 195 27% 92%;
+    --destructive: 0 70% 56%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 205 18% 28%;
+    --input: 205 18% 28%;
+    --ring: 186 88% 56%;
+
+    --brand: #58bfd1;
+    --brand-2: #4aaec4;
+    --link: #74cde0;
+
+    --body-bg-start: #0f1d27;
+    --body-bg-mid: #122330;
+    --body-bg-end: #0f1b26;
+    --header-glass-bg: rgba(15, 27, 38, 0.86);
+    --session-active-bg: rgba(88, 191, 209, 0.26);
+    --session-hover-bg: rgba(88, 191, 209, 0.16);
+    --message-user-bg: #133040;
+    --message-assistant-bg: #142535;
+
+    --hint-info-border: #2f6151;
+    --hint-info-bg: #15342a;
+    --hint-info-text: #98e4be;
+    --hint-error-border: #7b3a3a;
+    --hint-error-bg: #341b1b;
+    --hint-error-text: #f3adad;
+    --hint-warn-border: #7a5d2f;
+    --hint-warn-bg: #352a16;
+    --hint-warn-text: #f0d19b;
+
+    --code-block-bg: #0f1d29;
+    --inline-code-bg: #1a2e3e;
+    --md-blockquote-bg: #112434;
+    --md-blockquote-text: #9cc1d8;
+    --md-table-head-bg: #132737;
+    --md-mermaid-fallback-bg: #2a1a1a;
+    --md-mermaid-error-text: #f2b2b2;
+    --md-mermaid-error-border: #784040;
   }
 
   * {
@@ -44,7 +126,12 @@
 
   body {
     margin: 0;
-    background: radial-gradient(circle at 8% 0%, #dcf4ff 0%, #f4f9fb 40%, #f2f8f8 100%);
+    background: radial-gradient(
+      circle at 8% 0%,
+      var(--body-bg-start) 0%,
+      var(--body-bg-mid) 40%,
+      var(--body-bg-end) 100%
+    );
     color: var(--ink);
   }
 
