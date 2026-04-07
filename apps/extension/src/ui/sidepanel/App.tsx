@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { Icon } from "@iconify/react/dist/offline";
 import dotsVertical from "@iconify-icons/mdi/dots-vertical";
 import cogOutline from "@iconify-icons/mdi/cog-outline";
@@ -144,10 +144,28 @@ export function App(): JSX.Element {
   const [renameTargetSession, setRenameTargetSession] = useState<ChatSession | null>(null);
   const [renameTitleInput, setRenameTitleInput] = useState("");
   const [renameError, setRenameError] = useState<string | undefined>();
+  const [isAnyDropdownMenuOpen, setIsAnyDropdownMenuOpen] = useState(false);
+  const [isAdapterSelectOpen, setIsAdapterSelectOpen] = useState(false);
+  const [isConversationFocused, setIsConversationFocused] = useState(false);
+  const [highlightedMessageId, setHighlightedMessageId] = useState<string | undefined>();
+  const [previewDialogOpen, setPreviewDialogOpen] = useState(false);
+  const [previewMessageId, setPreviewMessageId] = useState<string | undefined>();
   const [loadedMessagesSessionId, setLoadedMessagesSessionId] = useState<string | undefined>();
   const conversationViewportRef = useRef<HTMLElement | null>(null);
+  const composerTextareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const previewViewportRef = useRef<HTMLDivElement | null>(null);
+  const messageItemRefs = useRef(new Map<string, HTMLElement>());
+  const highlightSyncRafRef = useRef<number | null>(null);
+  const conversationScrollLoopRef = useRef<number | null>(null);
+  const conversationScrollLastTsRef = useRef<number | null>(null);
+  const conversationScrollKeysRef = useRef({ j: false, k: false });
+  const previewScrollLoopRef = useRef<number | null>(null);
+  const previewScrollLastTsRef = useRef<number | null>(null);
+  const previewScrollKeysRef = useRef({ j: false, k: false });
   const pendingAutoScrollSessionIdRef = useRef<string | undefined>(undefined);
   const preferredActiveSessionIdRef = useRef<string | undefined>(undefined);
+
+  const KEYBOARD_SCROLL_SPEED_PX_PER_SECOND = 780;
 
   const isBackendDraftActive =
     sessionMode === "backend" && activeSessionId === BACKEND_DRAFT_SESSION_ID;
@@ -157,6 +175,11 @@ export function App(): JSX.Element {
       (activeRun.status === "QUEUED" ||
         activeRun.status === "RUNNING" ||
         activeRun.status === "CANCELLING")
+  );
+  const isKeyboardShortcutBlocked = renameDialogOpen || isAnyDropdownMenuOpen || isAdapterSelectOpen;
+  const previewMessage = useMemo(
+    () => messages.find((item) => item.id === previewMessageId),
+    [messages, previewMessageId]
   );
 
   const activeConnection = useMemo(
@@ -314,6 +337,9 @@ export function App(): JSX.Element {
       setMessages([]);
       setLoadedMessagesSessionId(undefined);
       setActiveRun(undefined);
+      setHighlightedMessageId(undefined);
+      setPreviewDialogOpen(false);
+      setPreviewMessageId(undefined);
       setRawViewByMessageId({});
       setSelectionContext(undefined);
       setPageContent(undefined);
@@ -368,6 +394,66 @@ export function App(): JSX.Element {
     };
   }, [messages, activeSessionId, isBackendDraftActive, loadedMessagesSessionId]);
 
+  useEffect(() => {
+    if (messages.length === 0) {
+      setHighlightedMessageId(undefined);
+      return;
+    }
+
+    scheduleHighlightedMessageSync();
+  }, [messages, activeSessionId, loadedMessagesSessionId]);
+
+  useEffect(() => {
+    return () => {
+      if (highlightSyncRafRef.current) {
+        window.cancelAnimationFrame(highlightSyncRafRef.current);
+        highlightSyncRafRef.current = null;
+      }
+      clearConversationKeyboardScrollKeys();
+      clearPreviewKeyboardScrollKeys();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!previewDialogOpen) {
+      return;
+    }
+
+    const rafId = window.requestAnimationFrame(() => {
+      previewViewportRef.current?.focus({ preventScroll: true });
+    });
+
+    return () => {
+      window.cancelAnimationFrame(rafId);
+    };
+  }, [previewDialogOpen, previewMessageId]);
+
+  useEffect(() => {
+    if (!previewDialogOpen) {
+      return;
+    }
+    if (previewMessage) {
+      return;
+    }
+    setPreviewDialogOpen(false);
+    setPreviewMessageId(undefined);
+  }, [previewDialogOpen, previewMessage]);
+
+  useEffect(() => {
+    if (isKeyboardShortcutBlocked) {
+      clearConversationKeyboardScrollKeys();
+      clearPreviewKeyboardScrollKeys();
+    }
+  }, [isKeyboardShortcutBlocked]);
+
+  useEffect(() => {
+    if (previewDialogOpen) {
+      clearConversationKeyboardScrollKeys();
+      return;
+    }
+    clearPreviewKeyboardScrollKeys();
+  }, [previewDialogOpen]);
+
   function toggleRawView(messageId: string): void {
     setRawViewByMessageId((previous) => ({
       ...previous,
@@ -387,6 +473,281 @@ export function App(): JSX.Element {
     setRenameTargetSession(null);
     setRenameTitleInput("");
     setRenameError(undefined);
+  }
+
+  function focusConversationViewport(): void {
+    conversationViewportRef.current?.focus({ preventScroll: true });
+  }
+
+  function syncHighlightedMessageByViewport(): void {
+    const viewport = conversationViewportRef.current;
+    if (!viewport || messages.length === 0) {
+      setHighlightedMessageId(undefined);
+      return;
+    }
+
+    const viewportRect = viewport.getBoundingClientRect();
+    const viewportCenterY = viewportRect.top + viewportRect.height / 2;
+    let nextHighlighted: string | undefined;
+    let minDistance = Number.POSITIVE_INFINITY;
+
+    for (const message of messages) {
+      const element = messageItemRefs.current.get(message.id);
+      if (!element) {
+        continue;
+      }
+
+      const rect = element.getBoundingClientRect();
+      if (rect.bottom < viewportRect.top || rect.top > viewportRect.bottom) {
+        continue;
+      }
+
+      const elementCenterY = rect.top + rect.height / 2;
+      const distance = Math.abs(elementCenterY - viewportCenterY);
+      if (distance < minDistance) {
+        minDistance = distance;
+        nextHighlighted = message.id;
+      }
+    }
+
+    if (!nextHighlighted) {
+      nextHighlighted = messages[messages.length - 1]?.id;
+    }
+
+    setHighlightedMessageId((current) => (current === nextHighlighted ? current : nextHighlighted));
+  }
+
+  function scheduleHighlightedMessageSync(): void {
+    if (highlightSyncRafRef.current) {
+      return;
+    }
+    highlightSyncRafRef.current = window.requestAnimationFrame(() => {
+      highlightSyncRafRef.current = null;
+      syncHighlightedMessageByViewport();
+    });
+  }
+
+  function registerMessageItemRef(messageId: string, element: HTMLElement | null): void {
+    if (element) {
+      messageItemRefs.current.set(messageId, element);
+      return;
+    }
+    messageItemRefs.current.delete(messageId);
+  }
+
+  function openPreviewDialogForMessage(messageId: string): void {
+    setPreviewMessageId(messageId);
+    setPreviewDialogOpen(true);
+  }
+
+  function stopConversationKeyboardScroll(): void {
+    if (conversationScrollLoopRef.current) {
+      window.cancelAnimationFrame(conversationScrollLoopRef.current);
+      conversationScrollLoopRef.current = null;
+    }
+    conversationScrollLastTsRef.current = null;
+  }
+
+  function clearConversationKeyboardScrollKeys(): void {
+    conversationScrollKeysRef.current.j = false;
+    conversationScrollKeysRef.current.k = false;
+    stopConversationKeyboardScroll();
+  }
+
+  function startConversationKeyboardScroll(): void {
+    if (conversationScrollLoopRef.current) {
+      return;
+    }
+
+    const step = (timestamp: number): void => {
+      const viewport = conversationViewportRef.current;
+      if (!viewport) {
+        stopConversationKeyboardScroll();
+        return;
+      }
+
+      const direction =
+        (conversationScrollKeysRef.current.j ? 1 : 0) +
+        (conversationScrollKeysRef.current.k ? -1 : 0);
+      if (direction === 0) {
+        stopConversationKeyboardScroll();
+        return;
+      }
+
+      const lastTs = conversationScrollLastTsRef.current ?? timestamp;
+      const deltaMs = Math.max(0, timestamp - lastTs);
+      conversationScrollLastTsRef.current = timestamp;
+      const deltaPx =
+        direction * KEYBOARD_SCROLL_SPEED_PX_PER_SECOND * (deltaMs / 1_000);
+      if (deltaPx !== 0) {
+        viewport.scrollTop += deltaPx;
+        scheduleHighlightedMessageSync();
+      }
+
+      conversationScrollLoopRef.current = window.requestAnimationFrame(step);
+    };
+
+    conversationScrollLastTsRef.current = null;
+    conversationScrollLoopRef.current = window.requestAnimationFrame(step);
+  }
+
+  function updateConversationKeyboardScrollKey(
+    key: "j" | "k",
+    pressed: boolean
+  ): void {
+    conversationScrollKeysRef.current[key] = pressed;
+    const active =
+      conversationScrollKeysRef.current.j || conversationScrollKeysRef.current.k;
+    if (active) {
+      startConversationKeyboardScroll();
+      return;
+    }
+    stopConversationKeyboardScroll();
+  }
+
+  function stopPreviewKeyboardScroll(): void {
+    if (previewScrollLoopRef.current) {
+      window.cancelAnimationFrame(previewScrollLoopRef.current);
+      previewScrollLoopRef.current = null;
+    }
+    previewScrollLastTsRef.current = null;
+  }
+
+  function clearPreviewKeyboardScrollKeys(): void {
+    previewScrollKeysRef.current.j = false;
+    previewScrollKeysRef.current.k = false;
+    stopPreviewKeyboardScroll();
+  }
+
+  function startPreviewKeyboardScroll(): void {
+    if (previewScrollLoopRef.current) {
+      return;
+    }
+
+    const step = (timestamp: number): void => {
+      const viewport = previewViewportRef.current;
+      if (!viewport) {
+        stopPreviewKeyboardScroll();
+        return;
+      }
+
+      const direction =
+        (previewScrollKeysRef.current.j ? 1 : 0) +
+        (previewScrollKeysRef.current.k ? -1 : 0);
+      if (direction === 0) {
+        stopPreviewKeyboardScroll();
+        return;
+      }
+
+      const lastTs = previewScrollLastTsRef.current ?? timestamp;
+      const deltaMs = Math.max(0, timestamp - lastTs);
+      previewScrollLastTsRef.current = timestamp;
+      const deltaPx =
+        direction * KEYBOARD_SCROLL_SPEED_PX_PER_SECOND * (deltaMs / 1_000);
+      if (deltaPx !== 0) {
+        viewport.scrollTop += deltaPx;
+      }
+
+      previewScrollLoopRef.current = window.requestAnimationFrame(step);
+    };
+
+    previewScrollLastTsRef.current = null;
+    previewScrollLoopRef.current = window.requestAnimationFrame(step);
+  }
+
+  function updatePreviewKeyboardScrollKey(
+    key: "j" | "k",
+    pressed: boolean
+  ): void {
+    previewScrollKeysRef.current[key] = pressed;
+    const active = previewScrollKeysRef.current.j || previewScrollKeysRef.current.k;
+    if (active) {
+      startPreviewKeyboardScroll();
+      return;
+    }
+    stopPreviewKeyboardScroll();
+  }
+
+  function handleConversationShortcut(event: ReactKeyboardEvent<HTMLElement>): void {
+    if (event.nativeEvent.isComposing || isKeyboardShortcutBlocked || previewDialogOpen) {
+      return;
+    }
+    if (event.metaKey || event.ctrlKey || event.altKey) {
+      return;
+    }
+
+    const key = event.key.toLowerCase();
+
+    if (key === "j" || key === "k") {
+      event.preventDefault();
+      updateConversationKeyboardScrollKey(key as "j" | "k", true);
+      return;
+    }
+
+    if (key === "f") {
+      if (!highlightedMessageId) {
+        return;
+      }
+      event.preventDefault();
+      openPreviewDialogForMessage(highlightedMessageId);
+      return;
+    }
+
+    if (event.key === "Escape") {
+      event.preventDefault();
+      const composer = composerTextareaRef.current;
+      if (!composer) {
+        return;
+      }
+      composer.focus({ preventScroll: true });
+    }
+  }
+
+  function handleConversationShortcutKeyUp(
+    event: ReactKeyboardEvent<HTMLElement>
+  ): void {
+    const key = event.key.toLowerCase();
+    if (key !== "j" && key !== "k") {
+      return;
+    }
+    event.preventDefault();
+    updateConversationKeyboardScrollKey(key as "j" | "k", false);
+  }
+
+  function handlePreviewShortcut(event: ReactKeyboardEvent<HTMLDivElement>): void {
+    if (event.nativeEvent.isComposing || isKeyboardShortcutBlocked) {
+      return;
+    }
+    if (event.metaKey || event.ctrlKey || event.altKey) {
+      return;
+    }
+
+    const key = event.key.toLowerCase();
+
+    if (key === "j" || key === "k") {
+      event.preventDefault();
+      updatePreviewKeyboardScrollKey(key as "j" | "k", true);
+      return;
+    }
+
+    if (event.key === "Escape") {
+      event.preventDefault();
+      setPreviewDialogOpen(false);
+      window.requestAnimationFrame(() => {
+        focusConversationViewport();
+      });
+    }
+  }
+
+  function handlePreviewShortcutKeyUp(
+    event: ReactKeyboardEvent<HTMLDivElement>
+  ): void {
+    const key = event.key.toLowerCase();
+    if (key !== "j" && key !== "k") {
+      return;
+    }
+    event.preventDefault();
+    updatePreviewKeyboardScrollKey(key as "j" | "k", false);
   }
 
   useEffect(() => {
@@ -1729,7 +2090,7 @@ export function App(): JSX.Element {
                       </span>
                     </button>
 
-                    <DropdownMenu>
+                    <DropdownMenu onOpenChange={setIsAnyDropdownMenuOpen}>
                       <DropdownMenuTrigger asChild>
                         <Button
                           type="button"
@@ -1808,7 +2169,7 @@ export function App(): JSX.Element {
           }}
         >
           <strong style={{ flex: 1 }}>{t(locale, "appTitle")}</strong>
-          <DropdownMenu>
+          <DropdownMenu onOpenChange={setIsAnyDropdownMenuOpen}>
             <DropdownMenuTrigger asChild>
               <Button
                 type="button"
@@ -1877,7 +2238,44 @@ export function App(): JSX.Element {
 
         <section
           ref={conversationViewportRef}
-          style={{ padding: 14, overflow: "auto", display: "grid", gap: 12, alignContent: "start" }}
+          tabIndex={0}
+          aria-label={t(locale, "conversationListA11y")}
+          onScroll={() => {
+            scheduleHighlightedMessageSync();
+          }}
+          onFocus={() => {
+            setIsConversationFocused(true);
+            scheduleHighlightedMessageSync();
+          }}
+          onKeyUpCapture={handleConversationShortcutKeyUp}
+          onBlur={(event) => {
+            const nextTarget = event.relatedTarget as Node | null;
+            if (nextTarget && event.currentTarget.contains(nextTarget)) {
+              return;
+            }
+            clearConversationKeyboardScrollKeys();
+            setIsConversationFocused(false);
+          }}
+          onKeyDownCapture={handleConversationShortcut}
+          onMouseDown={(event) => {
+            const target = event.target as HTMLElement | null;
+            if (
+              target?.closest(
+                "button, a, input, textarea, select, [role='button'], [role='menuitem'], [role='checkbox']"
+              )
+            ) {
+              return;
+            }
+            focusConversationViewport();
+          }}
+          style={{
+            padding: 14,
+            overflow: "auto",
+            display: "grid",
+            gap: 12,
+            alignContent: "start",
+            outline: "none"
+          }}
         >
           {!activeConnection ? (
             <div style={hintErrorStyle}>{t(locale, "noActiveConnectionHint")}</div>
@@ -1908,10 +2306,17 @@ export function App(): JSX.Element {
           ) : (
             messages.map((msg) => {
               const showRaw = msg.role === "assistant" && Boolean(rawViewByMessageId[msg.id]);
+              const isHighlighted =
+                isConversationFocused && highlightedMessageId === msg.id;
 
               return (
                 <article
                   key={msg.id}
+                  ref={(element) => {
+                    registerMessageItemRef(msg.id, element);
+                  }}
+                  data-message-item="true"
+                  data-highlighted={isHighlighted ? "true" : "false"}
                   style={{
                     maxWidth: "85%",
                     padding: "10px 12px",
@@ -1920,7 +2325,10 @@ export function App(): JSX.Element {
                     border: "1px solid var(--line)",
                     background:
                       msg.role === "user" ? "var(--message-user-bg)" : "var(--message-assistant-bg)",
-                    marginLeft: msg.role === "user" ? "auto" : 0
+                    marginLeft: msg.role === "user" ? "auto" : 0,
+                    boxShadow: isHighlighted
+                      ? "0 0 0 2px hsl(var(--ring) / 0.35)"
+                      : undefined
                   }}
                 >
                   {msg.role === "assistant" ? (
@@ -2008,6 +2416,7 @@ export function App(): JSX.Element {
               <span className="text-xs text-muted-foreground">{t(locale, "adapter")}</span>
               <Select
                 value={adapter}
+                onOpenChange={setIsAdapterSelectOpen}
                 onValueChange={(value) => {
                   const nextAdapter = value as BridgeChatRequest["adapter"];
                   setAdapter(nextAdapter);
@@ -2063,9 +2472,18 @@ export function App(): JSX.Element {
             </Button>
           </div>
           <Textarea
+            ref={composerTextareaRef}
             rows={4}
             value={input}
             onChange={(e) => setInput(e.target.value)}
+            onKeyDown={(event) => {
+              if (event.key !== "Escape") {
+                return;
+              }
+              event.preventDefault();
+              event.currentTarget.blur();
+              focusConversationViewport();
+            }}
             placeholder={t(locale, "placeholder")}
             className="min-h-[76px] resize-y"
           />
@@ -2079,6 +2497,83 @@ export function App(): JSX.Element {
           </Button>
         </footer>
       </main>
+
+      <Dialog
+        open={previewDialogOpen}
+        onOpenChange={(open) => {
+          setPreviewDialogOpen(open);
+          if (!open) {
+            setPreviewMessageId(undefined);
+            window.requestAnimationFrame(() => {
+              focusConversationViewport();
+            });
+          }
+        }}
+      >
+        <DialogContent
+          className="h-[92vh] w-[96vw] max-w-none p-0"
+          onOpenAutoFocus={(event) => {
+            event.preventDefault();
+            previewViewportRef.current?.focus({ preventScroll: true });
+          }}
+        >
+          <div className="flex h-full min-h-0 flex-col">
+            <div className="flex items-center justify-between gap-2 border-b border-border px-4 py-3">
+              <DialogTitle>{t(locale, "messagePreviewTitle")}</DialogTitle>
+              {previewMessage?.role === "assistant" ? (
+                <button
+                  type="button"
+                  onClick={() => toggleRawView(previewMessage.id)}
+                  style={messageRenderToggleStyle}
+                >
+                  {rawViewByMessageId[previewMessage.id] ? "格式化" : "查看原文"}
+                </button>
+              ) : null}
+            </div>
+            <div
+              ref={previewViewportRef}
+              tabIndex={0}
+              onKeyDown={handlePreviewShortcut}
+              onKeyUp={handlePreviewShortcutKeyUp}
+              onBlur={() => {
+                clearPreviewKeyboardScrollKeys();
+              }}
+              className="min-h-0 flex-1 overflow-auto outline-none"
+              style={{
+                paddingBlock: "clamp(12px, 2.2vh, 28px)",
+                paddingInline: "clamp(8px, 1.8vw, 20px)"
+              }}
+            >
+              {previewMessage ? (
+                <div
+                  style={{
+                    marginInline: "auto",
+                    width: "100%",
+                    maxWidth: "min(150ch, 100%)",
+                    lineHeight: 1.65
+                  }}
+                >
+                  {previewMessage.role === "assistant" ? (
+                    rawViewByMessageId[previewMessage.id] ? (
+                      <pre style={{ ...rawMessageContentStyle, margin: 0 }}>
+                        <code>{previewMessage.content}</code>
+                      </pre>
+                    ) : (
+                      <MarkdownMessage content={previewMessage.content} />
+                    )
+                  ) : (
+                    <span style={{ whiteSpace: "pre-wrap" }}>{previewMessage.content}</span>
+                  )}
+                </div>
+              ) : (
+                <div style={{ color: "var(--muted-text)", fontSize: 13 }}>{t(locale, "previewMessageMissing")}</div>
+              )}
+
+              <div className="mt-3 text-xs text-muted-foreground">{t(locale, "previewShortcutHint")}</div>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
 
       <Dialog
         open={renameDialogOpen}

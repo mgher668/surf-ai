@@ -43,6 +43,7 @@ const dictionary = {
     cancel: "取消",
     save: "保存",
     empty: "暂无消息",
+    conversationListA11y: "当前会话消息列表",
     extractPage: "提取当前页",
     extractingPage: "提取中...",
     pageContextReady: "已附加页面全文上下文",
@@ -65,7 +66,10 @@ const dictionary = {
     settingsTitle: "设置",
     settingsDescription: "管理连接、默认适配器、主题与界面语言。",
     noActiveConnectionHint: "当前没有可用连接，请先到设置页添加连接。",
-    popupTipSelection: "提示：选中网页文本可触发快速操作。"
+    popupTipSelection: "提示：选中网页文本可触发快速操作。",
+    messagePreviewTitle: "消息预览",
+    previewMessageMissing: "未找到当前消息，可能已被更新。",
+    previewShortcutHint: "快捷键：j/k 滚动，Esc 关闭预览"
   },
   "en-US": {
     appTitle: "Surf AI",
@@ -109,6 +113,7 @@ const dictionary = {
     cancel: "Cancel",
     save: "Save",
     empty: "No messages yet",
+    conversationListA11y: "Current session message list",
     extractPage: "Extract Page",
     extractingPage: "Extracting...",
     pageContextReady: "Page full-text context attached",
@@ -131,7 +136,10 @@ const dictionary = {
     settingsTitle: "Settings",
     settingsDescription: "Manage connections, default adapter, theme, and UI language.",
     noActiveConnectionHint: "No active connection. Add one from Settings first.",
-    popupTipSelection: "Tip: select text on page to trigger quick actions."
+    popupTipSelection: "Tip: select text on page to trigger quick actions.",
+    messagePreviewTitle: "Message Preview",
+    previewMessageMissing: "Message not found. It may have been updated.",
+    previewShortcutHint: "Shortcuts: j/k to scroll, Esc to close preview"
   }
 } as const;
 

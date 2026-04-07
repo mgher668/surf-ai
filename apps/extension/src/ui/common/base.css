@@ -141,4 +141,13 @@
   select {
     font: inherit;
   }
+
+  :where(*):focus:not(:focus-visible) {
+    outline: none;
+  }
+
+  :where(*):focus-visible {
+    outline: 2px solid hsl(var(--ring));
+    outline-offset: 2px;
+  }
 }
