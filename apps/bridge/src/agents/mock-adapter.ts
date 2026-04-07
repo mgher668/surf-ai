@@ -5,7 +5,7 @@ import { buildAgentTaskPayload } from "./task-payload";
 export class MockAdapter implements AgentAdapter {
   public readonly name = "mock" as const;
 
-  public async generate(request: BridgeChatRequest): Promise<string> {
+  public async generate(request: BridgeChatRequest, _signal?: AbortSignal): Promise<string> {
     const payload = buildAgentTaskPayload(request);
     const contextTags: string[] = [];
     if (payload.pageContext?.selectedText?.content) {

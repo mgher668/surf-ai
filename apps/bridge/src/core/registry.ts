@@ -76,7 +76,11 @@ export class AdapterRegistry {
     return this.adapters[name];
   }
 
-  public async generate(request: BridgeChatRequest, fallback: "mock" | "codex" | "claude"): Promise<string> {
+  public async generate(
+    request: BridgeChatRequest,
+    fallback: "mock" | "codex" | "claude",
+    signal?: AbortSignal
+  ): Promise<string> {
     const adapterName = this.resolveAdapterName(request.adapter, fallback);
 
     const adapter = this.adapters[adapterName];
@@ -84,6 +88,6 @@ export class AdapterRegistry {
       throw new Error(`No adapter found for '${adapterName}'`);
     }
 
-    return await adapter.generate(request);
+    return await adapter.generate(request, signal);
   }
 }

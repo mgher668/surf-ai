@@ -11,6 +11,12 @@ import type {
   BridgeSessionAdapterRequest,
   BridgeSessionAdapterResponse,
   BridgeSessionMessagesResponse,
+  BridgeSessionRun,
+  BridgeSessionRunCancelResponse,
+  BridgeSessionRunCreateRequest,
+  BridgeSessionRunCreateResponse,
+  BridgeSessionRunResponse,
+  BridgeSessionRunsResponse,
   BridgeSessionRenameRequest,
   BridgeSessionRenameResponse,
   BridgeSessionSendMessageResponse,
@@ -31,11 +37,20 @@ const registry = new AdapterRegistry();
 const store = new BridgeStore(config.dbPath, config.users);
 const sessionManager = new SessionManager(store, registry);
 const rateLimiter = new FixedWindowRateLimiter(config.security.rateLimit);
+const activeRunControllers = new Map<string, AbortController>();
+const recoveredInterruptedRuns = store.recoverInterruptedRuns("bridge_restarted_before_run_completed");
 
 const app = Fastify({
   logger: true,
   trustProxy: config.security.trustProxy
 });
+
+if (recoveredInterruptedRuns > 0) {
+  app.log.warn(
+    { recoveredInterruptedRuns },
+    "Marked interrupted session runs as failed after bridge restart"
+  );
+}
 
 await app.register(cors, {
   origin(origin, callback) {
@@ -211,6 +226,17 @@ const sendSessionMessageSchema = z.object({
   context: chatContextSchema.optional()
 });
 
+const createSessionRunSchema = z.object({
+  adapter: z.enum(["codex", "claude", "openai-compatible", "anthropic", "gemini", "mock"]),
+  model: z.string().optional(),
+  content: z.string().trim().min(1),
+  context: chatContextSchema.optional()
+});
+
+const listSessionRunsQuerySchema = z.object({
+  limit: z.coerce.number().int().min(1).max(50).optional()
+});
+
 const listSessionMessagesQuerySchema = z.object({
   afterSeq: z.coerce.number().int().min(0).optional(),
   limit: z.coerce.number().int().min(1).max(500).optional()
@@ -379,6 +405,157 @@ app.get("/sessions/:id/messages", async (request, reply) => {
     parsed.data.limit ?? 200
   );
   const response: BridgeSessionMessagesResponse = { session, messages };
+  return response;
+});
+
+app.get("/sessions/:id/runs", async (request, reply) => {
+  const userId = requireAuthedUserId(request, reply);
+  if (!userId) {
+    return;
+  }
+
+  const parsed = listSessionRunsQuerySchema.safeParse(request.query);
+  if (!parsed.success) {
+    reply.code(400);
+    return { error: "invalid_request", details: parsed.error.flatten() };
+  }
+
+  const sessionId = String((request.params as { id: string }).id);
+  const existingSession = store.getSession(userId, sessionId);
+  if (!existingSession) {
+    reply.code(404);
+    return { error: "session_not_found" };
+  }
+
+  const response: BridgeSessionRunsResponse = {
+    runs: store.listSessionRuns(userId, sessionId, parsed.data.limit ?? 20)
+  };
+  return response;
+});
+
+app.post("/sessions/:id/runs", async (request, reply) => {
+  const userId = requireAuthedUserId(request, reply);
+  if (!userId) {
+    return;
+  }
+
+  const parsed = createSessionRunSchema.safeParse(request.body);
+  if (!parsed.success) {
+    reply.code(400);
+    return { error: "invalid_request", details: parsed.error.flatten() };
+  }
+
+  const sessionId = String((request.params as { id: string }).id);
+  const existingSession = store.getSession(userId, sessionId);
+  if (!existingSession) {
+    reply.code(404);
+    return { error: "session_not_found" };
+  }
+
+  const inFlightRun = store.getLatestActiveSessionRun(userId, sessionId);
+  if (inFlightRun) {
+    reply.code(409);
+    return { error: "session_run_in_progress", run: inFlightRun };
+  }
+
+  const sessionWithAdapter =
+    store.updateSessionLastAdapter(userId, sessionId, parsed.data.adapter) ?? existingSession;
+  store.updateSessionStatus(userId, sessionId, "RUNNING");
+  const userMessage = store.appendMessage(userId, sessionId, "user", parsed.data.content);
+  const session = store.updateSessionStatus(userId, sessionId, "RUNNING") ?? sessionWithAdapter;
+  const run = store.createSessionRun({
+    userId,
+    sessionId,
+    adapter: parsed.data.adapter,
+    status: "QUEUED",
+    userMessageId: userMessage.id
+  });
+
+  const normalizedContext = normalizeChatContext(parsed.data.context);
+  void executeSessionRun({
+    userId,
+    sessionId,
+    runId: run.id,
+    adapter: parsed.data.adapter,
+    ...(parsed.data.model ? { model: parsed.data.model } : {}),
+    ...(normalizedContext ? { context: normalizedContext } : {})
+  });
+
+  reply.code(202);
+  const response: BridgeSessionRunCreateResponse = {
+    session,
+    run,
+    userMessage
+  };
+  return response;
+});
+
+app.get("/runs/:id", async (request, reply) => {
+  const userId = requireAuthedUserId(request, reply);
+  if (!userId) {
+    return;
+  }
+
+  const runId = String((request.params as { id: string }).id);
+  const run = store.getSessionRun(userId, runId);
+  if (!run) {
+    reply.code(404);
+    return { error: "run_not_found" };
+  }
+
+  const response: BridgeSessionRunResponse = { run };
+  return response;
+});
+
+app.post("/runs/:id/cancel", async (request, reply) => {
+  const userId = requireAuthedUserId(request, reply);
+  if (!userId) {
+    return;
+  }
+
+  const runId = String((request.params as { id: string }).id);
+  const run = store.getSessionRun(userId, runId);
+  if (!run) {
+    reply.code(404);
+    return { error: "run_not_found" };
+  }
+
+  if (isRunTerminal(run.status)) {
+    const response: BridgeSessionRunCancelResponse = { run };
+    return response;
+  }
+
+  if (run.status === "QUEUED") {
+    const cancelled =
+      store.updateSessionRunStatus(userId, runId, {
+        status: "CANCELLED",
+        errorMessage: "cancelled_by_user",
+        finishedAt: Date.now()
+      }) ?? run;
+    store.updateSessionStatus(userId, run.sessionId, "IDLE");
+    const response: BridgeSessionRunCancelResponse = { run: cancelled };
+    return response;
+  }
+
+  const cancelling =
+    store.updateSessionRunStatus(userId, runId, {
+      status: "CANCELLING",
+      errorMessage: "cancel_requested"
+    }) ?? run;
+
+  const controller = activeRunControllers.get(runId);
+  if (controller) {
+    controller.abort();
+  } else {
+    store.updateSessionRunStatus(userId, runId, {
+      status: "CANCELLED",
+      errorMessage: "cancelled_without_active_process",
+      finishedAt: Date.now()
+    });
+    store.updateSessionStatus(userId, run.sessionId, "IDLE");
+  }
+
+  const response: BridgeSessionRunCancelResponse = { run: cancelling };
   return response;
 });
 
@@ -756,6 +933,123 @@ function normalizeHeaderValue(value: unknown): string | undefined {
   return undefined;
 }
 
+async function executeSessionRun(input: {
+  userId: string;
+  sessionId: string;
+  runId: string;
+  adapter: BridgeSessionRunCreateRequest["adapter"];
+  model?: string;
+  context?: BridgeChatRequest["context"];
+}): Promise<void> {
+  const latestRun = store.getSessionRun(input.userId, input.runId);
+  if (!latestRun || isRunTerminal(latestRun.status)) {
+    return;
+  }
+
+  const controller = new AbortController();
+  activeRunControllers.set(input.runId, controller);
+
+  try {
+    store.updateSessionRunStatus(input.userId, input.runId, {
+      status: "RUNNING",
+      startedAt: Date.now()
+    });
+    store.updateSessionStatus(input.userId, input.sessionId, "RUNNING");
+
+    if (store.getSessionRun(input.userId, input.runId)?.status === "CANCELLING") {
+      controller.abort();
+    }
+
+    const sessionReply = await sessionManager.generateReply({
+      userId: input.userId,
+      sessionId: input.sessionId,
+      adapter: input.adapter,
+      fallbackAdapter: config.defaultAdapter,
+      ...(input.model ? { model: input.model } : {}),
+      ...(input.context ? { context: input.context } : {}),
+      signal: controller.signal
+    });
+
+    const assistantMessage = store.appendMessage(
+      input.userId,
+      input.sessionId,
+      "assistant",
+      sessionReply.output
+    );
+
+    if (sessionReply.agentLink) {
+      sessionManager.syncAgentLink(
+        input.userId,
+        input.sessionId,
+        sessionReply.agentLink.provider,
+        sessionReply.agentLink.providerSessionId,
+        assistantMessage.seq ?? 0
+      );
+    }
+
+    store.updateSessionRunStatus(input.userId, input.runId, {
+      status: "SUCCEEDED",
+      assistantMessageId: assistantMessage.id,
+      finishedAt: Date.now()
+    });
+    store.updateSessionStatus(input.userId, input.sessionId, "IDLE");
+  } catch (error) {
+    const latest = store.getSessionRun(input.userId, input.runId);
+    const cancelled =
+      controller.signal.aborted || isAbortLikeError(error) || latest?.status === "CANCELLING";
+
+    if (cancelled) {
+      store.updateSessionRunStatus(input.userId, input.runId, {
+        status: "CANCELLED",
+        errorMessage: "cancelled_by_user",
+        finishedAt: Date.now()
+      });
+      store.updateSessionStatus(input.userId, input.sessionId, "IDLE");
+      return;
+    }
+
+    const message = toRunErrorMessage(error);
+    store.updateSessionRunStatus(input.userId, input.runId, {
+      status: "FAILED",
+      errorMessage: message,
+      finishedAt: Date.now()
+    });
+    store.updateSessionStatus(input.userId, input.sessionId, "ERROR");
+    recordAuditEvent({
+      userId: input.userId,
+      eventType: "session_run_failed",
+      level: "ERROR",
+      details: {
+        sessionId: input.sessionId,
+        runId: input.runId,
+        adapter: input.adapter,
+        message
+      }
+    });
+  } finally {
+    activeRunControllers.delete(input.runId);
+  }
+}
+
+function isRunTerminal(status: BridgeSessionRun["status"]): boolean {
+  return status === "SUCCEEDED" || status === "FAILED" || status === "CANCELLED";
+}
+
+function isAbortLikeError(error: unknown): boolean {
+  if (!(error instanceof Error)) {
+    return false;
+  }
+  const message = error.message.toLowerCase();
+  return message.includes("aborted") || message.includes("abort");
+}
+
+function toRunErrorMessage(error: unknown): string {
+  if (error instanceof Error) {
+    return error.message.slice(0, 500);
+  }
+  return "unknown session run error";
+}
+
 function normalizeChatContext(
   context:
     | {
@@ -840,6 +1134,9 @@ function getRateLimitBucket(method: string, rawUrl: string): string | null {
     return "maintenance-purge";
   }
   if (/^\/sessions\/[^/]+\/messages$/.test(path)) {
+    return "session-message";
+  }
+  if (/^\/sessions\/[^/]+\/runs$/.test(path)) {
     return "session-message";
   }
 

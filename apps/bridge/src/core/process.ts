@@ -9,7 +9,8 @@ export interface ProcessResult {
 export async function runProcess(
   command: string,
   args: string[],
-  timeoutMs: number
+  timeoutMs: number,
+  signal?: AbortSignal
 ): Promise<ProcessResult> {
   return await new Promise<ProcessResult>((resolve, reject) => {
     const child = spawn(command, args, {
@@ -19,6 +20,42 @@ export async function runProcess(
 
     let stdout = "";
     let stderr = "";
+    let settled = false;
+    let timer: NodeJS.Timeout | undefined;
+
+    const settleReject = (error: Error): void => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      if (timer) {
+        clearTimeout(timer);
+      }
+      signal?.removeEventListener("abort", handleAbort);
+      reject(error);
+    };
+
+    const settleResolve = (result: ProcessResult): void => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      if (timer) {
+        clearTimeout(timer);
+      }
+      signal?.removeEventListener("abort", handleAbort);
+      resolve(result);
+    };
+
+    const handleAbort = (): void => {
+      child.kill("SIGKILL");
+      settleReject(new Error(`Command aborted: ${command}`));
+    };
+
+    if (signal?.aborted) {
+      handleAbort();
+      return;
+    }
 
     child.stdout.on("data", (chunk: Buffer) => {
       stdout += chunk.toString("utf8");
@@ -28,19 +65,21 @@ export async function runProcess(
       stderr += chunk.toString("utf8");
     });
 
-    const timer = setTimeout(() => {
-      child.kill("SIGKILL");
-      reject(new Error(`Command timed out after ${timeoutMs}ms: ${command}`));
-    }, timeoutMs);
+    if (timeoutMs > 0) {
+      timer = setTimeout(() => {
+        child.kill("SIGKILL");
+        settleReject(new Error(`Command timed out after ${timeoutMs}ms: ${command}`));
+      }, timeoutMs);
+    }
+
+    signal?.addEventListener("abort", handleAbort);
 
     child.on("error", (error) => {
-      clearTimeout(timer);
-      reject(error);
+      settleReject(error);
     });
 
     child.on("close", (code) => {
-      clearTimeout(timer);
-      resolve({ code, stdout, stderr });
+      settleResolve({ code, stdout, stderr });
     });
   });
 }

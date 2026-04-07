@@ -20,9 +20,9 @@ interface ClaudeJsonResultEvent {
 export class ClaudeAdapter implements AgentAdapter {
   public readonly name = "claude" as const;
 
-  public async generate(request: BridgeChatRequest): Promise<string> {
+  public async generate(request: BridgeChatRequest, signal?: AbortSignal): Promise<string> {
     const prompt = buildPrompt(request);
-    const result = await runProcess("claude", ["-p", prompt], CLAUDE_TIMEOUT_MS);
+    const result = await runProcess("claude", ["-p", prompt], CLAUDE_TIMEOUT_MS, signal);
 
     if (result.code !== 0) {
       throw new Error(result.stderr || `claude exited with code ${result.code ?? "unknown"}`);
@@ -37,13 +37,15 @@ export class ClaudeAdapter implements AgentAdapter {
 
   public async generateWithSession(
     request: BridgeChatRequest,
-    providerSessionId: string
+    providerSessionId: string,
+    signal?: AbortSignal
   ): Promise<ClaudeSessionResult> {
     const prompt = buildPrompt(request);
     const result = await runProcess(
       "claude",
       ["-p", "--output-format", "json", "--session-id", providerSessionId, prompt],
-      CLAUDE_TIMEOUT_MS
+      CLAUDE_TIMEOUT_MS,
+      signal
     );
 
     const parsed = parseClaudeJsonResult(result.code, result.stdout, result.stderr, "claude --session-id");
@@ -55,12 +57,14 @@ export class ClaudeAdapter implements AgentAdapter {
 
   public async resumeWithSession(
     providerSessionId: string,
-    prompt: string
+    prompt: string,
+    signal?: AbortSignal
   ): Promise<string> {
     const result = await runProcess(
       "claude",
       ["-p", "--output-format", "json", "--resume", providerSessionId, prompt],
-      CLAUDE_TIMEOUT_MS
+      CLAUDE_TIMEOUT_MS,
+      signal
     );
 
     const parsed = parseClaudeJsonResult(result.code, result.stdout, result.stderr, "claude --resume");

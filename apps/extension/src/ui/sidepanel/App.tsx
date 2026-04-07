@@ -23,9 +23,13 @@ import type {
   BridgeSessionAdapterRequest,
   BridgeSessionAdapterResponse,
   BridgeSessionMessagesResponse,
+  BridgeSessionRun,
+  BridgeSessionRunCancelResponse,
+  BridgeSessionRunCreateResponse,
+  BridgeSessionRunResponse,
+  BridgeSessionRunsResponse,
   BridgeSessionRenameRequest,
   BridgeSessionRenameResponse,
-  BridgeSessionSendMessageResponse,
   BridgeSessionStarRequest,
   ChatMessage,
   ChatSession,
@@ -42,12 +46,14 @@ import type {
 import { deleteMessagesBySession, listMessagesBySession, saveMessage, saveMessages } from "../../lib/db";
 import {
   getActiveConnectionId,
+  getActiveSessionId as getStoredActiveSessionId,
   getDefaultAdapter,
   getConnections,
   getLocale,
   getTheme,
   getSessions,
   onStorageChanged,
+  setActiveSessionId as setStoredActiveSessionId,
   setSessions,
   setTheme
 } from "../../lib/storage";
@@ -125,6 +131,7 @@ export function App(): JSX.Element {
   const [runtimeAlert, setRuntimeAlert] = useState<RuntimeAlert | undefined>();
   const [recentAuditEvents, setRecentAuditEvents] = useState<BridgeAuditEvent[]>([]);
   const [pending, setPending] = useState(false);
+  const [activeRun, setActiveRun] = useState<BridgeSessionRun | undefined>();
   const [extractingPage, setExtractingPage] = useState(false);
   const [extractError, setExtractError] = useState<string | undefined>();
   const [pageContent, setPageContent] = useState<PageContentPayload | undefined>();
@@ -140,9 +147,17 @@ export function App(): JSX.Element {
   const [loadedMessagesSessionId, setLoadedMessagesSessionId] = useState<string | undefined>();
   const conversationViewportRef = useRef<HTMLElement | null>(null);
   const pendingAutoScrollSessionIdRef = useRef<string | undefined>(undefined);
+  const preferredActiveSessionIdRef = useRef<string | undefined>(undefined);
 
   const isBackendDraftActive =
     sessionMode === "backend" && activeSessionId === BACKEND_DRAFT_SESSION_ID;
+  const isActiveRunBusy = Boolean(
+    activeRun &&
+      activeRun.sessionId === activeSessionId &&
+      (activeRun.status === "QUEUED" ||
+        activeRun.status === "RUNNING" ||
+        activeRun.status === "CANCELLING")
+  );
 
   const activeConnection = useMemo(
     () => connections.find((item) => item.id === activeConnectionId),
@@ -298,6 +313,7 @@ export function App(): JSX.Element {
     if (!activeSessionId || isBackendDraftActive) {
       setMessages([]);
       setLoadedMessagesSessionId(undefined);
+      setActiveRun(undefined);
       setRawViewByMessageId({});
       setSelectionContext(undefined);
       setPageContent(undefined);
@@ -411,6 +427,127 @@ export function App(): JSX.Element {
   }, [activeConnectionId, activeConnection?.baseUrl, activeSessionId, sessionMode]);
 
   useEffect(() => {
+    if (!activeSessionId || sessionMode !== "backend" || !activeConnection || isBackendDraftActive) {
+      setActiveRun(undefined);
+      return;
+    }
+
+    let cancelled = false;
+    setActiveRun(undefined);
+
+    const load = async (): Promise<void> => {
+      const latestRun = await fetchLatestSessionRun(activeConnection, activeSessionId);
+      if (cancelled) {
+        return;
+      }
+      setActiveRun(latestRun ?? undefined);
+    };
+
+    void load();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeConnectionId, activeConnection?.baseUrl, activeSessionId, sessionMode, isBackendDraftActive]);
+
+  useEffect(() => {
+    if (
+      sessionMode !== "backend" ||
+      !activeConnection ||
+      !activeSessionId ||
+      isBackendDraftActive ||
+      !activeRun ||
+      activeRun.sessionId !== activeSessionId ||
+      !isRunInFlight(activeRun.status)
+    ) {
+      return;
+    }
+
+    let cancelled = false;
+
+    const syncRun = async (): Promise<void> => {
+      const latestRun = await fetchRunById(activeConnection, activeRun.id);
+      if (!latestRun || cancelled) {
+        return;
+      }
+      if (latestRun.sessionId !== activeSessionId) {
+        return;
+      }
+
+      setActiveRun(latestRun);
+
+      // Keep messages in sync while a run is in progress. This also enables
+      // immediate UI updates once the assistant message lands.
+      const polledMessages = await pollMessagesFromBackend(activeConnection, activeSessionId);
+      if (cancelled) {
+        return;
+      }
+      if (polledMessages) {
+        setMessages((prev) => {
+          if (areMessageListsEqual(prev, polledMessages)) {
+            return prev;
+          }
+          const lastMessage = polledMessages[polledMessages.length - 1];
+          if (lastMessage?.sessionId === activeSessionId) {
+            pendingAutoScrollSessionIdRef.current = activeSessionId;
+          }
+          return polledMessages;
+        });
+        setLoadedMessagesSessionId(activeSessionId);
+      }
+
+      if (!isRunInFlight(latestRun.status)) {
+        const loadedMessages = await loadMessagesFromBackend(activeConnection, activeSessionId);
+        if (cancelled) {
+          return;
+        }
+        setMessages((prev) => {
+          if (areMessageListsEqual(prev, loadedMessages)) {
+            return prev;
+          }
+          const lastMessage = loadedMessages[loadedMessages.length - 1];
+          if (lastMessage?.sessionId === activeSessionId) {
+            pendingAutoScrollSessionIdRef.current = activeSessionId;
+          }
+          return loadedMessages;
+        });
+        setLoadedMessagesSessionId(activeSessionId);
+
+        const backendSessions = await fetchSessionsFromBackend(activeConnection);
+        if (cancelled || !backendSessions) {
+          return;
+        }
+        setSessionsState((prev) => {
+          const mergedSessions = mergeSessionsWithLocalAdapters(prev, backendSessions);
+          if (areSessionListsEqual(prev, mergedSessions)) {
+            return prev;
+          }
+          void setSessions(mergedSessions);
+          return mergedSessions;
+        });
+      }
+    };
+
+    void syncRun();
+    const timer = window.setInterval(() => {
+      void syncRun();
+    }, 1_200);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [
+    sessionMode,
+    activeConnectionId,
+    activeConnection?.baseUrl,
+    activeSessionId,
+    isBackendDraftActive,
+    activeRun?.id,
+    activeRun?.status
+  ]);
+
+  useEffect(() => {
     void bootstrapCapabilities(activeConnection);
   }, [activeConnection]);
 
@@ -484,8 +621,9 @@ export function App(): JSX.Element {
         if (current === BACKEND_DRAFT_SESSION_ID) {
           return BACKEND_DRAFT_SESSION_ID;
         }
-        if (current && backendSessions.some((item) => item.id === current)) {
-          return current;
+        const preferredId = current ?? preferredActiveSessionIdRef.current;
+        if (preferredId && backendSessions.some((item) => item.id === preferredId)) {
+          return preferredId;
         }
         return backendSessions[0]?.id ?? BACKEND_DRAFT_SESSION_ID;
       });
@@ -529,6 +667,14 @@ export function App(): JSX.Element {
     if (!activeSessionId || activeSessionId === BACKEND_DRAFT_SESSION_ID) {
       return;
     }
+    preferredActiveSessionIdRef.current = activeSessionId;
+    void setStoredActiveSessionId(activeSessionId);
+  }, [activeSessionId]);
+
+  useEffect(() => {
+    if (!activeSessionId || activeSessionId === BACKEND_DRAFT_SESSION_ID) {
+      return;
+    }
     const activeSession = sessions.find((item) => item.id === activeSessionId);
     const lastAdapter = activeSession?.lastAdapter;
     if (!lastAdapter) {
@@ -559,11 +705,13 @@ export function App(): JSX.Element {
   }
 
   async function bootstrapConnectionsAndSessions(): Promise<void> {
-    const [storedConnections, storedActiveConnectionId, storedSessions] = await Promise.all([
+    const [storedConnections, storedActiveConnectionId, storedSessions, storedActiveSessionId] = await Promise.all([
       getConnections(),
       getActiveConnectionId(),
-      getSessions()
+      getSessions(),
+      getStoredActiveSessionId()
     ]);
+    preferredActiveSessionIdRef.current = storedActiveSessionId;
 
     const preferredActiveConnectionId = storedActiveConnectionId ?? storedConnections[0]?.id;
     const resolvedActiveConnection =
@@ -584,8 +732,9 @@ export function App(): JSX.Element {
           if (current === BACKEND_DRAFT_SESSION_ID) {
             return BACKEND_DRAFT_SESSION_ID;
           }
-          if (current && mergedSessions.some((item) => item.id === current)) {
-            return current;
+          const preferredId = current ?? preferredActiveSessionIdRef.current;
+          if (preferredId && mergedSessions.some((item) => item.id === preferredId)) {
+            return preferredId;
           }
           return mergedSessions[0]?.id ?? BACKEND_DRAFT_SESSION_ID;
         });
@@ -595,8 +744,9 @@ export function App(): JSX.Element {
           if (current === BACKEND_DRAFT_SESSION_ID) {
             return BACKEND_DRAFT_SESSION_ID;
           }
-          if (current && storedSessions.some((item) => item.id === current)) {
-            return current;
+          const preferredId = current ?? preferredActiveSessionIdRef.current;
+          if (preferredId && storedSessions.some((item) => item.id === preferredId)) {
+            return preferredId;
           }
           return storedSessions[0]?.id ?? BACKEND_DRAFT_SESSION_ID;
         });
@@ -615,7 +765,13 @@ export function App(): JSX.Element {
     }
 
     setSessionsState(storedSessions);
-    setActiveSessionId((current) => current ?? storedSessions[0]?.id);
+    setActiveSessionId((current) => {
+      const preferredId = current ?? preferredActiveSessionIdRef.current;
+      if (preferredId && storedSessions.some((item) => item.id === preferredId)) {
+        return preferredId;
+      }
+      return storedSessions[0]?.id;
+    });
   }
 
   async function bootstrapCapabilities(connection: BridgeConnection | undefined): Promise<void> {
@@ -1124,6 +1280,9 @@ export function App(): JSX.Element {
     if (!content) {
       return;
     }
+    if (isActiveRunBusy) {
+      return;
+    }
     if (!activeConnection) {
       const errMessage: ChatMessage = {
         id: crypto.randomUUID(),
@@ -1269,7 +1428,7 @@ export function App(): JSX.Element {
 
     try {
       const context = buildChatContext(selectionContext, pageContent, includePageContext);
-      const response = await fetch(`${connection.baseUrl}/sessions/${sessionId}/messages`, {
+      const response = await fetch(`${connection.baseUrl}/sessions/${sessionId}/runs`, {
         method: "POST",
         headers: buildBridgeHeaders(connection, true),
         body: JSON.stringify({
@@ -1278,6 +1437,22 @@ export function App(): JSX.Element {
           ...(Object.keys(context).length > 0 ? { context } : {})
         })
       });
+
+      if (response.status === 409) {
+        const conflictPayload = (await response.json().catch(() => null)) as
+          | { run?: BridgeSessionRun }
+          | null;
+        if (conflictPayload?.run) {
+          setActiveRun(conflictPayload.run);
+        }
+        reportRuntimeAlert(
+          "bridge_request_failed",
+          "warn",
+          `${t(locale, "runAlreadyInProgress")}`,
+          response.status
+        );
+        return;
+      }
 
       if (!response.ok) {
         if (response.status === 401 || response.status === 403) {
@@ -1293,14 +1468,17 @@ export function App(): JSX.Element {
           );
         }
         const failedText = await response.text();
-        throw new Error(`Bridge session message failed: ${response.status} ${failedText}`);
+        throw new Error(`Bridge session run failed: ${response.status} ${failedText}`);
       }
 
-      const payload = (await response.json()) as BridgeSessionSendMessageResponse;
+      const payload = (await response.json()) as BridgeSessionRunCreateResponse;
       clearRuntimeAlert();
       setInput("");
-      setMessages((prev) => [...prev, payload.userMessage, payload.assistantMessage]);
-      await saveMessages([payload.userMessage, payload.assistantMessage]);
+      pendingAutoScrollSessionIdRef.current = sessionId;
+      setMessages((prev) => [...prev, payload.userMessage]);
+      setLoadedMessagesSessionId(sessionId);
+      await saveMessage(payload.userMessage);
+      setActiveRun(payload.run);
       setSessionsState((prev) => {
         const existingIndex = prev.findIndex((item) => item.id === payload.session.id);
         const next =
@@ -1327,6 +1505,42 @@ export function App(): JSX.Element {
       setPageContent(undefined);
       setExtractError(undefined);
       setIncludePageContext(false);
+    }
+  }
+
+  async function cancelActiveRunOnBackend(): Promise<void> {
+    if (!activeConnection || !activeRun) {
+      return;
+    }
+
+    try {
+      const response = await fetch(`${activeConnection.baseUrl}/runs/${activeRun.id}/cancel`, {
+        method: "POST",
+        headers: buildBridgeHeaders(activeConnection, true)
+      });
+      if (!response.ok) {
+        if (response.status === 401 || response.status === 403) {
+          reportRuntimeAlert("auth_failed", "error", t(locale, "alertAuthFailed"), response.status);
+        } else if (response.status === 429) {
+          reportRuntimeAlert("rate_limited", "warn", t(locale, "alertRateLimited"), response.status);
+        } else {
+          reportRuntimeAlert(
+            "bridge_request_failed",
+            "warn",
+            `${t(locale, "alertBridgeRequestFailed")} (${response.status})`,
+            response.status
+          );
+        }
+        return;
+      }
+
+      const payload = (await response.json()) as BridgeSessionRunCancelResponse;
+      setActiveRun(payload.run);
+      clearRuntimeAlert();
+    } catch (error) {
+      if (error instanceof TypeError) {
+        reportRuntimeAlert("backend_unreachable", "error", t(locale, "alertBackendUnreachable"));
+      }
     }
   }
 
@@ -1474,6 +1688,31 @@ export function App(): JSX.Element {
                       onClick={() => setActiveSessionId(session.id)}
                       style={sessionTitleButtonStyle}
                     >
+                      {session.status === "RUNNING" ? (
+                        <span
+                          aria-hidden="true"
+                          style={{
+                            width: 6,
+                            height: 6,
+                            borderRadius: "50%",
+                            background: "var(--hint-info-text)",
+                            marginRight: 6,
+                            flexShrink: 0
+                          }}
+                        />
+                      ) : session.status === "ERROR" ? (
+                        <span
+                          aria-hidden="true"
+                          style={{
+                            width: 6,
+                            height: 6,
+                            borderRadius: "50%",
+                            background: "var(--hint-error-text)",
+                            marginRight: 6,
+                            flexShrink: 0
+                          }}
+                        />
+                      ) : null}
                       <span
                         data-session-title="true"
                         style={{
@@ -1724,6 +1963,46 @@ export function App(): JSX.Element {
               </label>
             </div>
           ) : null}
+          {activeRun &&
+          activeRun.sessionId === activeSessionId &&
+          (isRunInFlight(activeRun.status) ||
+            activeRun.status === "FAILED" ||
+            activeRun.status === "CANCELLED") ? (
+            <div
+              style={
+                activeRun.status === "FAILED"
+                  ? hintErrorStyle
+                  : activeRun.status === "CANCELLED"
+                    ? hintWarnStyle
+                    : hintInfoStyle
+              }
+            >
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-xs">
+                  {t(locale, "runStatusLabel")} {formatRunStatus(locale, activeRun.status)} ·{" "}
+                  {activeRun.adapter}
+                </span>
+                {isRunInFlight(activeRun.status) ? (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="h-7 px-2 text-xs"
+                    onClick={() => void cancelActiveRunOnBackend()}
+                    disabled={activeRun.status === "CANCELLING"}
+                  >
+                    {activeRun.status === "CANCELLING" ? t(locale, "stopping") : t(locale, "stopRun")}
+                  </Button>
+                ) : null}
+              </div>
+              {activeRun.errorMessage &&
+              (activeRun.status === "FAILED" || activeRun.status === "CANCELLED") ? (
+                <div style={{ marginTop: 4, fontSize: 11, whiteSpace: "pre-wrap" }}>
+                  {activeRun.errorMessage}
+                </div>
+              ) : null}
+            </div>
+          ) : null}
           <div className="flex flex-wrap items-center justify-between gap-2">
             <div className="flex items-center gap-2">
               <span className="text-xs text-muted-foreground">{t(locale, "adapter")}</span>
@@ -1792,9 +2071,9 @@ export function App(): JSX.Element {
           />
           <Button
             type="button"
-            disabled={pending}
+            disabled={pending || isActiveRunBusy}
             onClick={() => void send()}
-            style={{ opacity: pending ? 0.6 : 1 }}
+            style={{ opacity: pending || isActiveRunBusy ? 0.6 : 1 }}
           >
             {pending ? "..." : t(locale, "send")}
           </Button>
@@ -1923,12 +2202,66 @@ function areSessionListsEqual(left: ChatSession[], right: ChatSession[]): boolea
   return true;
 }
 
+async function fetchLatestSessionRun(
+  connection: BridgeConnection,
+  sessionId: string
+): Promise<BridgeSessionRun | null> {
+  const response = await fetchBridgeJson<BridgeSessionRunsResponse>(
+    connection,
+    `/sessions/${sessionId}/runs?limit=1`
+  ).catch(() => ({ ok: false as const, status: 0 }));
+  if (!response.ok) {
+    return null;
+  }
+  return response.data.runs[0] ?? null;
+}
+
+async function pollMessagesFromBackend(
+  connection: BridgeConnection,
+  sessionId: string
+): Promise<ChatMessage[] | null> {
+  const response = await fetchBridgeJson<BridgeSessionMessagesResponse>(
+    connection,
+    `/sessions/${sessionId}/messages?afterSeq=0&limit=500`
+  ).catch(() => ({ ok: false as const, status: 0 }));
+  if (!response.ok) {
+    return null;
+  }
+  await saveMessages(response.data.messages).catch(() => undefined);
+  return response.data.messages;
+}
+
+async function fetchRunById(connection: BridgeConnection, runId: string): Promise<BridgeSessionRun | null> {
+  const response = await fetchBridgeJson<BridgeSessionRunResponse>(
+    connection,
+    `/runs/${runId}`
+  ).catch(() => ({ ok: false as const, status: 0 }));
+  if (!response.ok) {
+    return null;
+  }
+  return response.data.run;
+}
+
+function isRunInFlight(status: BridgeSessionRun["status"]): boolean {
+  return status === "QUEUED" || status === "RUNNING" || status === "CANCELLING";
+}
+
+function formatRunStatus(locale: Locale, status: BridgeSessionRun["status"]): string {
+  if (status === "QUEUED") return t(locale, "runStatusQueued");
+  if (status === "RUNNING") return t(locale, "runStatusRunning");
+  if (status === "CANCELLING") return t(locale, "runStatusCancelling");
+  if (status === "SUCCEEDED") return t(locale, "runStatusSucceeded");
+  if (status === "FAILED") return t(locale, "runStatusFailed");
+  return t(locale, "runStatusCancelled");
+}
+
 async function fetchBridgeJson<T>(
   connection: BridgeConnection,
   path: string
 ): Promise<{ ok: true; data: T } | { ok: false; status: number }> {
   const response = await fetch(`${connection.baseUrl}${path}`, {
-    headers: buildBridgeHeaders(connection)
+    headers: buildBridgeHeaders(connection),
+    cache: "no-store"
   });
 
   if (!response.ok) {
@@ -1937,6 +2270,33 @@ async function fetchBridgeJson<T>(
 
   const data = (await response.json()) as T;
   return { ok: true, data };
+}
+
+function areMessageListsEqual(left: ChatMessage[], right: ChatMessage[]): boolean {
+  if (left.length !== right.length) {
+    return false;
+  }
+
+  for (let index = 0; index < left.length; index += 1) {
+    const a = left[index];
+    const b = right[index];
+    if (!a || !b) {
+      return false;
+    }
+
+    if (
+      a.id !== b.id ||
+      a.sessionId !== b.sessionId ||
+      a.seq !== b.seq ||
+      a.role !== b.role ||
+      a.content !== b.content ||
+      a.createdAt !== b.createdAt
+    ) {
+      return false;
+    }
+  }
+
+  return true;
 }
 
 function buildBridgeHeaders(connection: BridgeConnection, includeJsonContentType = false): Record<string, string> {

@@ -24,6 +24,7 @@ export interface SessionReplyRequest {
   fallbackAdapter: LocalBridgeAdapter;
   model?: string;
   context?: BridgeChatRequest["context"];
+  signal?: AbortSignal;
 }
 
 export interface SessionReplyResult {
@@ -113,7 +114,7 @@ export class SessionManager {
     };
 
     if (resolvedAdapter !== "codex" && resolvedAdapter !== "claude") {
-      const output = await this.registry.generate(payload, request.fallbackAdapter);
+      const output = await this.registry.generate(payload, request.fallbackAdapter, request.signal);
       return { output, resolvedAdapter };
     }
 
@@ -128,7 +129,7 @@ export class SessionManager {
       return await this.generateWithClaude(request, payload, claudeAdapter, history);
     }
 
-    const output = await this.registry.generate(payload, request.fallbackAdapter);
+    const output = await this.registry.generate(payload, request.fallbackAdapter, request.signal);
     return {
       output,
       resolvedAdapter
@@ -195,12 +196,17 @@ export class SessionManager {
         fallbackAdapter: request.fallbackAdapter,
         history,
         deltaMessages,
-        context: request.context
+        ...(request.context ? { context: request.context } : {}),
+        ...(request.signal ? { signal: request.signal } : {})
       });
       const resumePrompt = buildProviderResumePrompt("Codex", request.sessionId, handoff);
 
       try {
-        const output = await codexAdapter.resumeWithSession(link.providerSessionId, resumePrompt);
+        const output = await codexAdapter.resumeWithSession(
+          link.providerSessionId,
+          resumePrompt,
+          request.signal
+        );
         return {
           output,
           resolvedAdapter: "codex",
@@ -219,7 +225,7 @@ export class SessionManager {
       }
     }
 
-    const fresh = await codexAdapter.generateWithSession(payload);
+    const fresh = await codexAdapter.generateWithSession(payload, request.signal);
     return {
       output: fresh.output,
       resolvedAdapter: "codex",
@@ -246,12 +252,17 @@ export class SessionManager {
         fallbackAdapter: request.fallbackAdapter,
         history,
         deltaMessages,
-        context: request.context
+        ...(request.context ? { context: request.context } : {}),
+        ...(request.signal ? { signal: request.signal } : {})
       });
       const resumePrompt = buildProviderResumePrompt("Claude Code", request.sessionId, handoff);
 
       try {
-        const output = await claudeAdapter.resumeWithSession(link.providerSessionId, resumePrompt);
+        const output = await claudeAdapter.resumeWithSession(
+          link.providerSessionId,
+          resumePrompt,
+          request.signal
+        );
         return {
           output,
           resolvedAdapter: "claude",
@@ -271,7 +282,7 @@ export class SessionManager {
     }
 
     const providerSessionId = randomUUID();
-    const fresh = await claudeAdapter.generateWithSession(payload, providerSessionId);
+    const fresh = await claudeAdapter.generateWithSession(payload, providerSessionId, request.signal);
     return {
       output: fresh.output,
       resolvedAdapter: "claude",
@@ -290,6 +301,7 @@ export class SessionManager {
     history: ChatMessage[];
     deltaMessages: ChatMessage[];
     context?: BridgeChatRequest["context"];
+    signal?: AbortSignal;
   }): Promise<HandoffPayload> {
     const latestUserRequest =
       [...input.deltaMessages].reverse().find((item) => item.role === "user")?.content ??
@@ -302,7 +314,8 @@ export class SessionManager {
       sessionId: input.sessionId,
       summaryAdapter: input.summaryAdapter,
       fallbackAdapter: input.fallbackAdapter,
-      deltaMessages: input.deltaMessages
+      deltaMessages: input.deltaMessages,
+      ...(input.signal ? { signal: input.signal } : {})
     });
 
     const recentMessages = pickRecentWindow(input.history);
@@ -371,6 +384,7 @@ export class SessionManager {
     summaryAdapter: "codex" | "claude";
     fallbackAdapter: LocalBridgeAdapter;
     deltaMessages: ChatMessage[];
+    signal?: AbortSignal;
   }): Promise<HandoffPayload["delta_summary"] | undefined> {
     if (input.deltaMessages.length === 0) {
       return undefined;
@@ -434,7 +448,11 @@ export class SessionManager {
     };
 
     try {
-      const summaryOutput = await this.registry.generate(summaryRequest, input.fallbackAdapter);
+      const summaryOutput = await this.registry.generate(
+        summaryRequest,
+        input.fallbackAdapter,
+        input.signal
+      );
       const normalized = summaryOutput.trim().slice(0, MAX_SUMMARY_OUTPUT_CHARS);
       if (!normalized) {
         return undefined;

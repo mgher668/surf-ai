@@ -13,7 +13,14 @@ export interface BridgeConnection {
   updatedAt: number;
 }
 
-export type SessionStatus = "ACTIVE" | "IDLE";
+export type SessionStatus = "ACTIVE" | "IDLE" | "RUNNING" | "ERROR";
+export type SessionRunStatus =
+  | "QUEUED"
+  | "RUNNING"
+  | "CANCELLING"
+  | "SUCCEEDED"
+  | "FAILED"
+  | "CANCELLED";
 export type BridgeAdapter =
   | "codex"
   | "claude"
@@ -200,6 +207,45 @@ export interface BridgeSessionSendMessageResponse {
   assistantMessage: ChatMessage;
 }
 
+export interface BridgeSessionRun {
+  id: string;
+  sessionId: string;
+  adapter: BridgeAdapter;
+  status: SessionRunStatus;
+  userMessageId: string;
+  assistantMessageId?: string;
+  errorMessage?: string;
+  createdAt: number;
+  startedAt?: number;
+  finishedAt?: number;
+  updatedAt: number;
+}
+
+export interface BridgeSessionRunCreateRequest {
+  adapter: BridgeAdapter;
+  content: string;
+  model?: string;
+  context?: BridgeChatRequest["context"];
+}
+
+export interface BridgeSessionRunCreateResponse {
+  session: ChatSession;
+  run: BridgeSessionRun;
+  userMessage: ChatMessage;
+}
+
+export interface BridgeSessionRunResponse {
+  run: BridgeSessionRun;
+}
+
+export interface BridgeSessionRunsResponse {
+  runs: BridgeSessionRun[];
+}
+
+export interface BridgeSessionRunCancelResponse {
+  run: BridgeSessionRun;
+}
+
 export interface BridgeSessionStarRequest {
   starred: boolean;
 }
@@ -258,6 +304,7 @@ export type UiThemeMode = "light" | "dark" | "system";
 export const STORAGE_KEYS = {
   connections: "surf.connections",
   activeConnectionId: "surf.activeConnectionId",
+  activeSessionId: "surf.activeSessionId",
   sessions: "surf.sessions",
   locale: "surf.locale",
   defaultAdapter: "surf.defaultAdapter",

@@ -10,6 +10,7 @@ import {
 interface ExtensionStorageShape {
   [STORAGE_KEYS.connections]?: BridgeConnection[];
   [STORAGE_KEYS.activeConnectionId]?: string;
+  [STORAGE_KEYS.activeSessionId]?: string;
   [STORAGE_KEYS.sessions]?: ChatSession[];
   [STORAGE_KEYS.locale]?: string;
   [STORAGE_KEYS.defaultAdapter]?: BridgeAdapter;
@@ -51,6 +52,19 @@ export async function getActiveConnectionId(): Promise<string | undefined> {
 
 export async function setActiveConnectionId(id: string): Promise<void> {
   await chrome.storage.local.set({ [STORAGE_KEYS.activeConnectionId]: id });
+}
+
+export async function getActiveSessionId(): Promise<string | undefined> {
+  const data = await chrome.storage.local.get(STORAGE_KEYS.activeSessionId);
+  return data[STORAGE_KEYS.activeSessionId] as string | undefined;
+}
+
+export async function setActiveSessionId(id: string | undefined): Promise<void> {
+  if (!id) {
+    await chrome.storage.local.remove(STORAGE_KEYS.activeSessionId);
+    return;
+  }
+  await chrome.storage.local.set({ [STORAGE_KEYS.activeSessionId]: id });
 }
 
 export async function getSessions(): Promise<ChatSession[]> {

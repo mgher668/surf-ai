@@ -2,7 +2,15 @@ import { mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { randomUUID, createHash } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
-import type { BridgeAdapter, ChatMessage, ChatSession, MessageRole, SessionStatus } from "@surf-ai/shared";
+import type {
+  BridgeAdapter,
+  BridgeSessionRun,
+  ChatMessage,
+  ChatSession,
+  MessageRole,
+  SessionRunStatus,
+  SessionStatus
+} from "@surf-ai/shared";
 import type { BridgeUserAccount } from "./config";
 
 interface SessionRow {
@@ -23,6 +31,21 @@ interface MessageRow {
   role: MessageRole;
   content: string;
   created_at: number;
+}
+
+interface SessionRunRow {
+  id: string;
+  session_id: string;
+  user_id: string;
+  adapter: BridgeAdapter;
+  status: SessionRunStatus;
+  user_message_id: string;
+  assistant_message_id: string | null;
+  error_message: string | null;
+  created_at: number;
+  started_at: number | null;
+  finished_at: number | null;
+  updated_at: number;
 }
 
 export interface AgentSessionLink {
@@ -257,6 +280,18 @@ export class BridgeStore {
     return this.getSession(userId, sessionId);
   }
 
+  public updateSessionStatus(
+    userId: string,
+    sessionId: string,
+    status: SessionStatus
+  ): ChatSession | null {
+    const now = Date.now();
+    this.db.prepare(
+      "UPDATE sessions SET status = ?, updated_at = ? WHERE id = ? AND user_id = ?"
+    ).run(status, now, sessionId, userId);
+    return this.getSession(userId, sessionId);
+  }
+
   public deleteSession(userId: string, sessionId: string): boolean {
     const result = this.db.prepare(
       "DELETE FROM sessions WHERE id = ? AND user_id = ?"
@@ -313,6 +348,152 @@ export class BridgeStore {
       content,
       createdAt: now
     };
+  }
+
+  public createSessionRun(input: {
+    userId: string;
+    sessionId: string;
+    adapter: BridgeAdapter;
+    status: SessionRunStatus;
+    userMessageId: string;
+  }): BridgeSessionRun {
+    this.assertSessionOwnership(input.userId, input.sessionId);
+
+    const now = Date.now();
+    const id = randomUUID();
+    this.db.prepare(
+      `INSERT INTO session_runs (
+        id, session_id, user_id, adapter, status, user_message_id,
+        assistant_message_id, error_message, created_at, started_at, finished_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, ?, NULL, NULL, ?)`
+    ).run(
+      id,
+      input.sessionId,
+      input.userId,
+      input.adapter,
+      input.status,
+      input.userMessageId,
+      now,
+      now
+    );
+
+    const run = this.getSessionRun(input.userId, id);
+    if (!run) {
+      throw new Error("failed_to_create_session_run");
+    }
+    return run;
+  }
+
+  public getSessionRun(userId: string, runId: string): BridgeSessionRun | null {
+    const row = this.db.prepare(
+      `SELECT
+         r.id, r.session_id, r.user_id, r.adapter, r.status, r.user_message_id,
+         r.assistant_message_id, r.error_message, r.created_at, r.started_at, r.finished_at, r.updated_at
+       FROM session_runs r
+       WHERE r.id = ? AND r.user_id = ?`
+    ).get(runId, userId) as SessionRunRow | undefined;
+
+    return row ? mapSessionRunRow(row) : null;
+  }
+
+  public listSessionRuns(userId: string, sessionId: string, limit = 20): BridgeSessionRun[] {
+    const rows = this.db.prepare(
+      `SELECT
+         r.id, r.session_id, r.user_id, r.adapter, r.status, r.user_message_id,
+         r.assistant_message_id, r.error_message, r.created_at, r.started_at, r.finished_at, r.updated_at
+       FROM session_runs r
+       WHERE r.user_id = ? AND r.session_id = ?
+       ORDER BY r.created_at DESC
+       LIMIT ?`
+    ).all(userId, sessionId, limit) as unknown as SessionRunRow[];
+
+    return rows.map(mapSessionRunRow);
+  }
+
+  public getLatestActiveSessionRun(userId: string, sessionId: string): BridgeSessionRun | null {
+    const row = this.db.prepare(
+      `SELECT
+         r.id, r.session_id, r.user_id, r.adapter, r.status, r.user_message_id,
+         r.assistant_message_id, r.error_message, r.created_at, r.started_at, r.finished_at, r.updated_at
+       FROM session_runs r
+       WHERE r.user_id = ?
+         AND r.session_id = ?
+         AND r.status IN ('QUEUED', 'RUNNING', 'CANCELLING')
+       ORDER BY r.created_at DESC
+       LIMIT 1`
+    ).get(userId, sessionId) as SessionRunRow | undefined;
+
+    return row ? mapSessionRunRow(row) : null;
+  }
+
+  public updateSessionRunStatus(
+    userId: string,
+    runId: string,
+    input: {
+      status: SessionRunStatus;
+      assistantMessageId?: string;
+      errorMessage?: string;
+      startedAt?: number;
+      finishedAt?: number;
+    }
+  ): BridgeSessionRun | null {
+    const now = Date.now();
+    this.db.prepare(
+      `UPDATE session_runs
+       SET status = ?,
+           assistant_message_id = COALESCE(?, assistant_message_id),
+           error_message = ?,
+           started_at = COALESCE(?, started_at),
+           finished_at = COALESCE(?, finished_at),
+           updated_at = ?
+       WHERE id = ? AND user_id = ?`
+    ).run(
+      input.status,
+      input.assistantMessageId ?? null,
+      input.errorMessage ?? null,
+      input.startedAt ?? null,
+      input.finishedAt ?? null,
+      now,
+      runId,
+      userId
+    );
+
+    return this.getSessionRun(userId, runId);
+  }
+
+  public recoverInterruptedRuns(errorMessage: string): number {
+    const staleRuns = this.db.prepare(
+      `SELECT DISTINCT user_id, session_id
+       FROM session_runs
+       WHERE status IN ('QUEUED', 'RUNNING', 'CANCELLING')`
+    ).all() as Array<{ user_id: string; session_id: string }>;
+
+    if (staleRuns.length === 0) {
+      return 0;
+    }
+
+    const now = Date.now();
+    this.db.prepare(
+      `UPDATE session_runs
+       SET status = 'FAILED',
+           error_message = ?,
+           finished_at = ?,
+           updated_at = ?
+       WHERE status IN ('QUEUED', 'RUNNING', 'CANCELLING')`
+    ).run(errorMessage, now, now);
+
+    const updateSession = this.db.prepare(
+      `UPDATE sessions
+       SET status = 'ERROR',
+           updated_at = ?
+       WHERE id = ? AND user_id = ?`
+    );
+
+    for (const run of staleRuns) {
+      updateSession.run(now, run.session_id, run.user_id);
+    }
+
+    return staleRuns.length;
   }
 
   public getAgentSessionLink(
@@ -637,6 +818,30 @@ export class BridgeStore {
       CREATE INDEX IF NOT EXISTS idx_messages_session_seq ON messages(session_id, seq);
       CREATE INDEX IF NOT EXISTS idx_messages_user_session_seq ON messages(user_id, session_id, seq);
 
+      CREATE TABLE IF NOT EXISTS session_runs (
+        id TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL,
+        user_id TEXT NOT NULL,
+        adapter TEXT NOT NULL,
+        status TEXT NOT NULL,
+        user_message_id TEXT NOT NULL,
+        assistant_message_id TEXT,
+        error_message TEXT,
+        created_at INTEGER NOT NULL,
+        started_at INTEGER,
+        finished_at INTEGER,
+        updated_at INTEGER NOT NULL,
+        FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE,
+        FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE,
+        FOREIGN KEY(user_message_id) REFERENCES messages(id) ON DELETE CASCADE,
+        FOREIGN KEY(assistant_message_id) REFERENCES messages(id) ON DELETE SET NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_session_runs_user_session_created
+        ON session_runs(user_id, session_id, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_session_runs_user_status
+        ON session_runs(user_id, status, updated_at DESC);
+
       CREATE TABLE IF NOT EXISTS agent_session_links (
         session_id TEXT NOT NULL,
         provider TEXT NOT NULL,
@@ -726,6 +931,22 @@ function mapMessageRow(row: MessageRow): ChatMessage {
     role: row.role,
     content: row.content,
     createdAt: row.created_at
+  };
+}
+
+function mapSessionRunRow(row: SessionRunRow): BridgeSessionRun {
+  return {
+    id: row.id,
+    sessionId: row.session_id,
+    adapter: row.adapter,
+    status: row.status,
+    userMessageId: row.user_message_id,
+    ...(row.assistant_message_id ? { assistantMessageId: row.assistant_message_id } : {}),
+    ...(row.error_message ? { errorMessage: row.error_message } : {}),
+    createdAt: row.created_at,
+    ...(typeof row.started_at === "number" ? { startedAt: row.started_at } : {}),
+    ...(typeof row.finished_at === "number" ? { finishedAt: row.finished_at } : {}),
+    updatedAt: row.updated_at
   };
 }
 

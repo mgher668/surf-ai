@@ -7,7 +7,7 @@ import { buildPrompt } from "./prompt";
 import type { AgentAdapter } from "./types";
 import { runProcess } from "../core/process";
 
-const CODEX_TIMEOUT_MS = 120_000;
+const CODEX_TIMEOUT_MS = 0;
 const DEFAULT_SESSION_INDEX_PATH = join(homedir(), ".codex", "session_index.jsonl");
 
 interface CodexResult {
@@ -40,16 +40,16 @@ export class CodexAdapter implements AgentAdapter {
     this.sessionIndexPath = sessionIndexPath;
   }
 
-  public async generate(request: BridgeChatRequest): Promise<string> {
-    const result = await this.generateWithSession(request);
+  public async generate(request: BridgeChatRequest, signal?: AbortSignal): Promise<string> {
+    const result = await this.generateWithSession(request, signal);
     return result.output;
   }
 
-  public async generateWithSession(request: BridgeChatRequest): Promise<CodexResult> {
+  public async generateWithSession(request: BridgeChatRequest, signal?: AbortSignal): Promise<CodexResult> {
     return await this.withLock(async () => {
       const before = await this.readSessionIndexMap();
       const prompt = buildPrompt(request);
-      const execResult = await this.execOnce(prompt);
+      const execResult = await this.execOnce(prompt, signal);
       const providerSessionId =
         execResult.providerSessionId ??
         pickLatestUpdatedSessionId(before, await this.readSessionIndexMap());
@@ -69,26 +69,29 @@ export class CodexAdapter implements AgentAdapter {
 
   public async resumeWithSession(
     providerSessionId: string,
-    prompt: string
+    prompt: string,
+    signal?: AbortSignal
   ): Promise<string> {
     return await this.withLock(async () => {
       const result = await runProcess(
         "codex",
         ["exec", "resume", "--skip-git-repo-check", providerSessionId, prompt],
-        CODEX_TIMEOUT_MS
+        CODEX_TIMEOUT_MS,
+        signal
       );
       return extractOutput(result.code, result.stdout, result.stderr, "codex resume");
     });
   }
 
-  private async execOnce(prompt: string): Promise<ExecOnceResult> {
+  private async execOnce(prompt: string, signal?: AbortSignal): Promise<ExecOnceResult> {
     const tmpDir = await mkdtemp(join(tmpdir(), "surf-ai-codex-"));
     const outputPath = join(tmpDir, "last-message.txt");
     try {
       const result = await runProcess(
         "codex",
         ["exec", "--skip-git-repo-check", "--json", "--output-last-message", outputPath, prompt],
-        CODEX_TIMEOUT_MS
+        CODEX_TIMEOUT_MS,
+        signal
       );
       const output = await extractCodexOutput(result.code, result.stdout, result.stderr, outputPath, "codex exec");
       const providerSessionId = extractThreadIdFromJsonl(result.stdout);
