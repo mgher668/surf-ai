@@ -9,6 +9,7 @@ import "./styles.css";
 
 const HANDLE_CLASS = "surf-ai-selection-handle";
 const MENU_CLASS = "surf-ai-selection-menu";
+const HANDLE_SIZE = 30;
 
 let handleEl: HTMLDivElement | null = null;
 let menuEl: HTMLDivElement | null = null;
@@ -23,14 +24,35 @@ function cleanup(): void {
   menuEl = null;
 }
 
-function createHandle(rangeRect: DOMRect): void {
+function clamp(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, value));
+}
+
+function createHandle(options: { point?: { clientX: number; clientY: number }; rangeRect: DOMRect }): void {
   cleanup();
 
   handleEl = document.createElement("div");
   handleEl.className = HANDLE_CLASS;
   handleEl.textContent = "AI";
-  handleEl.style.left = `${window.scrollX + rangeRect.right + 8}px`;
-  handleEl.style.top = `${window.scrollY + rangeRect.top - 8}px`;
+  if (options.point) {
+    const clampedClientX = clamp(options.point.clientX, 0, window.innerWidth);
+    const clampedClientY = clamp(options.point.clientY, 0, window.innerHeight);
+    const leftInViewport = clamp(
+      clampedClientX - HANDLE_SIZE / 2,
+      0,
+      Math.max(0, window.innerWidth - HANDLE_SIZE)
+    );
+    const topInViewport = clamp(
+      clampedClientY - HANDLE_SIZE / 2,
+      0,
+      Math.max(0, window.innerHeight - HANDLE_SIZE)
+    );
+    handleEl.style.left = `${window.scrollX + leftInViewport}px`;
+    handleEl.style.top = `${window.scrollY + topInViewport}px`;
+  } else {
+    handleEl.style.left = `${window.scrollX + options.rangeRect.right + 8}px`;
+    handleEl.style.top = `${window.scrollY + options.rangeRect.top - 8}px`;
+  }
 
   handleEl.addEventListener("mousedown", (event) => {
     event.preventDefault();
@@ -142,7 +164,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   return true;
 });
 
-function handleSelectionChange(): void {
+function handleSelectionChange(point?: { clientX: number; clientY: number }): void {
   const selection = window.getSelection();
   if (!selection || selection.rangeCount === 0) {
     cleanup();
@@ -163,7 +185,7 @@ function handleSelectionChange(): void {
     return;
   }
 
-  createHandle(rect);
+  createHandle({ rangeRect: rect, ...(point ? { point } : {}) });
 }
 
 document.addEventListener("mouseup", (event) => {
@@ -171,7 +193,10 @@ document.addEventListener("mouseup", (event) => {
   if (target?.closest(`.${HANDLE_CLASS}`) || target?.closest(`.${MENU_CLASS}`)) {
     return;
   }
-  setTimeout(handleSelectionChange, 0);
+  const point = { clientX: event.clientX, clientY: event.clientY };
+  setTimeout(() => {
+    handleSelectionChange(point);
+  }, 0);
 });
 
 document.addEventListener("keyup", (event) => {
