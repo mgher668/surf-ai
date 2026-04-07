@@ -156,6 +156,8 @@ export function App(): JSX.Element {
   const previewViewportRef = useRef<HTMLDivElement | null>(null);
   const messageItemRefs = useRef(new Map<string, HTMLElement>());
   const highlightSyncRafRef = useRef<number | null>(null);
+  const highlightSyncTimeoutRef = useRef<number | null>(null);
+  const highlightSyncLastAtRef = useRef<number>(0);
   const conversationScrollLoopRef = useRef<number | null>(null);
   const conversationScrollLastTsRef = useRef<number | null>(null);
   const conversationScrollKeysRef = useRef({ j: false, k: false });
@@ -166,6 +168,7 @@ export function App(): JSX.Element {
   const preferredActiveSessionIdRef = useRef<string | undefined>(undefined);
 
   const KEYBOARD_SCROLL_SPEED_PX_PER_SECOND = 780;
+  const HIGHLIGHT_SYNC_INTERVAL_MS = 90;
 
   const isBackendDraftActive =
     sessionMode === "backend" && activeSessionId === BACKEND_DRAFT_SESSION_ID;
@@ -400,7 +403,7 @@ export function App(): JSX.Element {
       return;
     }
 
-    scheduleHighlightedMessageSync();
+    scheduleHighlightedMessageSync(true);
   }, [messages, activeSessionId, loadedMessagesSessionId]);
 
   useEffect(() => {
@@ -408,6 +411,10 @@ export function App(): JSX.Element {
       if (highlightSyncRafRef.current) {
         window.cancelAnimationFrame(highlightSyncRafRef.current);
         highlightSyncRafRef.current = null;
+      }
+      if (highlightSyncTimeoutRef.current !== null) {
+        window.clearTimeout(highlightSyncTimeoutRef.current);
+        highlightSyncTimeoutRef.current = null;
       }
       clearConversationKeyboardScrollKeys();
       clearPreviewKeyboardScrollKeys();
@@ -517,14 +524,40 @@ export function App(): JSX.Element {
     setHighlightedMessageId((current) => (current === nextHighlighted ? current : nextHighlighted));
   }
 
-  function scheduleHighlightedMessageSync(): void {
-    if (highlightSyncRafRef.current) {
+  function scheduleHighlightedMessageSync(force = false): void {
+    if (!force && !isConversationFocused) {
       return;
     }
-    highlightSyncRafRef.current = window.requestAnimationFrame(() => {
-      highlightSyncRafRef.current = null;
-      syncHighlightedMessageByViewport();
-    });
+
+    const enqueueSync = (): void => {
+      if (highlightSyncRafRef.current) {
+        return;
+      }
+      highlightSyncRafRef.current = window.requestAnimationFrame(() => {
+        highlightSyncRafRef.current = null;
+        highlightSyncLastAtRef.current = performance.now();
+        syncHighlightedMessageByViewport();
+      });
+    };
+
+    const now = performance.now();
+    const elapsed = now - highlightSyncLastAtRef.current;
+    if (force || elapsed >= HIGHLIGHT_SYNC_INTERVAL_MS) {
+      if (highlightSyncTimeoutRef.current !== null) {
+        window.clearTimeout(highlightSyncTimeoutRef.current);
+        highlightSyncTimeoutRef.current = null;
+      }
+      enqueueSync();
+      return;
+    }
+
+    if (highlightSyncTimeoutRef.current !== null) {
+      return;
+    }
+    highlightSyncTimeoutRef.current = window.setTimeout(() => {
+      highlightSyncTimeoutRef.current = null;
+      enqueueSync();
+    }, Math.max(0, HIGHLIGHT_SYNC_INTERVAL_MS - elapsed));
   }
 
   function registerMessageItemRef(messageId: string, element: HTMLElement | null): void {
@@ -581,7 +614,6 @@ export function App(): JSX.Element {
         direction * KEYBOARD_SCROLL_SPEED_PX_PER_SECOND * (deltaMs / 1_000);
       if (deltaPx !== 0) {
         viewport.scrollTop += deltaPx;
-        scheduleHighlightedMessageSync();
       }
 
       conversationScrollLoopRef.current = window.requestAnimationFrame(step);
@@ -712,6 +744,7 @@ export function App(): JSX.Element {
     }
     event.preventDefault();
     updateConversationKeyboardScrollKey(key as "j" | "k", false);
+    scheduleHighlightedMessageSync(true);
   }
 
   function handlePreviewShortcut(event: ReactKeyboardEvent<HTMLDivElement>): void {
@@ -2245,7 +2278,7 @@ export function App(): JSX.Element {
           }}
           onFocus={() => {
             setIsConversationFocused(true);
-            scheduleHighlightedMessageSync();
+            scheduleHighlightedMessageSync(true);
           }}
           onKeyUpCapture={handleConversationShortcutKeyUp}
           onBlur={(event) => {
