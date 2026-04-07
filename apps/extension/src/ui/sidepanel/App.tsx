@@ -71,6 +71,7 @@ import {
 } from "../components/ui/select";
 import { Textarea } from "../components/ui/textarea";
 import { Separator } from "../components/ui/separator";
+import { Badge } from "../components/ui/badge";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -868,7 +869,10 @@ export function App(): JSX.Element {
         return;
       }
 
-      setActiveRun(latestRun);
+      const latestRunInFlight = isRunInFlight(latestRun.status);
+      if (latestRunInFlight) {
+        setActiveRun(latestRun);
+      }
 
       // Keep messages in sync while a run is in progress. This also enables
       // immediate UI updates once the assistant message lands.
@@ -890,7 +894,7 @@ export function App(): JSX.Element {
         setLoadedMessagesSessionId(activeSessionId);
       }
 
-      if (!isRunInFlight(latestRun.status)) {
+      if (!latestRunInFlight) {
         const loadedMessages = await loadMessagesFromBackend(activeConnection, activeSessionId);
         if (cancelled) {
           return;
@@ -906,6 +910,7 @@ export function App(): JSX.Element {
           return loadedMessages;
         });
         setLoadedMessagesSessionId(activeSessionId);
+        setActiveRun(latestRun);
 
         const backendSessions = await fetchSessionsFromBackend(activeConnection);
         if (cancelled || !backendSessions) {
@@ -1682,6 +1687,7 @@ export function App(): JSX.Element {
         id: crypto.randomUUID(),
         sessionId: activeSessionId ?? "pending",
         role: "assistant",
+        adapter,
         content: "Error: no active bridge connection. Please add/select one in Settings first.",
         createdAt: Date.now()
       };
@@ -1698,6 +1704,7 @@ export function App(): JSX.Element {
             id: crypto.randomUUID(),
             sessionId: "pending",
             role: "assistant",
+            adapter,
             content: "Error: no active backend session and failed to create one.",
             createdAt: Date.now()
           };
@@ -1732,6 +1739,7 @@ export function App(): JSX.Element {
       id: crypto.randomUUID(),
       sessionId: activeSessionId,
       role: "user",
+      adapter,
       content,
       createdAt: Date.now()
     };
@@ -1786,6 +1794,7 @@ export function App(): JSX.Element {
         id: crypto.randomUUID(),
         sessionId: activeSessionId,
         role: "assistant",
+        adapter,
         content: result.output,
         createdAt: Date.now()
       };
@@ -1800,6 +1809,7 @@ export function App(): JSX.Element {
         id: crypto.randomUUID(),
         sessionId: activeSessionId,
         role: "assistant",
+        adapter,
         content: `Error: ${error instanceof Error ? error.message : "Unknown error"}`,
         createdAt: Date.now()
       };
@@ -1890,6 +1900,7 @@ export function App(): JSX.Element {
         id: crypto.randomUUID(),
         sessionId,
         role: "assistant",
+        adapter,
         content: `Error: ${error instanceof Error ? error.message : "Unknown error"}`,
         createdAt: Date.now()
       };
@@ -2366,13 +2377,23 @@ export function App(): JSX.Element {
                 >
                   {msg.role === "assistant" ? (
                     <div style={{ display: "grid", gap: 8 }}>
-                      <button
-                        type="button"
-                        onClick={() => toggleRawView(msg.id)}
-                        style={messageRenderToggleStyle}
-                      >
-                        {showRaw ? "格式化" : "查看原文"}
-                      </button>
+                      <div className="flex items-center justify-between gap-2">
+                        <button
+                          type="button"
+                          onClick={() => toggleRawView(msg.id)}
+                          style={messageRenderToggleStyle}
+                        >
+                          {showRaw ? "格式化" : "查看原文"}
+                        </button>
+                        {msg.adapter ? (
+                          <Badge
+                            variant="secondary"
+                            className="h-5 rounded-md px-1.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground"
+                          >
+                            {msg.adapter}
+                          </Badge>
+                        ) : null}
+                      </div>
                       {showRaw ? (
                         <pre style={rawMessageContentStyle}>
                           <code>{msg.content}</code>
@@ -2817,6 +2838,7 @@ function areMessageListsEqual(left: ChatMessage[], right: ChatMessage[]): boolea
       a.sessionId !== b.sessionId ||
       a.seq !== b.seq ||
       a.role !== b.role ||
+      a.adapter !== b.adapter ||
       a.content !== b.content ||
       a.createdAt !== b.createdAt
     ) {

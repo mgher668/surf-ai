@@ -47,6 +47,7 @@ export interface ChatMessage {
   sessionId: string;
   seq?: number;
   role: MessageRole;
+  adapter?: BridgeAdapter;
   content: string;
   createdAt: number;
 }

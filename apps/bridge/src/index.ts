@@ -461,7 +461,13 @@ app.post("/sessions/:id/runs", async (request, reply) => {
   const sessionWithAdapter =
     store.updateSessionLastAdapter(userId, sessionId, parsed.data.adapter) ?? existingSession;
   store.updateSessionStatus(userId, sessionId, "RUNNING");
-  const userMessage = store.appendMessage(userId, sessionId, "user", parsed.data.content);
+  const userMessage = store.appendMessage(
+    userId,
+    sessionId,
+    "user",
+    parsed.data.content,
+    parsed.data.adapter
+  );
   const session = store.updateSessionStatus(userId, sessionId, "RUNNING") ?? sessionWithAdapter;
   const run = store.createSessionRun({
     userId,
@@ -695,7 +701,13 @@ app.post("/sessions/:id/messages", async (request, reply) => {
   const session =
     store.updateSessionLastAdapter(userId, sessionId, parsed.data.adapter) ?? existingSession;
 
-  const userMessage = store.appendMessage(userId, sessionId, "user", parsed.data.content);
+  const userMessage = store.appendMessage(
+    userId,
+    sessionId,
+    "user",
+    parsed.data.content,
+    parsed.data.adapter
+  );
   const normalizedContext = normalizeChatContext(parsed.data.context);
 
   try {
@@ -709,7 +721,13 @@ app.post("/sessions/:id/messages", async (request, reply) => {
     });
 
     const output = sessionReply.output;
-    const assistantMessage = store.appendMessage(userId, sessionId, "assistant", output);
+    const assistantMessage = store.appendMessage(
+      userId,
+      sessionId,
+      "assistant",
+      output,
+      parsed.data.adapter
+    );
 
     if (sessionReply.agentLink) {
       sessionManager.syncAgentLink(
@@ -974,7 +992,8 @@ async function executeSessionRun(input: {
       input.userId,
       input.sessionId,
       "assistant",
-      sessionReply.output
+      sessionReply.output,
+      input.adapter
     );
 
     if (sessionReply.agentLink) {

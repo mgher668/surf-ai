@@ -29,6 +29,7 @@ interface MessageRow {
   session_id: string;
   seq: number;
   role: MessageRole;
+  adapter: BridgeAdapter | null;
   content: string;
   created_at: number;
 }
@@ -301,7 +302,7 @@ export class BridgeStore {
 
   public listMessages(userId: string, sessionId: string, afterSeq: number, limit: number): ChatMessage[] {
     const rows = this.db.prepare(
-      `SELECT id, session_id, seq, role, content, created_at
+      `SELECT id, session_id, seq, role, adapter, content, created_at
        FROM messages
        WHERE user_id = ? AND session_id = ? AND seq > ?
        ORDER BY seq ASC
@@ -312,7 +313,7 @@ export class BridgeStore {
 
   public listAllMessagesBySession(userId: string, sessionId: string): ChatMessage[] {
     const rows = this.db.prepare(
-      `SELECT id, session_id, seq, role, content, created_at
+      `SELECT id, session_id, seq, role, adapter, content, created_at
        FROM messages
        WHERE user_id = ? AND session_id = ?
        ORDER BY seq ASC`
@@ -324,7 +325,8 @@ export class BridgeStore {
     userId: string,
     sessionId: string,
     role: MessageRole,
-    content: string
+    content: string,
+    adapter?: BridgeAdapter
   ): ChatMessage {
     const now = Date.now();
     const id = randomUUID();
@@ -332,9 +334,9 @@ export class BridgeStore {
     const nextSeq = this.getNextSeq(userId, sessionId);
     this.db.prepare(
       `INSERT INTO messages (
-        id, session_id, user_id, seq, role, content, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?)`
-    ).run(id, sessionId, userId, nextSeq, role, content, now);
+        id, session_id, user_id, seq, role, adapter, content, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(id, sessionId, userId, nextSeq, role, adapter ?? null, content, now);
 
     this.db.prepare(
       "UPDATE sessions SET updated_at = ?, last_active_at = ?, status = 'ACTIVE' WHERE id = ? AND user_id = ?"
@@ -345,6 +347,7 @@ export class BridgeStore {
       sessionId,
       seq: nextSeq,
       role,
+      ...(adapter ? { adapter } : {}),
       content,
       createdAt: now
     };
@@ -807,6 +810,7 @@ export class BridgeStore {
         user_id TEXT NOT NULL,
         seq INTEGER NOT NULL,
         role TEXT NOT NULL,
+        adapter TEXT,
         content TEXT NOT NULL,
         created_at INTEGER NOT NULL,
         FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE,
@@ -886,6 +890,12 @@ export class BridgeStore {
     `);
 
     this.ensureColumnExists("sessions", "last_adapter", "TEXT");
+    this.ensureColumnExists("messages", "adapter", "TEXT");
+    this.db
+      .prepare(
+        "UPDATE messages SET adapter = ? WHERE adapter IS NULL OR LENGTH(TRIM(adapter)) = 0"
+      )
+      .run("codex");
   }
 
   private seedUsers(users: BridgeUserAccount[]): void {
@@ -929,6 +939,7 @@ function mapMessageRow(row: MessageRow): ChatMessage {
     sessionId: row.session_id,
     seq: row.seq,
     role: row.role,
+    ...(row.adapter ? { adapter: row.adapter } : {}),
     content: row.content,
     createdAt: row.created_at
   };
