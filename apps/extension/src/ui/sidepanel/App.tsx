@@ -148,7 +148,7 @@ export function App(): JSX.Element {
   const [isAnyDropdownMenuOpen, setIsAnyDropdownMenuOpen] = useState(false);
   const [isAdapterSelectOpen, setIsAdapterSelectOpen] = useState(false);
   const [isConversationFocused, setIsConversationFocused] = useState(false);
-  const [highlightedMessageId, setHighlightedMessageId] = useState<string | undefined>();
+  const [focusedMessageId, setFocusedMessageId] = useState<string | undefined>();
   const [previewDialogOpen, setPreviewDialogOpen] = useState(false);
   const [previewMessageId, setPreviewMessageId] = useState<string | undefined>();
   const [loadedMessagesSessionId, setLoadedMessagesSessionId] = useState<string | undefined>();
@@ -156,9 +156,6 @@ export function App(): JSX.Element {
   const composerTextareaRef = useRef<HTMLTextAreaElement | null>(null);
   const previewViewportRef = useRef<HTMLDivElement | null>(null);
   const messageItemRefs = useRef(new Map<string, HTMLElement>());
-  const highlightSyncRafRef = useRef<number | null>(null);
-  const highlightSyncTimeoutRef = useRef<number | null>(null);
-  const highlightSyncLastAtRef = useRef<number>(0);
   const conversationScrollLoopRef = useRef<number | null>(null);
   const conversationScrollLastTsRef = useRef<number | null>(null);
   const conversationScrollKeysRef = useRef({ j: false, k: false });
@@ -169,7 +166,6 @@ export function App(): JSX.Element {
   const preferredActiveSessionIdRef = useRef<string | undefined>(undefined);
 
   const KEYBOARD_SCROLL_SPEED_PX_PER_SECOND = 780;
-  const HIGHLIGHT_SYNC_INTERVAL_MS = 90;
 
   const isBackendDraftActive =
     sessionMode === "backend" && activeSessionId === BACKEND_DRAFT_SESSION_ID;
@@ -341,7 +337,7 @@ export function App(): JSX.Element {
       setMessages([]);
       setLoadedMessagesSessionId(undefined);
       setActiveRun(undefined);
-      setHighlightedMessageId(undefined);
+      setFocusedMessageId(undefined);
       setPreviewDialogOpen(false);
       setPreviewMessageId(undefined);
       setRawViewByMessageId({});
@@ -400,23 +396,20 @@ export function App(): JSX.Element {
 
   useEffect(() => {
     if (messages.length === 0) {
-      setHighlightedMessageId(undefined);
+      setFocusedMessageId(undefined);
       return;
     }
-
-    scheduleHighlightedMessageSync(true);
-  }, [messages, activeSessionId, loadedMessagesSessionId]);
+    if (!focusedMessageId) {
+      return;
+    }
+    if (messages.some((item) => item.id === focusedMessageId)) {
+      return;
+    }
+    setFocusedMessageId(undefined);
+  }, [messages, focusedMessageId]);
 
   useEffect(() => {
     return () => {
-      if (highlightSyncRafRef.current) {
-        window.cancelAnimationFrame(highlightSyncRafRef.current);
-        highlightSyncRafRef.current = null;
-      }
-      if (highlightSyncTimeoutRef.current !== null) {
-        window.clearTimeout(highlightSyncTimeoutRef.current);
-        highlightSyncTimeoutRef.current = null;
-      }
       clearConversationKeyboardScrollKeys();
       clearPreviewKeyboardScrollKeys();
     };
@@ -483,82 +476,22 @@ export function App(): JSX.Element {
     setRenameError(undefined);
   }
 
+  function resolveFocusedMessageIdFromTarget(target: EventTarget | null): string | undefined {
+    if (!(target instanceof HTMLElement)) {
+      return undefined;
+    }
+    return target.closest<HTMLElement>("[data-message-id]")?.dataset.messageId;
+  }
+
   function focusConversationViewport(): void {
-    conversationViewportRef.current?.focus({ preventScroll: true });
-  }
-
-  function syncHighlightedMessageByViewport(): void {
-    const viewport = conversationViewportRef.current;
-    if (!viewport || messages.length === 0) {
-      setHighlightedMessageId(undefined);
-      return;
-    }
-
-    const viewportRect = viewport.getBoundingClientRect();
-    const viewportCenterY = viewportRect.top + viewportRect.height / 2;
-    let nextHighlighted: string | undefined;
-    let minDistance = Number.POSITIVE_INFINITY;
-
-    for (const message of messages) {
-      const element = messageItemRefs.current.get(message.id);
-      if (!element) {
-        continue;
-      }
-
-      const rect = element.getBoundingClientRect();
-      if (rect.bottom < viewportRect.top || rect.top > viewportRect.bottom) {
-        continue;
-      }
-
-      const elementCenterY = rect.top + rect.height / 2;
-      const distance = Math.abs(elementCenterY - viewportCenterY);
-      if (distance < minDistance) {
-        minDistance = distance;
-        nextHighlighted = message.id;
-      }
-    }
-
-    if (!nextHighlighted) {
-      nextHighlighted = messages[messages.length - 1]?.id;
-    }
-
-    setHighlightedMessageId((current) => (current === nextHighlighted ? current : nextHighlighted));
-  }
-
-  function scheduleHighlightedMessageSync(force = false): void {
-    if (!force && !isConversationFocused) {
-      return;
-    }
-
-    const enqueueSync = (): void => {
-      if (highlightSyncRafRef.current) {
+    if (focusedMessageId) {
+      const messageElement = messageItemRefs.current.get(focusedMessageId);
+      if (messageElement) {
+        messageElement.focus({ preventScroll: true });
         return;
       }
-      highlightSyncRafRef.current = window.requestAnimationFrame(() => {
-        highlightSyncRafRef.current = null;
-        highlightSyncLastAtRef.current = performance.now();
-        syncHighlightedMessageByViewport();
-      });
-    };
-
-    const now = performance.now();
-    const elapsed = now - highlightSyncLastAtRef.current;
-    if (force || elapsed >= HIGHLIGHT_SYNC_INTERVAL_MS) {
-      if (highlightSyncTimeoutRef.current !== null) {
-        window.clearTimeout(highlightSyncTimeoutRef.current);
-        highlightSyncTimeoutRef.current = null;
-      }
-      enqueueSync();
-      return;
     }
-
-    if (highlightSyncTimeoutRef.current !== null) {
-      return;
-    }
-    highlightSyncTimeoutRef.current = window.setTimeout(() => {
-      highlightSyncTimeoutRef.current = null;
-      enqueueSync();
-    }, Math.max(0, HIGHLIGHT_SYNC_INTERVAL_MS - elapsed));
+    conversationViewportRef.current?.focus({ preventScroll: true });
   }
 
   function registerMessageItemRef(messageId: string, element: HTMLElement | null): void {
@@ -718,11 +651,12 @@ export function App(): JSX.Element {
     }
 
     if (key === "f") {
-      if (!highlightedMessageId) {
+      const focusedId = resolveFocusedMessageIdFromTarget(event.target);
+      if (!focusedId) {
         return;
       }
       event.preventDefault();
-      openPreviewDialogForMessage(highlightedMessageId);
+      openPreviewDialogForMessage(focusedId);
       return;
     }
 
@@ -745,7 +679,6 @@ export function App(): JSX.Element {
     }
     event.preventDefault();
     updateConversationKeyboardScrollKey(key as "j" | "k", false);
-    scheduleHighlightedMessageSync(true);
   }
 
   function handlePreviewShortcut(event: ReactKeyboardEvent<HTMLDivElement>): void {
@@ -2284,12 +2217,8 @@ export function App(): JSX.Element {
           ref={conversationViewportRef}
           tabIndex={0}
           aria-label={t(locale, "conversationListA11y")}
-          onScroll={() => {
-            scheduleHighlightedMessageSync();
-          }}
           onFocus={() => {
             setIsConversationFocused(true);
-            scheduleHighlightedMessageSync(true);
           }}
           onKeyUpCapture={handleConversationShortcutKeyUp}
           onBlur={(event) => {
@@ -2308,6 +2237,9 @@ export function App(): JSX.Element {
                 "button, a, input, textarea, select, [role='button'], [role='menuitem'], [role='checkbox']"
               )
             ) {
+              return;
+            }
+            if (target?.closest("[data-message-id]")) {
               return;
             }
             focusConversationViewport();
@@ -2350,8 +2282,7 @@ export function App(): JSX.Element {
           ) : (
             messages.map((msg) => {
               const showRaw = msg.role === "assistant" && Boolean(rawViewByMessageId[msg.id]);
-              const isHighlighted =
-                isConversationFocused && highlightedMessageId === msg.id;
+              const isHighlighted = isConversationFocused && focusedMessageId === msg.id;
 
               return (
                 <article
@@ -2359,14 +2290,19 @@ export function App(): JSX.Element {
                   ref={(element) => {
                     registerMessageItemRef(msg.id, element);
                   }}
-                  data-message-item="true"
+                  tabIndex={0}
+                  data-message-id={msg.id}
                   data-highlighted={isHighlighted ? "true" : "false"}
+                  onFocus={() => {
+                    setFocusedMessageId(msg.id);
+                  }}
                   style={{
                     maxWidth: "85%",
                     padding: "10px 12px",
                     borderRadius: 12,
                     lineHeight: 1.45,
                     border: "1px solid var(--line)",
+                    outline: "none",
                     background:
                       msg.role === "user" ? "var(--message-user-bg)" : "var(--message-assistant-bg)",
                     marginLeft: msg.role === "user" ? "auto" : 0,
