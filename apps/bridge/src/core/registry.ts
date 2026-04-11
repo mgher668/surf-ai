@@ -1,7 +1,6 @@
 import type {
   BridgeAdapterCapability,
   BridgeChatRequest,
-  BridgeModel,
   LocalBridgeAdapter
 } from "@surf-ai/shared";
 import type { AgentAdapter } from "../agents/types";
@@ -9,30 +8,33 @@ import { MockAdapter } from "../agents/mock-adapter";
 import { CodexAdapter } from "../agents/codex-adapter";
 import { ClaudeAdapter } from "../agents/claude-adapter";
 
+const NATIVE_ADAPTERS: Array<{
+  adapter: LocalBridgeAdapter;
+  label: string;
+}> = [
+  { adapter: "mock", label: "Mock (local)" },
+  { adapter: "codex", label: "Codex CLI" },
+  { adapter: "claude", label: "Claude Code CLI" }
+];
+
 export class AdapterRegistry {
   private readonly adapters: Record<string, AgentAdapter>;
-  private readonly models: BridgeModel[];
 
   public constructor() {
     const available = [new MockAdapter(), new CodexAdapter(), new ClaudeAdapter()];
     this.adapters = Object.fromEntries(available.map((adapter) => [adapter.name, adapter]));
-    this.models = [
-      { id: "mock/default", label: "Mock (local)", adapter: "mock" },
-      { id: "codex/default", label: "Codex CLI", adapter: "codex" },
-      { id: "claude/default", label: "Claude Code CLI", adapter: "claude" }
-    ];
   }
 
-  public listModels(): BridgeModel[] {
-    return this.models;
+  public listNativeAdapters(): LocalBridgeAdapter[] {
+    return NATIVE_ADAPTERS.map((item) => item.adapter);
   }
 
   public listAdapterCapabilities(defaultAdapter: LocalBridgeAdapter): BridgeAdapterCapability[] {
-    const native = this.models.map((model) => ({
-      adapter: model.adapter,
-      label: model.label,
+    const native = NATIVE_ADAPTERS.map((item) => ({
+      adapter: item.adapter,
+      label: item.label,
       kind: "native" as const,
-      enabled: Boolean(this.adapters[model.adapter])
+      enabled: Boolean(this.adapters[item.adapter])
     }));
 
     const compatibility: BridgeAdapterCapability[] = [

@@ -3,10 +3,16 @@ import { dirname, resolve } from "node:path";
 import { randomUUID, createHash } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import type {
+  BridgeApprovalKind,
+  BridgeApprovalStatus,
   BridgeAdapter,
+  BridgeModel,
+  BridgeRunApproval,
+  BridgeRunStreamEvent,
   BridgeSessionRun,
   ChatMessage,
   ChatSession,
+  CodexReasoningEffort,
   MessageRole,
   SessionRunStatus,
   SessionStatus
@@ -30,6 +36,7 @@ interface MessageRow {
   seq: number;
   role: MessageRole;
   adapter: BridgeAdapter | null;
+  model: string | null;
   content: string;
   created_at: number;
 }
@@ -39,6 +46,7 @@ interface SessionRunRow {
   session_id: string;
   user_id: string;
   adapter: BridgeAdapter;
+  model: string | null;
   status: SessionRunStatus;
   user_message_id: string;
   assistant_message_id: string | null;
@@ -89,6 +97,24 @@ interface SessionMemoryRow {
   updated_at: number;
 }
 
+interface ModelRow {
+  id: string;
+  user_id: string;
+  adapter: BridgeAdapter;
+  label: string;
+  enabled: number;
+  is_default: number;
+  reasoning_effort: CodexReasoningEffort | null;
+  created_at: number;
+  updated_at: number;
+}
+
+const NATIVE_MODEL_ADAPTERS: Array<Extract<BridgeAdapter, "mock" | "codex" | "claude">> = [
+  "codex",
+  "claude",
+  "mock"
+];
+
 export type AuditLevel = "INFO" | "WARN" | "ERROR";
 
 export interface AuditEvent {
@@ -114,6 +140,42 @@ interface AuditEventRow {
   status_code: number | null;
   ip: string | null;
   details_json: string | null;
+  created_at: number;
+}
+
+interface ApprovalEventRow {
+  id: string;
+  user_id: string;
+  session_id: string;
+  run_id: string;
+  adapter: BridgeAdapter;
+  thread_id: string | null;
+  turn_id: string | null;
+  approval_request_id: string;
+  kind: BridgeApprovalKind;
+  title: string | null;
+  payload_json: string;
+  available_decisions_json: string;
+  status: BridgeApprovalStatus;
+  decision_json: string | null;
+  decided_by: string | null;
+  decision_reason: string | null;
+  requested_at: number;
+  decided_at: number | null;
+  expires_at: number;
+  created_at: number;
+  updated_at: number;
+}
+
+interface RunEventRow {
+  seq: number;
+  event_id: string;
+  user_id: string;
+  session_id: string;
+  run_id: string;
+  type: string;
+  ts: number;
+  data_json: string;
   created_at: number;
 }
 
@@ -177,6 +239,52 @@ export class BridgeStore {
     }
 
     return hashToken(provided) === row.token_hash ? row.id : null;
+  }
+
+  public listModels(userId: string): BridgeModel[] {
+    this.ensureDefaultModels(userId);
+    const rows = this.db.prepare(
+      `SELECT id, user_id, adapter, label, enabled, is_default, reasoning_effort, created_at, updated_at
+       FROM models
+       WHERE user_id = ?
+       ORDER BY adapter ASC, is_default DESC, label ASC, id ASC`
+    ).all(userId) as unknown as ModelRow[];
+    return rows.map(mapModelRow);
+  }
+
+  public replaceModels(userId: string, models: BridgeModel[]): BridgeModel[] {
+    const normalized = normalizeModelsInput(models);
+    const now = Date.now();
+    const insert = this.db.prepare(
+      `INSERT INTO models (
+        id, user_id, adapter, label, enabled, is_default, reasoning_effort, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    );
+
+    this.db.exec("BEGIN");
+    try {
+      this.db.prepare("DELETE FROM models WHERE user_id = ?").run(userId);
+      for (const model of normalized) {
+        insert.run(
+          model.id,
+          userId,
+          model.adapter,
+          model.label,
+          model.enabled ? 1 : 0,
+          model.isDefault ? 1 : 0,
+          model.adapter === "codex" ? model.modelReasoningEffort ?? null : null,
+          now,
+          now
+        );
+      }
+      this.db.exec("COMMIT");
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+
+    this.ensureDefaultModels(userId);
+    return this.listModels(userId);
   }
 
   public createSession(userId: string, title: string): ChatSession {
@@ -302,7 +410,7 @@ export class BridgeStore {
 
   public listMessages(userId: string, sessionId: string, afterSeq: number, limit: number): ChatMessage[] {
     const rows = this.db.prepare(
-      `SELECT id, session_id, seq, role, adapter, content, created_at
+      `SELECT id, session_id, seq, role, adapter, model, content, created_at
        FROM messages
        WHERE user_id = ? AND session_id = ? AND seq > ?
        ORDER BY seq ASC
@@ -313,7 +421,7 @@ export class BridgeStore {
 
   public listAllMessagesBySession(userId: string, sessionId: string): ChatMessage[] {
     const rows = this.db.prepare(
-      `SELECT id, session_id, seq, role, adapter, content, created_at
+      `SELECT id, session_id, seq, role, adapter, model, content, created_at
        FROM messages
        WHERE user_id = ? AND session_id = ?
        ORDER BY seq ASC`
@@ -326,7 +434,8 @@ export class BridgeStore {
     sessionId: string,
     role: MessageRole,
     content: string,
-    adapter?: BridgeAdapter
+    adapter?: BridgeAdapter,
+    model?: string
   ): ChatMessage {
     const now = Date.now();
     const id = randomUUID();
@@ -334,9 +443,9 @@ export class BridgeStore {
     const nextSeq = this.getNextSeq(userId, sessionId);
     this.db.prepare(
       `INSERT INTO messages (
-        id, session_id, user_id, seq, role, adapter, content, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
-    ).run(id, sessionId, userId, nextSeq, role, adapter ?? null, content, now);
+        id, session_id, user_id, seq, role, adapter, model, content, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(id, sessionId, userId, nextSeq, role, adapter ?? null, model ?? null, content, now);
 
     this.db.prepare(
       "UPDATE sessions SET updated_at = ?, last_active_at = ?, status = 'ACTIVE' WHERE id = ? AND user_id = ?"
@@ -348,6 +457,7 @@ export class BridgeStore {
       seq: nextSeq,
       role,
       ...(adapter ? { adapter } : {}),
+      ...(model ? { model } : {}),
       content,
       createdAt: now
     };
@@ -357,6 +467,7 @@ export class BridgeStore {
     userId: string;
     sessionId: string;
     adapter: BridgeAdapter;
+    model?: string;
     status: SessionRunStatus;
     userMessageId: string;
   }): BridgeSessionRun {
@@ -366,14 +477,15 @@ export class BridgeStore {
     const id = randomUUID();
     this.db.prepare(
       `INSERT INTO session_runs (
-        id, session_id, user_id, adapter, status, user_message_id,
+        id, session_id, user_id, adapter, model, status, user_message_id,
         assistant_message_id, error_message, created_at, started_at, finished_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, ?, NULL, NULL, ?)`
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, NULL, NULL, ?)`
     ).run(
       id,
       input.sessionId,
       input.userId,
       input.adapter,
+      input.model ?? null,
       input.status,
       input.userMessageId,
       now,
@@ -390,7 +502,7 @@ export class BridgeStore {
   public getSessionRun(userId: string, runId: string): BridgeSessionRun | null {
     const row = this.db.prepare(
       `SELECT
-         r.id, r.session_id, r.user_id, r.adapter, r.status, r.user_message_id,
+         r.id, r.session_id, r.user_id, r.adapter, r.model, r.status, r.user_message_id,
          r.assistant_message_id, r.error_message, r.created_at, r.started_at, r.finished_at, r.updated_at
        FROM session_runs r
        WHERE r.id = ? AND r.user_id = ?`
@@ -402,7 +514,7 @@ export class BridgeStore {
   public listSessionRuns(userId: string, sessionId: string, limit = 20): BridgeSessionRun[] {
     const rows = this.db.prepare(
       `SELECT
-         r.id, r.session_id, r.user_id, r.adapter, r.status, r.user_message_id,
+         r.id, r.session_id, r.user_id, r.adapter, r.model, r.status, r.user_message_id,
          r.assistant_message_id, r.error_message, r.created_at, r.started_at, r.finished_at, r.updated_at
        FROM session_runs r
        WHERE r.user_id = ? AND r.session_id = ?
@@ -416,7 +528,7 @@ export class BridgeStore {
   public getLatestActiveSessionRun(userId: string, sessionId: string): BridgeSessionRun | null {
     const row = this.db.prepare(
       `SELECT
-         r.id, r.session_id, r.user_id, r.adapter, r.status, r.user_message_id,
+         r.id, r.session_id, r.user_id, r.adapter, r.model, r.status, r.user_message_id,
          r.assistant_message_id, r.error_message, r.created_at, r.started_at, r.finished_at, r.updated_at
        FROM session_runs r
        WHERE r.user_id = ?
@@ -497,6 +609,218 @@ export class BridgeStore {
     }
 
     return staleRuns.length;
+  }
+
+  public countActiveRuns(userId: string): number {
+    const row = this.db.prepare(
+      `SELECT COUNT(*) AS count
+       FROM session_runs
+       WHERE user_id = ?
+         AND status IN ('QUEUED', 'RUNNING', 'CANCELLING')`
+    ).get(userId) as { count: number };
+    return readCount(row);
+  }
+
+  public createApprovalEvent(input: {
+    userId: string;
+    sessionId: string;
+    runId: string;
+    adapter: BridgeAdapter;
+    threadId?: string;
+    turnId?: string;
+    approvalRequestId: string;
+    kind: BridgeApprovalKind;
+    title?: string;
+    payload: Record<string, unknown>;
+    availableDecisions: unknown[];
+    requestedAt: number;
+    expiresAt: number;
+  }): BridgeRunApproval {
+    this.assertSessionOwnership(input.userId, input.sessionId);
+    const now = Date.now();
+    const id = randomUUID();
+    this.db.prepare(
+      `INSERT INTO approval_events (
+        id, user_id, session_id, run_id, adapter, thread_id, turn_id,
+        approval_request_id, kind, title, payload_json, available_decisions_json,
+        status, decision_json, decided_by, decision_reason, requested_at,
+        decided_at, expires_at, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', NULL, NULL, NULL, ?, NULL, ?, ?, ?)`
+    ).run(
+      id,
+      input.userId,
+      input.sessionId,
+      input.runId,
+      input.adapter,
+      input.threadId ?? null,
+      input.turnId ?? null,
+      input.approvalRequestId,
+      input.kind,
+      input.title?.slice(0, 240) ?? null,
+      stringifyJsonSafe(input.payload),
+      stringifyJsonSafe(input.availableDecisions),
+      input.requestedAt,
+      input.expiresAt,
+      now,
+      now
+    );
+    const row = this.getApprovalEventRowById(id);
+    if (!row) {
+      throw new Error("approval_event_insert_failed");
+    }
+    return mapApprovalEventRow(row);
+  }
+
+  public getApprovalEvent(
+    userId: string,
+    runId: string,
+    approvalRequestId: string
+  ): BridgeRunApproval | null {
+    const row = this.db.prepare(
+      `SELECT
+         id, user_id, session_id, run_id, adapter, thread_id, turn_id,
+         approval_request_id, kind, title, payload_json, available_decisions_json,
+         status, decision_json, decided_by, decision_reason, requested_at,
+         decided_at, expires_at, created_at, updated_at
+       FROM approval_events
+       WHERE user_id = ? AND run_id = ? AND approval_request_id = ?`
+    ).get(userId, runId, approvalRequestId) as ApprovalEventRow | undefined;
+    return row ? mapApprovalEventRow(row) : null;
+  }
+
+  public listRunApprovals(
+    userId: string,
+    sessionId: string,
+    runId: string,
+    statusFilter: "pending" | "all" = "all"
+  ): BridgeRunApproval[] {
+    this.assertSessionOwnership(userId, sessionId);
+    const where =
+      statusFilter === "pending"
+        ? "user_id = ? AND session_id = ? AND run_id = ? AND status = 'PENDING'"
+        : "user_id = ? AND session_id = ? AND run_id = ?";
+    const rows = this.db.prepare(
+      `SELECT
+         id, user_id, session_id, run_id, adapter, thread_id, turn_id,
+         approval_request_id, kind, title, payload_json, available_decisions_json,
+         status, decision_json, decided_by, decision_reason, requested_at,
+         decided_at, expires_at, created_at, updated_at
+       FROM approval_events
+       WHERE ${where}
+       ORDER BY requested_at ASC`
+    ).all(userId, sessionId, runId) as unknown as ApprovalEventRow[];
+    return rows.map(mapApprovalEventRow);
+  }
+
+  public appendRunEvent(userId: string, event: BridgeRunStreamEvent): void {
+    if (event.type === "heartbeat") {
+      return;
+    }
+
+    const now = Date.now();
+    this.db.prepare(
+      `INSERT OR IGNORE INTO run_events (
+        event_id, user_id, session_id, run_id, type, ts, data_json, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(
+      event.eventId,
+      userId,
+      event.sessionId,
+      event.runId,
+      event.type,
+      event.ts,
+      stringifyJsonSafe(event.data),
+      now
+    );
+  }
+
+  public listRunEvents(
+    userId: string,
+    sessionId: string,
+    runId: string,
+    limit = 2000
+  ): BridgeRunStreamEvent[] {
+    this.assertSessionOwnership(userId, sessionId);
+    const rows = this.db.prepare(
+      `SELECT
+         seq, event_id, user_id, session_id, run_id, type, ts, data_json, created_at
+       FROM run_events
+       WHERE user_id = ? AND session_id = ? AND run_id = ?
+       ORDER BY seq DESC
+       LIMIT ?`
+    ).all(userId, sessionId, runId, limit) as unknown as RunEventRow[];
+
+    return rows.reverse().map(mapRunEventRow);
+  }
+
+  public updateApprovalEvent(input: {
+    userId: string;
+    runId: string;
+    approvalRequestId: string;
+    status: Exclude<BridgeApprovalStatus, "PENDING">;
+    decision?: unknown;
+    decidedBy?: string;
+    decisionReason?: string;
+    decidedAt?: number;
+  }): BridgeRunApproval | null {
+    const now = Date.now();
+    const decidedAt = input.decidedAt ?? now;
+    this.db.prepare(
+      `UPDATE approval_events
+       SET status = ?,
+           decision_json = ?,
+           decided_by = ?,
+           decision_reason = ?,
+           decided_at = ?,
+           updated_at = ?
+       WHERE user_id = ? AND run_id = ? AND approval_request_id = ?`
+    ).run(
+      input.status,
+      input.decision === undefined ? null : stringifyJsonSafe(input.decision),
+      input.decidedBy ?? null,
+      input.decisionReason?.slice(0, 500) ?? null,
+      decidedAt,
+      now,
+      input.userId,
+      input.runId,
+      input.approvalRequestId
+    );
+
+    return this.getApprovalEvent(input.userId, input.runId, input.approvalRequestId);
+  }
+
+  public recoverPendingApprovals(reason: string): number {
+    const now = Date.now();
+    const result = this.db.prepare(
+      `UPDATE approval_events
+       SET status = 'FAILED',
+           decision_json = ?,
+           decision_reason = ?,
+           decided_at = ?,
+           updated_at = ?
+       WHERE status = 'PENDING'`
+    ).run(
+      stringifyJsonSafe("bridge_restart_failed"),
+      reason.slice(0, 500),
+      now,
+      now
+    ) as { changes: number };
+    return result.changes;
+  }
+
+  public listExpiredPendingApprovals(nowMs: number, limit = 100): BridgeRunApproval[] {
+    const rows = this.db.prepare(
+      `SELECT
+         id, user_id, session_id, run_id, adapter, thread_id, turn_id,
+         approval_request_id, kind, title, payload_json, available_decisions_json,
+         status, decision_json, decided_by, decision_reason, requested_at,
+         decided_at, expires_at, created_at, updated_at
+       FROM approval_events
+       WHERE status = 'PENDING' AND expires_at <= ?
+       ORDER BY expires_at ASC
+       LIMIT ?`
+    ).all(nowMs, limit) as unknown as ApprovalEventRow[];
+    return rows.map(mapApprovalEventRow);
   }
 
   public getAgentSessionLink(
@@ -766,6 +1090,73 @@ export class BridgeStore {
     };
   }
 
+  private ensureDefaultModels(userId: string): void {
+    const now = Date.now();
+    const insert = this.db.prepare(
+      `INSERT OR IGNORE INTO models (
+        id, user_id, adapter, label, enabled, is_default, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, 1, 0, ?, ?)`
+    );
+
+    for (const adapter of NATIVE_MODEL_ADAPTERS) {
+      insert.run("auto", userId, adapter, "Auto (CLI default)", now, now);
+    }
+
+    for (const adapter of NATIVE_MODEL_ADAPTERS) {
+      const rows = this.db.prepare(
+        `SELECT id, enabled, is_default
+         FROM models
+         WHERE user_id = ? AND adapter = ?
+         ORDER BY updated_at DESC, id ASC`
+      ).all(userId, adapter) as Array<{
+        id: string;
+        enabled: number;
+        is_default: number;
+      }>;
+
+      if (rows.length === 0) {
+        continue;
+      }
+
+      let enabledRows = rows.filter((row) => row.enabled === 1);
+      if (enabledRows.length === 0) {
+        const firstId = rows[0]?.id;
+        if (firstId) {
+          this.db
+            .prepare("UPDATE models SET enabled = 1, updated_at = ? WHERE user_id = ? AND adapter = ? AND id = ?")
+            .run(now, userId, adapter, firstId);
+          enabledRows = rows.map((row) =>
+            row.id === firstId
+              ? {
+                  ...row,
+                  enabled: 1
+                }
+              : row
+          );
+        }
+      }
+
+      const defaultEnabledRows = enabledRows.filter((row) => row.is_default === 1);
+      const fallbackId = (defaultEnabledRows[0] ?? enabledRows[0] ?? rows[0])?.id;
+      if (!fallbackId) {
+        continue;
+      }
+
+      const needsNormalization =
+        defaultEnabledRows.length !== 1 || defaultEnabledRows[0]?.id !== fallbackId;
+      if (needsNormalization) {
+        this.db
+          .prepare("UPDATE models SET is_default = 0, updated_at = ? WHERE user_id = ? AND adapter = ?")
+          .run(now, userId, adapter);
+        this.db
+          .prepare(
+            "UPDATE models SET is_default = 1, enabled = 1, updated_at = ? WHERE user_id = ? AND adapter = ? AND id = ?"
+          )
+          .run(now, userId, adapter, fallbackId);
+      }
+    }
+  }
+
   private getNextSeq(userId: string, sessionId: string): number {
     const row = this.db.prepare(
       "SELECT COALESCE(MAX(seq), 0) AS seq FROM messages WHERE user_id = ? AND session_id = ?"
@@ -781,6 +1172,18 @@ export class BridgeStore {
     if (!row) {
       throw new Error("session_not_found");
     }
+  }
+
+  private getApprovalEventRowById(id: string): ApprovalEventRow | undefined {
+    return this.db.prepare(
+      `SELECT
+         id, user_id, session_id, run_id, adapter, thread_id, turn_id,
+         approval_request_id, kind, title, payload_json, available_decisions_json,
+         status, decision_json, decided_by, decision_reason, requested_at,
+         decided_at, expires_at, created_at, updated_at
+       FROM approval_events
+       WHERE id = ?`
+    ).get(id) as ApprovalEventRow | undefined;
   }
 
   private migrate(): void {
@@ -811,6 +1214,7 @@ export class BridgeStore {
         seq INTEGER NOT NULL,
         role TEXT NOT NULL,
         adapter TEXT,
+        model TEXT,
         content TEXT NOT NULL,
         created_at INTEGER NOT NULL,
         FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE,
@@ -827,6 +1231,7 @@ export class BridgeStore {
         session_id TEXT NOT NULL,
         user_id TEXT NOT NULL,
         adapter TEXT NOT NULL,
+        model TEXT,
         status TEXT NOT NULL,
         user_message_id TEXT NOT NULL,
         assistant_message_id TEXT,
@@ -845,6 +1250,23 @@ export class BridgeStore {
         ON session_runs(user_id, session_id, created_at DESC);
       CREATE INDEX IF NOT EXISTS idx_session_runs_user_status
         ON session_runs(user_id, status, updated_at DESC);
+
+      CREATE TABLE IF NOT EXISTS models (
+        id TEXT NOT NULL,
+        user_id TEXT NOT NULL,
+        adapter TEXT NOT NULL,
+        label TEXT NOT NULL,
+        enabled INTEGER NOT NULL DEFAULT 1,
+        is_default INTEGER NOT NULL DEFAULT 0,
+        reasoning_effort TEXT,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY(user_id, adapter, id),
+        FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_models_user_adapter
+        ON models(user_id, adapter, is_default DESC, label ASC);
 
       CREATE TABLE IF NOT EXISTS agent_session_links (
         session_id TEXT NOT NULL,
@@ -887,10 +1309,69 @@ export class BridgeStore {
         ON audit_events(user_id, created_at DESC);
       CREATE INDEX IF NOT EXISTS idx_audit_events_type_created
         ON audit_events(event_type, created_at DESC);
+
+      CREATE TABLE IF NOT EXISTS approval_events (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        session_id TEXT NOT NULL,
+        run_id TEXT NOT NULL,
+        adapter TEXT NOT NULL,
+        thread_id TEXT,
+        turn_id TEXT,
+        approval_request_id TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        title TEXT,
+        payload_json TEXT NOT NULL,
+        available_decisions_json TEXT NOT NULL,
+        status TEXT NOT NULL,
+        decision_json TEXT,
+        decided_by TEXT,
+        decision_reason TEXT,
+        requested_at INTEGER NOT NULL,
+        decided_at INTEGER,
+        expires_at INTEGER NOT NULL,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE,
+        FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE,
+        FOREIGN KEY(run_id) REFERENCES session_runs(id) ON DELETE CASCADE,
+        UNIQUE(run_id, approval_request_id)
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_approval_events_user_session_requested
+        ON approval_events(user_id, session_id, requested_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_approval_events_run_requested
+        ON approval_events(run_id, requested_at ASC);
+      CREATE INDEX IF NOT EXISTS idx_approval_events_user_status_expires
+        ON approval_events(user_id, status, expires_at ASC);
+
+      CREATE TABLE IF NOT EXISTS run_events (
+        seq INTEGER PRIMARY KEY AUTOINCREMENT,
+        event_id TEXT NOT NULL,
+        user_id TEXT NOT NULL,
+        session_id TEXT NOT NULL,
+        run_id TEXT NOT NULL,
+        type TEXT NOT NULL,
+        ts INTEGER NOT NULL,
+        data_json TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE,
+        FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE,
+        FOREIGN KEY(run_id) REFERENCES session_runs(id) ON DELETE CASCADE,
+        UNIQUE(event_id)
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_run_events_run_seq
+        ON run_events(run_id, seq ASC);
+      CREATE INDEX IF NOT EXISTS idx_run_events_user_session_seq
+        ON run_events(user_id, session_id, seq ASC);
     `);
 
     this.ensureColumnExists("sessions", "last_adapter", "TEXT");
     this.ensureColumnExists("messages", "adapter", "TEXT");
+    this.ensureColumnExists("messages", "model", "TEXT");
+    this.ensureColumnExists("session_runs", "model", "TEXT");
+    this.ensureColumnExists("models", "reasoning_effort", "TEXT");
     this.db
       .prepare(
         "UPDATE messages SET adapter = ? WHERE adapter IS NULL OR LENGTH(TRIM(adapter)) = 0"
@@ -908,6 +1389,7 @@ export class BridgeStore {
     );
     for (const user of users) {
       insert.run(user.id, user.name, user.token ? hashToken(user.token) : null);
+      this.ensureDefaultModels(user.id);
     }
   }
 
@@ -940,6 +1422,7 @@ function mapMessageRow(row: MessageRow): ChatMessage {
     seq: row.seq,
     role: row.role,
     ...(row.adapter ? { adapter: row.adapter } : {}),
+    ...(row.model ? { model: row.model } : {}),
     content: row.content,
     createdAt: row.created_at
   };
@@ -950,6 +1433,7 @@ function mapSessionRunRow(row: SessionRunRow): BridgeSessionRun {
     id: row.id,
     sessionId: row.session_id,
     adapter: row.adapter,
+    ...(row.model ? { model: row.model } : {}),
     status: row.status,
     userMessageId: row.user_message_id,
     ...(row.assistant_message_id ? { assistantMessageId: row.assistant_message_id } : {}),
@@ -959,6 +1443,87 @@ function mapSessionRunRow(row: SessionRunRow): BridgeSessionRun {
     ...(typeof row.finished_at === "number" ? { finishedAt: row.finished_at } : {}),
     updatedAt: row.updated_at
   };
+}
+
+function mapModelRow(row: ModelRow): BridgeModel {
+  return {
+    id: row.id,
+    adapter: row.adapter,
+    label: row.label,
+    enabled: row.enabled === 1,
+    isDefault: row.is_default === 1,
+    ...(row.adapter === "codex" && row.reasoning_effort
+      ? { modelReasoningEffort: row.reasoning_effort }
+      : {})
+  };
+}
+
+function normalizeModelsInput(models: BridgeModel[]): BridgeModel[] {
+  const dedup = new Map<string, BridgeModel>();
+
+  for (const item of models) {
+    const id = item.id.trim();
+    const label = item.label.trim();
+    if (!id || !label) {
+      continue;
+    }
+    const key = `${item.adapter}::${id}`;
+    dedup.set(key, {
+      id,
+      adapter: item.adapter,
+      label,
+      enabled: item.enabled,
+      isDefault: item.isDefault,
+      ...(item.adapter === "codex" && item.modelReasoningEffort
+        ? { modelReasoningEffort: item.modelReasoningEffort }
+        : {})
+    });
+  }
+
+  const grouped = new Map<BridgeAdapter, BridgeModel[]>();
+  for (const model of dedup.values()) {
+    const list = grouped.get(model.adapter) ?? [];
+    list.push(model);
+    grouped.set(model.adapter, list);
+  }
+
+  const normalized: BridgeModel[] = [];
+  for (const [adapter, list] of grouped.entries()) {
+    if (list.length === 0) {
+      continue;
+    }
+
+    let enabledList = list.filter((item) => item.enabled);
+    if (enabledList.length === 0) {
+      const first = list[0];
+      if (first) {
+        first.enabled = true;
+      }
+      enabledList = list.filter((item) => item.enabled);
+    }
+
+    const preferredDefault = list.find((item) => item.isDefault && item.enabled);
+    const resolvedDefault = preferredDefault ?? enabledList[0];
+    for (const item of list) {
+      normalized.push({
+        ...item,
+        adapter,
+        isDefault: item.id === resolvedDefault?.id,
+        enabled: item.enabled || item.id === resolvedDefault?.id
+      });
+    }
+  }
+
+  return normalized.sort((a, b) => {
+    const adapterCmp = a.adapter.localeCompare(b.adapter);
+    if (adapterCmp !== 0) {
+      return adapterCmp;
+    }
+    if (a.isDefault !== b.isDefault) {
+      return a.isDefault ? -1 : 1;
+    }
+    return a.id.localeCompare(b.id);
+  });
 }
 
 function hashToken(token: string): string {
@@ -1003,6 +1568,47 @@ function mapAuditEventRow(row: AuditEventRow): AuditEvent {
   };
 }
 
+function mapApprovalEventRow(row: ApprovalEventRow): BridgeRunApproval {
+  const payload = parseJsonRecord(row.payload_json);
+  const availableDecisions = parseJsonArray(row.available_decisions_json);
+  const decision = row.decision_json ? parseJsonUnknown(row.decision_json) : undefined;
+
+  return {
+    id: row.id,
+    userId: row.user_id,
+    sessionId: row.session_id,
+    runId: row.run_id,
+    adapter: row.adapter,
+    ...(row.thread_id ? { threadId: row.thread_id } : {}),
+    ...(row.turn_id ? { turnId: row.turn_id } : {}),
+    approvalRequestId: row.approval_request_id,
+    kind: row.kind,
+    ...(row.title ? { title: row.title } : {}),
+    payload,
+    availableDecisions,
+    status: row.status,
+    ...(decision !== undefined ? { decision } : {}),
+    ...(row.decided_by ? { decidedBy: row.decided_by } : {}),
+    ...(row.decision_reason ? { decisionReason: row.decision_reason } : {}),
+    requestedAt: row.requested_at,
+    ...(typeof row.decided_at === "number" ? { decidedAt: row.decided_at } : {}),
+    expiresAt: row.expires_at,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at
+  };
+}
+
+function mapRunEventRow(row: RunEventRow): BridgeRunStreamEvent {
+  return {
+    eventId: row.event_id,
+    sessionId: row.session_id,
+    runId: row.run_id,
+    type: row.type as BridgeRunStreamEvent["type"],
+    ts: row.ts,
+    data: parseJsonUnknown(row.data_json) as BridgeRunStreamEvent["data"]
+  } as BridgeRunStreamEvent;
+}
+
 function parseAuditDetails(raw: string): Record<string, unknown> {
   try {
     const parsed = JSON.parse(raw) as Record<string, unknown>;
@@ -1017,4 +1623,33 @@ function parseAuditDetails(raw: string): Record<string, unknown> {
 
 function readCount(row: { count: number }): number {
   return Number.isFinite(row.count) ? row.count : 0;
+}
+
+function stringifyJsonSafe(value: unknown): string {
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return JSON.stringify({ error: "json_stringify_failed" });
+  }
+}
+
+function parseJsonUnknown(raw: string): unknown {
+  try {
+    return JSON.parse(raw) as unknown;
+  } catch {
+    return raw;
+  }
+}
+
+function parseJsonArray(raw: string): unknown[] {
+  const parsed = parseJsonUnknown(raw);
+  return Array.isArray(parsed) ? parsed : [];
+}
+
+function parseJsonRecord(raw: string): Record<string, unknown> {
+  const parsed = parseJsonUnknown(raw);
+  if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+    return parsed as Record<string, unknown>;
+  }
+  return { raw };
 }

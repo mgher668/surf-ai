@@ -16,6 +16,7 @@
 
 .surf-md p {
   margin: 0 0 10px;
+  white-space: pre-wrap;
 }
 
 .surf-md ul,
@@ -90,9 +91,14 @@
   background: var(--code-block-bg);
 }
 
-.surf-md pre {
+.surf-md-pre > code,
+.surf-md-pre pre > code {
+  display: block;
   margin: 0;
   padding: 10px 12px;
+  white-space: pre;
+  word-break: normal;
+  overflow-wrap: normal;
 }
 
 .surf-md code {

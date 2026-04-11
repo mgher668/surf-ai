@@ -5,12 +5,15 @@ import cogOutline from "@iconify-icons/mdi/cog-outline";
 import openInNew from "@iconify-icons/mdi/open-in-new";
 import themeLightDark from "@iconify-icons/mdi/theme-light-dark";
 import checkIcon from "@iconify-icons/mdi/check";
+import checkAllIcon from "@iconify-icons/mdi/check-all";
 import starIcon from "@iconify-icons/mdi/star";
 import starOutlineIcon from "@iconify-icons/mdi/star-outline";
 import pencilOutline from "@iconify-icons/mdi/pencil-outline";
 import deleteOutline from "@iconify-icons/mdi/delete-outline";
+import alertCircleOutline from "@iconify-icons/mdi/alert-circle-outline";
 import { STORAGE_KEYS } from "@surf-ai/shared";
 import type {
+  BridgeAssistantMessagePhase,
   BridgeAuditEvent,
   BridgeAuditEventsResponse,
   BridgeCapabilitiesResponse,
@@ -26,8 +29,13 @@ import type {
   BridgeSessionRun,
   BridgeSessionRunCancelResponse,
   BridgeSessionRunCreateResponse,
-  BridgeSessionRunResponse,
+  BridgeSessionRunApprovalDecisionRequest,
+  BridgeSessionRunApprovalDecisionResponse,
+  BridgeSessionRunApprovalsResponse,
+  BridgeSessionRunEventsResponse,
   BridgeSessionRunsResponse,
+  BridgeRunApproval,
+  BridgeRunStreamEvent,
   BridgeSessionRenameRequest,
   BridgeSessionRenameResponse,
   BridgeSessionStarRequest,
@@ -44,6 +52,7 @@ import type {
   UiToExtensionResponse
 } from "@surf-ai/shared";
 import { deleteMessagesBySession, listMessagesBySession, saveMessage, saveMessages } from "../../lib/db";
+import { openBridgeRunStream, type BridgeRunStreamHandle } from "../../lib/bridge-sse";
 import {
   getActiveConnectionId,
   getActiveSessionId as getStoredActiveSessionId,
@@ -98,6 +107,8 @@ const ACTION_PROMPT_PREFIX: Record<QuickAction, string> = {
 
 const FALLBACK_ADAPTER_OPTIONS: BridgeModel["adapter"][] = ["mock", "codex", "claude"];
 const BACKEND_DRAFT_SESSION_ID = "__backend_draft__";
+const AUTO_MODEL_ID = "auto";
+const AUTO_MODEL_LABEL = "Auto (CLI default)";
 type SessionMode = "backend" | "local";
 type RuntimeAlertLevel = "warn" | "error";
 type RuntimeAlertCode =
@@ -105,6 +116,7 @@ type RuntimeAlertCode =
   | "auth_failed"
   | "rate_limited"
   | "bridge_request_failed";
+type StreamAssistantByPhase = Record<BridgeAssistantMessagePhase, string>;
 
 interface RuntimeAlert {
   code: RuntimeAlertCode;
@@ -113,6 +125,56 @@ interface RuntimeAlert {
   statusCode?: number;
   updatedAt: number;
 }
+
+function createEmptyStreamAssistantByPhase(): StreamAssistantByPhase {
+  return {
+    commentary: "",
+    final_answer: "",
+    unknown: ""
+  };
+}
+
+interface RunArtifacts {
+  assistantByPhase: StreamAssistantByPhase;
+  reasoningSummary: string;
+  reasoningText: string;
+  commandOutput: string;
+  errorMessage?: string;
+}
+
+interface SessionRunProcessState {
+  events: BridgeRunStreamEvent[];
+  approvals: BridgeRunApproval[];
+}
+
+interface ProcessTimelineItem {
+  id: string;
+  ts: number;
+  kind:
+    | "approval"
+    | "commentary"
+    | "reasoning_summary"
+    | "reasoning_text"
+    | "command_output"
+    | "runtime_error";
+  approval?: BridgeRunApproval;
+  content?: string;
+  message?: string;
+}
+
+type ConversationTimelineItem =
+  | {
+      id: string;
+      ts: number;
+      kind: "message";
+      message: ChatMessage;
+    }
+  | {
+      id: string;
+      ts: number;
+      kind: "process";
+      process: ProcessTimelineItem;
+    };
 
 export function App(): JSX.Element {
   const [locale, setLocaleState] = useState<Locale>(resolveLocale(navigator.language));
@@ -129,10 +191,27 @@ export function App(): JSX.Element {
   const [adapter, setAdapter] = useState<BridgeChatRequest["adapter"]>("mock");
   const [capabilities, setCapabilities] = useState<BridgeCapabilitiesResponse | undefined>();
   const [capabilitiesError, setCapabilitiesError] = useState<string | undefined>();
+  const [models, setModelsState] = useState<BridgeModel[]>([]);
+  const [model, setModel] = useState<string>(AUTO_MODEL_ID);
+  const [modelByAdapter, setModelByAdapter] = useState<
+    Partial<Record<BridgeChatRequest["adapter"], string>>
+  >({});
   const [runtimeAlert, setRuntimeAlert] = useState<RuntimeAlert | undefined>();
   const [recentAuditEvents, setRecentAuditEvents] = useState<BridgeAuditEvent[]>([]);
   const [pending, setPending] = useState(false);
   const [activeRun, setActiveRun] = useState<BridgeSessionRun | undefined>();
+  const [runApprovals, setRunApprovals] = useState<BridgeRunApproval[]>([]);
+  const [runEvents, setRunEvents] = useState<BridgeRunStreamEvent[]>([]);
+  const [sessionRunProcesses, setSessionRunProcesses] = useState<
+    Record<string, SessionRunProcessState>
+  >({});
+  const [streamAssistantByPhase, setStreamAssistantByPhase] = useState<StreamAssistantByPhase>(
+    createEmptyStreamAssistantByPhase()
+  );
+  const [runReasoningSummary, setRunReasoningSummary] = useState("");
+  const [runReasoningText, setRunReasoningText] = useState("");
+  const [runCommandOutput, setRunCommandOutput] = useState("");
+  const [runStreamError, setRunStreamError] = useState<string | undefined>();
   const [extractingPage, setExtractingPage] = useState(false);
   const [extractError, setExtractError] = useState<string | undefined>();
   const [pageContent, setPageContent] = useState<PageContentPayload | undefined>();
@@ -155,6 +234,7 @@ export function App(): JSX.Element {
   const conversationViewportRef = useRef<HTMLElement | null>(null);
   const composerTextareaRef = useRef<HTMLTextAreaElement | null>(null);
   const previewViewportRef = useRef<HTMLDivElement | null>(null);
+  const runStreamRef = useRef<BridgeRunStreamHandle | null>(null);
   const messageItemRefs = useRef(new Map<string, HTMLElement>());
   const conversationScrollLoopRef = useRef<number | null>(null);
   const conversationScrollLastTsRef = useRef<number | null>(null);
@@ -181,6 +261,42 @@ export function App(): JSX.Element {
     () => messages.find((item) => item.id === previewMessageId),
     [messages, previewMessageId]
   );
+  const streamAssistantDisplayText = useMemo(
+    () => pickDisplayAssistantText(streamAssistantByPhase),
+    [streamAssistantByPhase]
+  );
+
+  const visibleMessages = useMemo(() => {
+    if (
+      !activeRun ||
+      !activeSessionId ||
+      activeRun.sessionId !== activeSessionId ||
+      !isRunInFlight(activeRun.status) ||
+      !streamAssistantDisplayText
+    ) {
+      return messages;
+    }
+
+    const syntheticAssistantMessage: ChatMessage = {
+      id: `stream-assistant-${activeRun.id}`,
+      sessionId: activeSessionId,
+      role: "assistant",
+      adapter: activeRun.adapter,
+      model: activeRun.model ?? model,
+      content: streamAssistantDisplayText,
+      createdAt: Date.now()
+    };
+
+    return [...messages, syntheticAssistantMessage];
+  }, [activeRun, activeSessionId, messages, streamAssistantDisplayText, adapter, model]);
+  const processTimelineItems = useMemo(
+    () => buildSessionProcessTimelineItems(sessionRunProcesses),
+    [sessionRunProcesses]
+  );
+  const conversationTimelineItems = useMemo(
+    () => buildConversationTimelineItems(visibleMessages, processTimelineItems),
+    [visibleMessages, processTimelineItems]
+  );
 
   const activeConnection = useMemo(
     () => connections.find((item) => item.id === activeConnectionId),
@@ -194,6 +310,35 @@ export function App(): JSX.Element {
     }
     return FALLBACK_ADAPTER_OPTIONS.map((item) => ({ adapter: item, label: item }));
   }, [capabilities]);
+
+  const availableModels = useMemo(() => {
+    const items = models.filter((item) => item.adapter === adapter && item.enabled);
+    if (items.length === 0) {
+      return [
+        {
+          id: AUTO_MODEL_ID,
+          adapter,
+          label: AUTO_MODEL_LABEL,
+          enabled: true,
+          isDefault: true
+        } satisfies BridgeModel
+      ];
+    }
+    return [...items].sort((a, b) => {
+      if (a.isDefault !== b.isDefault) {
+        return a.isDefault ? -1 : 1;
+      }
+      return a.label.localeCompare(b.label);
+    });
+  }, [models, adapter]);
+
+  const selectedModel = useMemo(
+    () =>
+      availableModels.find((item) => item.id === model) ??
+      availableModels.find((item) => item.isDefault) ??
+      availableModels[0],
+    [availableModels, model]
+  );
 
   const ttsReady = useMemo(() => {
     if (!capabilities) {
@@ -334,9 +479,19 @@ export function App(): JSX.Element {
 
   useEffect(() => {
     if (!activeSessionId || isBackendDraftActive) {
+      runStreamRef.current?.close();
+      runStreamRef.current = null;
       setMessages([]);
       setLoadedMessagesSessionId(undefined);
       setActiveRun(undefined);
+      setRunApprovals([]);
+      setRunEvents([]);
+      setSessionRunProcesses({});
+      setStreamAssistantByPhase(createEmptyStreamAssistantByPhase());
+      setRunReasoningSummary("");
+      setRunReasoningText("");
+      setRunCommandOutput("");
+      setRunStreamError(undefined);
       setFocusedMessageId(undefined);
       setPreviewDialogOpen(false);
       setPreviewMessageId(undefined);
@@ -353,6 +508,14 @@ export function App(): JSX.Element {
     setPageContent(undefined);
     setExtractError(undefined);
     setIncludePageContext(false);
+    setRunApprovals([]);
+    setRunEvents([]);
+    setSessionRunProcesses({});
+    setStreamAssistantByPhase(createEmptyStreamAssistantByPhase());
+    setRunReasoningSummary("");
+    setRunReasoningText("");
+    setRunCommandOutput("");
+    setRunStreamError(undefined);
   }, [activeSessionId, isBackendDraftActive]);
 
   useEffect(() => {
@@ -374,7 +537,10 @@ export function App(): JSX.Element {
     }
 
     // Wait until messages belong to the current session to avoid scrolling on stale content.
-    if (messages.length > 0 && messages[messages.length - 1]?.sessionId !== activeSessionId) {
+    if (
+      visibleMessages.length > 0 &&
+      visibleMessages[visibleMessages.length - 1]?.sessionId !== activeSessionId
+    ) {
       return;
     }
 
@@ -392,7 +558,7 @@ export function App(): JSX.Element {
     return () => {
       window.cancelAnimationFrame(rafId);
     };
-  }, [messages, activeSessionId, isBackendDraftActive, loadedMessagesSessionId]);
+  }, [visibleMessages, activeSessionId, isBackendDraftActive, loadedMessagesSessionId]);
 
   useEffect(() => {
     if (messages.length === 0) {
@@ -783,72 +949,200 @@ export function App(): JSX.Element {
       sessionMode !== "backend" ||
       !activeConnection ||
       !activeSessionId ||
+      isBackendDraftActive
+    ) {
+      setSessionRunProcesses({});
+      return;
+    }
+
+    let cancelled = false;
+    const sessionId = activeSessionId;
+
+    const load = async (): Promise<void> => {
+      const runs = await fetchSessionRunsFromBackend(activeConnection, sessionId, 50);
+      if (cancelled || !runs) {
+        return;
+      }
+
+      const entries = await Promise.all(
+        runs.map(async (run) => {
+          const [approvals, events] = await Promise.all([
+            fetchRunApprovalsFromBackend(activeConnection, sessionId, run.id, "all"),
+            fetchRunEventsFromBackend(activeConnection, sessionId, run.id, 5000)
+          ]);
+          return [
+            run.id,
+            {
+              approvals: approvals ?? [],
+              events: events ?? []
+            } satisfies SessionRunProcessState
+          ] as const;
+        })
+      );
+
+      if (cancelled) {
+        return;
+      }
+      setSessionRunProcesses(Object.fromEntries(entries));
+    };
+
+    void load();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    sessionMode,
+    activeConnectionId,
+    activeConnection?.baseUrl,
+    activeConnection?.userId,
+    activeConnection?.token,
+    activeSessionId,
+    isBackendDraftActive
+  ]);
+
+  useEffect(() => {
+    if (
+      sessionMode !== "backend" ||
+      !activeConnection ||
+      !activeSessionId ||
+      isBackendDraftActive ||
+      !activeRun ||
+      activeRun.sessionId !== activeSessionId
+    ) {
+      setRunApprovals([]);
+      setRunEvents([]);
+      setStreamAssistantByPhase(createEmptyStreamAssistantByPhase());
+      setRunReasoningSummary("");
+      setRunReasoningText("");
+      setRunCommandOutput("");
+      setRunStreamError(undefined);
+      return;
+    }
+
+    let cancelled = false;
+    const sessionId = activeSessionId;
+    const runId = activeRun.id;
+
+    const load = async (): Promise<void> => {
+      const [approvals, events] = await Promise.all([
+        fetchRunApprovalsFromBackend(activeConnection, sessionId, runId, "all"),
+        fetchRunEventsFromBackend(activeConnection, sessionId, runId, 5000)
+      ]);
+      if (cancelled) {
+        return;
+      }
+
+      if (approvals) {
+        setRunApprovals(approvals);
+      }
+
+      if (events) {
+        setRunEvents(events);
+        const artifacts = buildRunArtifacts(events);
+        setStreamAssistantByPhase(artifacts.assistantByPhase);
+        setRunReasoningSummary(artifacts.reasoningSummary);
+        setRunReasoningText(artifacts.reasoningText);
+        setRunCommandOutput(artifacts.commandOutput);
+        setRunStreamError(artifacts.errorMessage);
+      }
+
+      if (approvals || events) {
+        setSessionRunProcesses((prev) => ({
+          ...prev,
+          [runId]: {
+            approvals: approvals ?? prev[runId]?.approvals ?? [],
+            events: events ?? prev[runId]?.events ?? []
+          }
+        }));
+      }
+    };
+
+    void load();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    sessionMode,
+    activeConnectionId,
+    activeConnection?.baseUrl,
+    activeSessionId,
+    isBackendDraftActive,
+    activeRun?.id
+  ]);
+
+  useEffect(() => {
+    if (
+      sessionMode !== "backend" ||
+      !activeConnection ||
+      !activeSessionId ||
       isBackendDraftActive ||
       !activeRun ||
       activeRun.sessionId !== activeSessionId ||
       !isRunInFlight(activeRun.status)
     ) {
+      runStreamRef.current?.close();
+      runStreamRef.current = null;
       return;
     }
 
     let cancelled = false;
+    const sessionId = activeSessionId;
+    const runId = activeRun.id;
 
-    const syncRun = async (): Promise<void> => {
-      const latestRun = await fetchRunById(activeConnection, activeRun.id);
-      if (!latestRun || cancelled) {
-        return;
+    setStreamAssistantByPhase(createEmptyStreamAssistantByPhase());
+    setRunReasoningSummary("");
+    setRunReasoningText("");
+    setRunCommandOutput("");
+    setRunStreamError(undefined);
+    setRunEvents([]);
+    setSessionRunProcesses((prev) => ({
+      ...prev,
+      [runId]: {
+        approvals: prev[runId]?.approvals ?? [],
+        events: []
       }
-      if (latestRun.sessionId !== activeSessionId) {
-        return;
-      }
+    }));
 
-      const latestRunInFlight = isRunInFlight(latestRun.status);
-      if (latestRunInFlight) {
-        setActiveRun(latestRun);
-      }
-
-      // Keep messages in sync while a run is in progress. This also enables
-      // immediate UI updates once the assistant message lands.
-      const polledMessages = await pollMessagesFromBackend(activeConnection, activeSessionId);
+    const applyTerminalSync = async (nextRun: BridgeSessionRun): Promise<void> => {
+      const loadedMessages = await loadMessagesFromBackend(activeConnection, sessionId);
       if (cancelled) {
         return;
       }
-      if (polledMessages) {
-        setMessages((prev) => {
-          if (areMessageListsEqual(prev, polledMessages)) {
-            return prev;
+      setMessages((prev) => {
+        if (areMessageListsEqual(prev, loadedMessages)) {
+          return prev;
+        }
+        const lastMessage = loadedMessages[loadedMessages.length - 1];
+        if (lastMessage?.sessionId === sessionId) {
+          pendingAutoScrollSessionIdRef.current = sessionId;
+        }
+        return loadedMessages;
+      });
+      setLoadedMessagesSessionId(sessionId);
+      setActiveRun(nextRun);
+      setPending(false);
+      const approvals = await fetchRunApprovalsFromBackend(activeConnection, sessionId, runId, "all");
+      if (!cancelled && approvals) {
+        setRunApprovals(approvals);
+      }
+      const events = await fetchRunEventsFromBackend(activeConnection, sessionId, runId, 5000);
+      if (!cancelled && events) {
+        setRunEvents(events);
+      }
+      if (!cancelled && (approvals || events)) {
+        setSessionRunProcesses((prev) => ({
+          ...prev,
+          [runId]: {
+            approvals: approvals ?? prev[runId]?.approvals ?? [],
+            events: events ?? prev[runId]?.events ?? []
           }
-          const lastMessage = polledMessages[polledMessages.length - 1];
-          if (lastMessage?.sessionId === activeSessionId) {
-            pendingAutoScrollSessionIdRef.current = activeSessionId;
-          }
-          return polledMessages;
-        });
-        setLoadedMessagesSessionId(activeSessionId);
+        }));
       }
 
-      if (!latestRunInFlight) {
-        const loadedMessages = await loadMessagesFromBackend(activeConnection, activeSessionId);
-        if (cancelled) {
-          return;
-        }
-        setMessages((prev) => {
-          if (areMessageListsEqual(prev, loadedMessages)) {
-            return prev;
-          }
-          const lastMessage = loadedMessages[loadedMessages.length - 1];
-          if (lastMessage?.sessionId === activeSessionId) {
-            pendingAutoScrollSessionIdRef.current = activeSessionId;
-          }
-          return loadedMessages;
-        });
-        setLoadedMessagesSessionId(activeSessionId);
-        setActiveRun(latestRun);
-
-        const backendSessions = await fetchSessionsFromBackend(activeConnection);
-        if (cancelled || !backendSessions) {
-          return;
-        }
+      const backendSessions = await fetchSessionsFromBackend(activeConnection);
+      if (!cancelled && backendSessions) {
         setSessionsState((prev) => {
           const mergedSessions = mergeSessionsWithLocalAdapters(prev, backendSessions);
           if (areSessionListsEqual(prev, mergedSessions)) {
@@ -860,14 +1154,136 @@ export function App(): JSX.Element {
       }
     };
 
-    void syncRun();
-    const timer = window.setInterval(() => {
-      void syncRun();
-    }, 1_200);
+    const onEvent = (event: BridgeRunStreamEvent): void => {
+      if (cancelled) {
+        return;
+      }
+      if (event.sessionId !== sessionId || event.runId !== runId) {
+        return;
+      }
+      if (event.type !== "heartbeat") {
+        setRunEvents((prev) => {
+          if (prev.some((item) => item.eventId === event.eventId)) {
+            return prev;
+          }
+          return [...prev, event];
+        });
+
+        setSessionRunProcesses((prev) => {
+          const current = prev[runId] ?? { approvals: [], events: [] };
+          const hasEvent = current.events.some((item) => item.eventId === event.eventId);
+          const nextEvents = hasEvent ? current.events : [...current.events, event];
+          const nextApprovals =
+            event.type === "approval.requested" || event.type === "approval.updated"
+              ? upsertApproval(current.approvals, event.data.approval)
+              : current.approvals;
+
+          if (nextEvents === current.events && nextApprovals === current.approvals) {
+            return prev;
+          }
+
+          return {
+            ...prev,
+            [runId]: {
+              approvals: nextApprovals,
+              events: nextEvents
+            }
+          };
+        });
+      }
+
+      if (event.type === "assistant.delta") {
+        const phase = normalizeAssistantStreamPhase(event.data.phase);
+        setStreamAssistantByPhase((prev) => ({
+          ...prev,
+          [phase]: `${prev[phase]}${event.data.delta}`
+        }));
+        return;
+      }
+
+      if (event.type === "assistant.completed") {
+        if (typeof event.data.content === "string") {
+          const phase = normalizeAssistantStreamPhase(event.data.phase);
+          setStreamAssistantByPhase((prev) => ({
+            ...prev,
+            [phase]: event.data.content ?? prev[phase]
+          }));
+        }
+        return;
+      }
+
+      if (event.type === "reasoning.summary.delta") {
+        setRunReasoningSummary((prev) => prev + event.data.delta);
+        return;
+      }
+
+      if (event.type === "reasoning.text.delta") {
+        setRunReasoningText((prev) => prev + event.data.delta);
+        return;
+      }
+
+      if (event.type === "command.output.delta") {
+        setRunCommandOutput((prev) => prev + event.data.delta);
+        return;
+      }
+
+      if (event.type === "approval.requested" || event.type === "approval.updated") {
+        setRunApprovals((prev) => upsertApproval(prev, event.data.approval));
+        return;
+      }
+
+      if (event.type === "error") {
+        setRunStreamError(event.data.message);
+        return;
+      }
+
+      if (event.type === "run.status") {
+        const nextRun = event.data.run;
+        if (!isRunInFlight(nextRun.status)) {
+          void applyTerminalSync(nextRun);
+          return;
+        }
+        setActiveRun(nextRun);
+      }
+    };
+
+    const onError = (error: Error): void => {
+      if (cancelled) {
+        return;
+      }
+      setRunStreamError(error.message);
+    };
+
+    runStreamRef.current?.close();
+    const streamHandle = openBridgeRunStream({
+      connection: activeConnection,
+      sessionId,
+      runId,
+      onEvent,
+      onError
+    });
+    runStreamRef.current = streamHandle;
+
+    void fetchRunApprovalsFromBackend(activeConnection, sessionId, runId, "all").then((approvals) => {
+      if (!approvals || cancelled) {
+        return;
+      }
+      setRunApprovals(approvals);
+      setSessionRunProcesses((prev) => ({
+        ...prev,
+        [runId]: {
+          approvals,
+          events: prev[runId]?.events ?? []
+        }
+      }));
+    });
 
     return () => {
       cancelled = true;
-      window.clearInterval(timer);
+      streamHandle.close();
+      if (runStreamRef.current === streamHandle) {
+        runStreamRef.current = null;
+      }
     };
   }, [
     sessionMode,
@@ -881,6 +1297,10 @@ export function App(): JSX.Element {
 
   useEffect(() => {
     void bootstrapCapabilities(activeConnection);
+  }, [activeConnection]);
+
+  useEffect(() => {
+    void bootstrapModels(activeConnection);
   }, [activeConnection]);
 
   useEffect(() => {
@@ -996,6 +1416,22 @@ export function App(): JSX.Element {
   }, [adapter, availableAdapters, capabilities, defaultAdapter]);
 
   useEffect(() => {
+    const hasCurrentModel = availableModels.some((item) => item.id === model);
+    if (hasCurrentModel) {
+      return;
+    }
+
+    const preferredByAdapter = modelByAdapter[adapter];
+    if (preferredByAdapter && availableModels.some((item) => item.id === preferredByAdapter)) {
+      setModel(preferredByAdapter);
+      return;
+    }
+
+    const defaultModel = availableModels.find((item) => item.isDefault) ?? availableModels[0];
+    setModel(defaultModel?.id ?? AUTO_MODEL_ID);
+  }, [adapter, availableModels, model, modelByAdapter]);
+
+  useEffect(() => {
     if (!activeSessionId || activeSessionId === BACKEND_DRAFT_SESSION_ID) {
       return;
     }
@@ -1020,6 +1456,37 @@ export function App(): JSX.Element {
     }
     setAdapter(lastAdapter);
   }, [activeSessionId, sessions, availableAdapters, adapter]);
+
+  useEffect(() => {
+    const latestByAdapter = new Map<BridgeChatRequest["adapter"], string>();
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      const item = messages[index];
+      if (!item?.adapter || !item.model) {
+        continue;
+      }
+      if (latestByAdapter.has(item.adapter)) {
+        continue;
+      }
+      latestByAdapter.set(item.adapter, item.model);
+    }
+
+    if (latestByAdapter.size === 0) {
+      return;
+    }
+
+    setModelByAdapter((previous) => {
+      let changed = false;
+      const next = { ...previous };
+      for (const [adapterItem, modelId] of latestByAdapter.entries()) {
+        if (next[adapterItem] === modelId) {
+          continue;
+        }
+        next[adapterItem] = modelId;
+        changed = true;
+      }
+      return changed ? next : previous;
+    });
+  }, [messages]);
 
   async function bootstrap(): Promise<void> {
     const [storedLocale, storedDefaultAdapter, storedTheme] = await Promise.all([
@@ -1180,6 +1647,39 @@ export function App(): JSX.Element {
       setCapabilities(undefined);
       setCapabilitiesError(error instanceof Error ? error.message : "capabilities_unavailable");
       reportRuntimeAlert("backend_unreachable", "error", t(locale, "alertBackendUnreachable"));
+    }
+  }
+
+  async function bootstrapModels(connection: BridgeConnection | undefined): Promise<void> {
+    if (!connection) {
+      setModelsState([]);
+      setModel(AUTO_MODEL_ID);
+      return;
+    }
+
+    try {
+      const modelsResponse = await fetchBridgeJson<BridgeModelsResponse>(connection, "/models");
+      if (!modelsResponse.ok) {
+        if (modelsResponse.status === 401 || modelsResponse.status === 403) {
+          reportRuntimeAlert("auth_failed", "error", t(locale, "alertAuthFailed"), modelsResponse.status);
+        } else if (modelsResponse.status === 429) {
+          reportRuntimeAlert("rate_limited", "warn", t(locale, "alertRateLimited"), modelsResponse.status);
+        } else {
+          reportRuntimeAlert(
+            "bridge_request_failed",
+            "warn",
+            `${t(locale, "alertBridgeRequestFailed")} (${modelsResponse.status})`,
+            modelsResponse.status
+          );
+        }
+        setModelsState([]);
+        return;
+      }
+
+      setModelsState(normalizeModelList(modelsResponse.data.models));
+    } catch {
+      reportRuntimeAlert("backend_unreachable", "error", t(locale, "alertBackendUnreachable"));
+      setModelsState([]);
     }
   }
 
@@ -1621,6 +2121,7 @@ export function App(): JSX.Element {
         sessionId: activeSessionId ?? "pending",
         role: "assistant",
         adapter,
+        model,
         content: "Error: no active bridge connection. Please add/select one in Settings first.",
         createdAt: Date.now()
       };
@@ -1638,6 +2139,7 @@ export function App(): JSX.Element {
             sessionId: "pending",
             role: "assistant",
             adapter,
+            model,
             content: "Error: no active backend session and failed to create one.",
             createdAt: Date.now()
           };
@@ -1673,6 +2175,7 @@ export function App(): JSX.Element {
       sessionId: activeSessionId,
       role: "user",
       adapter,
+      model,
       content,
       createdAt: Date.now()
     };
@@ -1687,6 +2190,10 @@ export function App(): JSX.Element {
 
       const requestPayload: BridgeChatRequest = {
         adapter,
+        model,
+        ...(adapter === "codex" && selectedModel?.modelReasoningEffort
+          ? { modelReasoningEffort: selectedModel.modelReasoningEffort }
+          : {}),
         sessionId: activeSessionId,
         messages: [...messages, userMessage].map((item) => ({
           role: item.role,
@@ -1728,6 +2235,7 @@ export function App(): JSX.Element {
         sessionId: activeSessionId,
         role: "assistant",
         adapter,
+        model,
         content: result.output,
         createdAt: Date.now()
       };
@@ -1743,6 +2251,7 @@ export function App(): JSX.Element {
         sessionId: activeSessionId,
         role: "assistant",
         adapter,
+        model,
         content: `Error: ${error instanceof Error ? error.message : "Unknown error"}`,
         createdAt: Date.now()
       };
@@ -1770,6 +2279,10 @@ export function App(): JSX.Element {
         headers: buildBridgeHeaders(connection, true),
         body: JSON.stringify({
           adapter,
+          model,
+          ...(adapter === "codex" && selectedModel?.modelReasoningEffort
+            ? { modelReasoningEffort: selectedModel.modelReasoningEffort }
+            : {}),
           content,
           ...(Object.keys(context).length > 0 ? { context } : {})
         })
@@ -1811,6 +2324,20 @@ export function App(): JSX.Element {
       const payload = (await response.json()) as BridgeSessionRunCreateResponse;
       clearRuntimeAlert();
       setInput("");
+      setRunApprovals([]);
+      setRunEvents([]);
+      setSessionRunProcesses((prev) => ({
+        ...prev,
+        [payload.run.id]: {
+          approvals: [],
+          events: []
+        }
+      }));
+      setStreamAssistantByPhase(createEmptyStreamAssistantByPhase());
+      setRunReasoningSummary("");
+      setRunReasoningText("");
+      setRunCommandOutput("");
+      setRunStreamError(undefined);
       pendingAutoScrollSessionIdRef.current = sessionId;
       setMessages((prev) => [...prev, payload.userMessage]);
       setLoadedMessagesSessionId(sessionId);
@@ -1834,6 +2361,7 @@ export function App(): JSX.Element {
         sessionId,
         role: "assistant",
         adapter,
+        model,
         content: `Error: ${error instanceof Error ? error.message : "Unknown error"}`,
         createdAt: Date.now()
       };
@@ -1874,6 +2402,61 @@ export function App(): JSX.Element {
 
       const payload = (await response.json()) as BridgeSessionRunCancelResponse;
       setActiveRun(payload.run);
+      clearRuntimeAlert();
+    } catch (error) {
+      if (error instanceof TypeError) {
+        reportRuntimeAlert("backend_unreachable", "error", t(locale, "alertBackendUnreachable"));
+      }
+    }
+  }
+
+  async function submitApprovalDecision(
+    approval: BridgeRunApproval,
+    decision: unknown
+  ): Promise<void> {
+    if (!activeConnection || !activeSessionId || !activeRun) {
+      return;
+    }
+
+    try {
+      const payload: BridgeSessionRunApprovalDecisionRequest = { decision };
+      const response = await fetch(
+        `${activeConnection.baseUrl}/sessions/${activeSessionId}/runs/${activeRun.id}/approvals/${approval.approvalRequestId}/decision`,
+        {
+          method: "POST",
+          headers: buildBridgeHeaders(activeConnection, true),
+          body: JSON.stringify(payload)
+        }
+      );
+
+      if (!response.ok) {
+        if (response.status === 401 || response.status === 403) {
+          reportRuntimeAlert("auth_failed", "error", t(locale, "alertAuthFailed"), response.status);
+        } else if (response.status === 429) {
+          reportRuntimeAlert("rate_limited", "warn", t(locale, "alertRateLimited"), response.status);
+        } else {
+          reportRuntimeAlert(
+            "bridge_request_failed",
+            "warn",
+            `${t(locale, "alertBridgeRequestFailed")} (${response.status})`,
+            response.status
+          );
+        }
+        return;
+      }
+
+      const result = (await response.json()) as BridgeSessionRunApprovalDecisionResponse;
+      setRunApprovals((prev) => upsertApproval(prev, result.approval));
+      setSessionRunProcesses((prev) => {
+        const current = prev[activeRun.id] ?? { approvals: [], events: [] };
+        return {
+          ...prev,
+          [activeRun.id]: {
+            approvals: upsertApproval(current.approvals, result.approval),
+            events: current.events
+          }
+        };
+      });
       clearRuntimeAlert();
     } catch (error) {
       if (error instanceof TypeError) {
@@ -2277,72 +2860,161 @@ export function App(): JSX.Element {
             <div style={hintInfoStyle}>TTS is unavailable. Configure MiniMax key in local bridge env.</div>
           ) : null}
           {extractError ? <div style={hintErrorStyle}>{extractError}</div> : null}
-          {messages.length === 0 ? (
+          {conversationTimelineItems.length === 0 ? (
             <div style={{ color: "var(--muted-text)", fontSize: 13 }}>{t(locale, "empty")}</div>
           ) : (
-            messages.map((msg) => {
-              const showRaw = msg.role === "assistant" && Boolean(rawViewByMessageId[msg.id]);
-              const isHighlighted = isConversationFocused && focusedMessageId === msg.id;
+            conversationTimelineItems.map((item) => {
+              if (item.kind === "message") {
+                const msg = item.message;
+                const showRaw = msg.role === "assistant" && Boolean(rawViewByMessageId[msg.id]);
+                const isHighlighted = isConversationFocused && focusedMessageId === msg.id;
 
-              return (
-                <article
-                  key={msg.id}
-                  ref={(element) => {
-                    registerMessageItemRef(msg.id, element);
-                  }}
-                  tabIndex={0}
-                  data-message-id={msg.id}
-                  data-highlighted={isHighlighted ? "true" : "false"}
-                  onFocus={() => {
-                    setFocusedMessageId(msg.id);
-                  }}
-                  style={{
-                    maxWidth: "85%",
-                    padding: "10px 12px",
-                    borderRadius: 12,
-                    lineHeight: 1.45,
-                    border: "1px solid var(--line)",
-                    outline: "none",
-                    background:
-                      msg.role === "user" ? "var(--message-user-bg)" : "var(--message-assistant-bg)",
-                    marginLeft: msg.role === "user" ? "auto" : 0,
-                    boxShadow: isHighlighted
-                      ? "0 0 0 2px hsl(var(--ring) / 0.35)"
-                      : undefined
-                  }}
-                >
-                  {msg.role === "assistant" ? (
-                    <div style={{ display: "grid", gap: 8 }}>
-                      <div className="flex items-center justify-between gap-2">
-                        <button
-                          type="button"
-                          onClick={() => toggleRawView(msg.id)}
-                          style={messageRenderToggleStyle}
-                        >
-                          {showRaw ? "格式化" : "查看原文"}
-                        </button>
-                        {msg.adapter ? (
-                          <Badge
-                            variant="secondary"
-                            className="h-5 rounded-md px-1.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground"
+                return (
+                  <article
+                    key={item.id}
+                    ref={(element) => {
+                      registerMessageItemRef(msg.id, element);
+                    }}
+                    tabIndex={0}
+                    data-message-id={msg.id}
+                    data-highlighted={isHighlighted ? "true" : "false"}
+                    onFocus={() => {
+                      setFocusedMessageId(msg.id);
+                    }}
+                    style={{
+                      maxWidth: "85%",
+                      padding: "10px 12px",
+                      borderRadius: 12,
+                      lineHeight: 1.45,
+                      border: "1px solid var(--line)",
+                      outline: "none",
+                      background:
+                        msg.role === "user" ? "var(--message-user-bg)" : "var(--message-assistant-bg)",
+                      marginLeft: msg.role === "user" ? "auto" : 0,
+                      boxShadow: isHighlighted
+                        ? "0 0 0 2px hsl(var(--ring) / 0.35)"
+                        : undefined
+                    }}
+                  >
+                    {msg.role === "assistant" ? (
+                      <div style={{ display: "grid", gap: 8 }}>
+                        <div className="flex items-center justify-between gap-2">
+                          <button
+                            type="button"
+                            onClick={() => toggleRawView(msg.id)}
+                            style={messageRenderToggleStyle}
                           >
-                            {msg.adapter}
-                          </Badge>
-                        ) : null}
+                            {showRaw ? "格式化" : "查看原文"}
+                          </button>
+                          {msg.adapter ? (
+                            <Badge
+                              variant="secondary"
+                              className="h-5 rounded-md px-1.5 text-[10px] font-medium tracking-wide text-muted-foreground"
+                            >
+                              {formatAdapterModel(msg.adapter, msg.model)}
+                            </Badge>
+                          ) : null}
+                        </div>
+                        {showRaw ? (
+                          <pre style={rawMessageContentStyle}>
+                            <code>{msg.content}</code>
+                          </pre>
+                        ) : (
+                          <MarkdownMessage content={msg.content} />
+                        )}
                       </div>
-                      {showRaw ? (
-                        <pre style={rawMessageContentStyle}>
-                          <code>{msg.content}</code>
-                        </pre>
-                      ) : (
-                        <MarkdownMessage content={msg.content} />
-                      )}
+                    ) : (
+                      <span style={{ whiteSpace: "pre-wrap" }}>{msg.content}</span>
+                    )}
+                  </article>
+                );
+              }
+
+              const process = item.process;
+
+              if (process.kind === "approval" && process.approval) {
+                const approval = process.approval;
+                const pendingApproval = approval.status === "PENDING";
+                return (
+                  <div key={item.id} style={approvalCardStyle}>
+                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+                      <strong style={{ fontSize: 12 }}>{approval.title ?? approval.kind}</strong>
+                      <span style={{ fontSize: 11, opacity: 0.9 }}>
+                        {renderApprovalStatus(locale, approval.status, approval.decision)}
+                      </span>
                     </div>
-                  ) : (
-                    <span style={{ whiteSpace: "pre-wrap" }}>{msg.content}</span>
-                  )}
-                </article>
-              );
+                    <div style={{ marginTop: 4, fontSize: 11, whiteSpace: "pre-wrap" }}>
+                      {approval.kind}
+                    </div>
+                    {pendingApproval ? (
+                      <div style={{ marginTop: 8, display: "flex", flexWrap: "wrap", gap: 6 }}>
+                        {approval.availableDecisions.map((decision) => (
+                          <Button
+                            key={stableDecisionKey(decision)}
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            className="h-7 px-2 text-xs"
+                            onClick={() => void submitApprovalDecision(approval, decision)}
+                          >
+                            {renderDecisionLabel(locale, decision)}
+                          </Button>
+                        ))}
+                      </div>
+                    ) : null}
+                  </div>
+                );
+              }
+
+              if (process.kind === "commentary" && process.content) {
+                return (
+                  <details key={item.id} style={collapsibleBlockStyle}>
+                    <summary style={collapsibleSummaryStyle}>
+                      {t(locale, "assistantCommentaryTitle")}
+                    </summary>
+                    <div style={collapsibleMarkdownBodyStyle}>
+                      <MarkdownMessage content={process.content} />
+                    </div>
+                  </details>
+                );
+              }
+
+              if (process.kind === "reasoning_summary" && process.content) {
+                return (
+                  <details key={item.id} style={collapsibleBlockStyle}>
+                    <summary style={collapsibleSummaryStyle}>Reasoning Summary</summary>
+                    <pre style={collapsibleContentStyle}>{process.content}</pre>
+                  </details>
+                );
+              }
+
+              if (process.kind === "reasoning_text" && process.content) {
+                return (
+                  <details key={item.id} style={collapsibleBlockStyle}>
+                    <summary style={collapsibleSummaryStyle}>Reasoning (Raw)</summary>
+                    <pre style={collapsibleContentStyle}>{process.content}</pre>
+                  </details>
+                );
+              }
+
+              if (process.kind === "command_output" && process.content) {
+                return (
+                  <details key={item.id} style={collapsibleBlockStyle}>
+                    <summary style={collapsibleSummaryStyle}>Tool / Command Output</summary>
+                    <pre style={collapsibleContentStyle}>{process.content}</pre>
+                  </details>
+                );
+              }
+
+              if (process.kind === "runtime_error" && process.message) {
+                return (
+                  <div key={item.id} style={hintErrorStyle}>
+                    {process.message}
+                  </div>
+                );
+              }
+
+              return null;
             })
           )}
         </section>
@@ -2378,7 +3050,7 @@ export function App(): JSX.Element {
               <div className="flex items-center justify-between gap-2">
                 <span className="text-xs">
                   {t(locale, "runStatusLabel")} {formatRunStatus(locale, activeRun.status)} ·{" "}
-                  {activeRun.adapter}
+                  {formatAdapterModel(activeRun.adapter, activeRun.model)}
                 </span>
                 {isRunInFlight(activeRun.status) ? (
                   <Button
@@ -2399,10 +3071,15 @@ export function App(): JSX.Element {
                   {activeRun.errorMessage}
                 </div>
               ) : null}
+              {runStreamError ? (
+                <div style={{ marginTop: 4, fontSize: 11, whiteSpace: "pre-wrap" }}>
+                  {runStreamError}
+                </div>
+              ) : null}
             </div>
           ) : null}
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
               <span className="text-xs text-muted-foreground">{t(locale, "adapter")}</span>
               <Select
                 value={adapter}
@@ -2444,6 +3121,29 @@ export function App(): JSX.Element {
                 <SelectContent>
                   {availableAdapters.map((item) => (
                     <SelectItem key={item.adapter} value={item.adapter}>
+                      {item.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+
+              <span className="text-xs text-muted-foreground">{t(locale, "model")}</span>
+              <Select
+                value={model}
+                onValueChange={(value) => {
+                  setModel(value);
+                  setModelByAdapter((prev) => ({
+                    ...prev,
+                    [adapter]: value
+                  }));
+                }}
+              >
+                <SelectTrigger className="h-8 w-[176px] bg-card text-xs">
+                  <SelectValue placeholder={t(locale, "model")} />
+                </SelectTrigger>
+                <SelectContent>
+                  {availableModels.map((item) => (
+                    <SelectItem key={`${item.adapter}:${item.id}`} value={item.id}>
                       {item.label}
                     </SelectItem>
                   ))}
@@ -2687,6 +3387,304 @@ function areSessionListsEqual(left: ChatSession[], right: ChatSession[]): boolea
   return true;
 }
 
+function normalizeModelList(models: BridgeModel[]): BridgeModel[] {
+  const dedup = new Map<string, BridgeModel>();
+  for (const item of models) {
+    if (!item.id.trim()) {
+      continue;
+    }
+    const key = `${item.adapter}::${item.id}`;
+    dedup.set(key, {
+      ...item,
+      id: item.id.trim(),
+      label: item.label.trim() || item.id.trim()
+    });
+  }
+  return [...dedup.values()];
+}
+
+function normalizeAssistantStreamPhase(phase: string | undefined): BridgeAssistantMessagePhase {
+  if (phase === "commentary" || phase === "final_answer") {
+    return phase;
+  }
+  return "unknown";
+}
+
+function buildRunArtifacts(events: BridgeRunStreamEvent[]): RunArtifacts {
+  const assistantByPhase = createEmptyStreamAssistantByPhase();
+  let reasoningSummary = "";
+  let reasoningText = "";
+  let commandOutput = "";
+  let errorMessage: string | undefined;
+
+  for (const event of events) {
+    if (event.type === "assistant.delta") {
+      const phase = normalizeAssistantStreamPhase(event.data.phase);
+      assistantByPhase[phase] += event.data.delta;
+      continue;
+    }
+
+    if (event.type === "assistant.completed") {
+      if (typeof event.data.content !== "string") {
+        continue;
+      }
+      const phase = normalizeAssistantStreamPhase(event.data.phase);
+      assistantByPhase[phase] = event.data.content;
+      continue;
+    }
+
+    if (event.type === "reasoning.summary.delta") {
+      reasoningSummary += event.data.delta;
+      continue;
+    }
+
+    if (event.type === "reasoning.text.delta") {
+      reasoningText += event.data.delta;
+      continue;
+    }
+
+    if (event.type === "command.output.delta") {
+      commandOutput += event.data.delta;
+      continue;
+    }
+
+    if (event.type === "error") {
+      errorMessage = event.data.message;
+    }
+  }
+
+  return {
+    assistantByPhase,
+    reasoningSummary,
+    reasoningText,
+    commandOutput,
+    ...(errorMessage ? { errorMessage } : {})
+  };
+}
+
+function buildSessionProcessTimelineItems(
+  sessionRunProcesses: Record<string, SessionRunProcessState>
+): ProcessTimelineItem[] {
+  const items: ProcessTimelineItem[] = [];
+  for (const [runId, process] of Object.entries(sessionRunProcesses)) {
+    items.push(...buildProcessTimelineItems(runId, process.events, process.approvals));
+  }
+  items.sort((left, right) => {
+    if (left.ts !== right.ts) {
+      return left.ts - right.ts;
+    }
+    return left.id.localeCompare(right.id);
+  });
+  return items;
+}
+
+function buildProcessTimelineItems(
+  runId: string,
+  events: BridgeRunStreamEvent[],
+  approvals: BridgeRunApproval[]
+): ProcessTimelineItem[] {
+  const artifacts = buildRunArtifacts(events);
+  const firstSeen = extractProcessFirstSeenTs(events);
+  const items: ProcessTimelineItem[] = [];
+  const mergedApprovals = mergeApprovalsFromEvents(events, approvals);
+
+  for (const approval of mergedApprovals) {
+    items.push({
+      id: `approval-${runId}-${approval.id}`,
+      ts: approval.requestedAt,
+      kind: "approval",
+      approval
+    });
+  }
+
+  if (artifacts.assistantByPhase.commentary && typeof firstSeen.commentary === "number") {
+    items.push({
+      id: `${runId}:commentary`,
+      ts: firstSeen.commentary,
+      kind: "commentary",
+      content: artifacts.assistantByPhase.commentary
+    });
+  }
+
+  if (artifacts.reasoningSummary && typeof firstSeen.reasoningSummary === "number") {
+    items.push({
+      id: `${runId}:reasoning-summary`,
+      ts: firstSeen.reasoningSummary,
+      kind: "reasoning_summary",
+      content: artifacts.reasoningSummary
+    });
+  }
+
+  if (artifacts.reasoningText && typeof firstSeen.reasoningText === "number") {
+    items.push({
+      id: `${runId}:reasoning-text`,
+      ts: firstSeen.reasoningText,
+      kind: "reasoning_text",
+      content: artifacts.reasoningText
+    });
+  }
+
+  if (artifacts.commandOutput && typeof firstSeen.commandOutput === "number") {
+    items.push({
+      id: `${runId}:command-output`,
+      ts: firstSeen.commandOutput,
+      kind: "command_output",
+      content: artifacts.commandOutput
+    });
+  }
+
+  if (artifacts.errorMessage && typeof firstSeen.runtimeError === "number") {
+    items.push({
+      id: `${runId}:runtime-error`,
+      ts: firstSeen.runtimeError,
+      kind: "runtime_error",
+      message: artifacts.errorMessage
+    });
+  }
+
+  items.sort((left, right) => {
+    if (left.ts !== right.ts) {
+      return left.ts - right.ts;
+    }
+    return left.id.localeCompare(right.id);
+  });
+  return items;
+}
+
+function mergeApprovalsFromEvents(
+  events: BridgeRunStreamEvent[],
+  approvals: BridgeRunApproval[]
+): BridgeRunApproval[] {
+  const merged = new Map<string, BridgeRunApproval>();
+
+  for (const approval of approvals) {
+    merged.set(approval.id, approval);
+  }
+
+  for (const event of events) {
+    if (event.type !== "approval.requested" && event.type !== "approval.updated") {
+      continue;
+    }
+    const approval = event.data.approval;
+    if (!approval?.id) {
+      continue;
+    }
+    merged.set(approval.id, approval);
+  }
+
+  return [...merged.values()].sort((left, right) => {
+    if (left.requestedAt !== right.requestedAt) {
+      return left.requestedAt - right.requestedAt;
+    }
+    return left.id.localeCompare(right.id);
+  });
+}
+
+function buildConversationTimelineItems(
+  messages: ChatMessage[],
+  processItems: ProcessTimelineItem[]
+): ConversationTimelineItem[] {
+  const timeline: ConversationTimelineItem[] = [
+    ...messages.map((message) => ({
+      id: `message-${message.id}`,
+      ts: message.createdAt,
+      kind: "message" as const,
+      message
+    })),
+    ...processItems.map((process) => ({
+      id: `process-${process.id}`,
+      ts: process.ts,
+      kind: "process" as const,
+      process
+    }))
+  ];
+
+  timeline.sort((left, right) => {
+    if (left.ts !== right.ts) {
+      return left.ts - right.ts;
+    }
+    if (left.kind !== right.kind) {
+      return left.kind === "process" ? -1 : 1;
+    }
+    return left.id.localeCompare(right.id);
+  });
+
+  return timeline;
+}
+
+function extractProcessFirstSeenTs(events: BridgeRunStreamEvent[]): {
+  commentary?: number;
+  reasoningSummary?: number;
+  reasoningText?: number;
+  commandOutput?: number;
+  runtimeError?: number;
+} {
+  let commentary: number | undefined;
+  let reasoningSummary: number | undefined;
+  let reasoningText: number | undefined;
+  let commandOutput: number | undefined;
+  let runtimeError: number | undefined;
+
+  for (const event of events) {
+    if (event.type === "assistant.delta") {
+      const phase = normalizeAssistantStreamPhase(event.data.phase);
+      if (phase === "commentary" && commentary === undefined) {
+        commentary = event.ts;
+      }
+      continue;
+    }
+
+    if (event.type === "assistant.completed") {
+      const phase = normalizeAssistantStreamPhase(event.data.phase);
+      if (phase === "commentary" && commentary === undefined) {
+        commentary = event.ts;
+      }
+      continue;
+    }
+
+    if (event.type === "reasoning.summary.delta" && reasoningSummary === undefined) {
+      reasoningSummary = event.ts;
+      continue;
+    }
+
+    if (event.type === "reasoning.text.delta" && reasoningText === undefined) {
+      reasoningText = event.ts;
+      continue;
+    }
+
+    if (event.type === "command.output.delta" && commandOutput === undefined) {
+      commandOutput = event.ts;
+      continue;
+    }
+
+    if (event.type === "error" && runtimeError === undefined) {
+      runtimeError = event.ts;
+    }
+  }
+
+  return {
+    ...(typeof commentary === "number" ? { commentary } : {}),
+    ...(typeof reasoningSummary === "number" ? { reasoningSummary } : {}),
+    ...(typeof reasoningText === "number" ? { reasoningText } : {}),
+    ...(typeof commandOutput === "number" ? { commandOutput } : {}),
+    ...(typeof runtimeError === "number" ? { runtimeError } : {})
+  };
+}
+
+function pickDisplayAssistantText(streamByPhase: StreamAssistantByPhase): string {
+  if (streamByPhase.final_answer.length > 0) {
+    return streamByPhase.final_answer;
+  }
+  if (streamByPhase.unknown.length > 0) {
+    return streamByPhase.unknown;
+  }
+  return "";
+}
+
+function formatAdapterModel(adapter: string, model: string | undefined): string {
+  return `${adapter} / ${model?.trim() || AUTO_MODEL_ID}`;
+}
+
 async function fetchLatestSessionRun(
   connection: BridgeConnection,
   sessionId: string
@@ -2701,30 +3699,51 @@ async function fetchLatestSessionRun(
   return response.data.runs[0] ?? null;
 }
 
-async function pollMessagesFromBackend(
+async function fetchSessionRunsFromBackend(
   connection: BridgeConnection,
-  sessionId: string
-): Promise<ChatMessage[] | null> {
-  const response = await fetchBridgeJson<BridgeSessionMessagesResponse>(
+  sessionId: string,
+  limit = 50
+): Promise<BridgeSessionRun[] | null> {
+  const response = await fetchBridgeJson<BridgeSessionRunsResponse>(
     connection,
-    `/sessions/${sessionId}/messages?afterSeq=0&limit=500`
+    `/sessions/${sessionId}/runs?limit=${limit}`
   ).catch(() => ({ ok: false as const, status: 0 }));
   if (!response.ok) {
     return null;
   }
-  await saveMessages(response.data.messages).catch(() => undefined);
-  return response.data.messages;
+  return response.data.runs;
 }
 
-async function fetchRunById(connection: BridgeConnection, runId: string): Promise<BridgeSessionRun | null> {
-  const response = await fetchBridgeJson<BridgeSessionRunResponse>(
+async function fetchRunApprovalsFromBackend(
+  connection: BridgeConnection,
+  sessionId: string,
+  runId: string,
+  status: "pending" | "all" = "all"
+): Promise<BridgeRunApproval[] | null> {
+  const response = await fetchBridgeJson<BridgeSessionRunApprovalsResponse>(
     connection,
-    `/runs/${runId}`
+    `/sessions/${sessionId}/runs/${runId}/approvals?status=${status}`
   ).catch(() => ({ ok: false as const, status: 0 }));
   if (!response.ok) {
     return null;
   }
-  return response.data.run;
+  return response.data.approvals;
+}
+
+async function fetchRunEventsFromBackend(
+  connection: BridgeConnection,
+  sessionId: string,
+  runId: string,
+  limit = 2000
+): Promise<BridgeRunStreamEvent[] | null> {
+  const response = await fetchBridgeJson<BridgeSessionRunEventsResponse>(
+    connection,
+    `/sessions/${sessionId}/runs/${runId}/events?limit=${limit}`
+  ).catch(() => ({ ok: false as const, status: 0 }));
+  if (!response.ok) {
+    return null;
+  }
+  return response.data.events;
 }
 
 function isRunInFlight(status: BridgeSessionRun["status"]): boolean {
@@ -2775,6 +3794,7 @@ function areMessageListsEqual(left: ChatMessage[], right: ChatMessage[]): boolea
       a.seq !== b.seq ||
       a.role !== b.role ||
       a.adapter !== b.adapter ||
+      a.model !== b.model ||
       a.content !== b.content ||
       a.createdAt !== b.createdAt
     ) {
@@ -2783,6 +3803,95 @@ function areMessageListsEqual(left: ChatMessage[], right: ChatMessage[]): boolea
   }
 
   return true;
+}
+
+function upsertApproval(list: BridgeRunApproval[], approval: BridgeRunApproval): BridgeRunApproval[] {
+  const index = list.findIndex((item) => item.id === approval.id);
+  if (index < 0) {
+    return [...list, approval];
+  }
+  const next = [...list];
+  next[index] = approval;
+  return next;
+}
+
+function renderDecisionLabel(locale: Locale, decision: unknown): string {
+  if (decision === "accept") {
+    return locale === "zh-CN" ? "允许本次" : "Allow once";
+  }
+  if (decision === "acceptForSession") {
+    return locale === "zh-CN" ? "允许会话内" : "Allow for session";
+  }
+  if (decision === "decline") {
+    return locale === "zh-CN" ? "拒绝" : "Decline";
+  }
+  if (decision === "cancel") {
+    return locale === "zh-CN" ? "取消" : "Cancel";
+  }
+
+  if (decision && typeof decision === "object" && !Array.isArray(decision)) {
+    const key = Object.keys(decision)[0];
+    if (key === "acceptWithExecpolicyAmendment") {
+      return locale === "zh-CN" ? "允许并记住规则" : "Allow + remember rule";
+    }
+    if (key === "applyNetworkPolicyAmendment") {
+      return locale === "zh-CN" ? "允许并更新网络规则" : "Allow + network rule";
+    }
+    return key ?? String(decision);
+  }
+
+  return String(decision);
+}
+
+function renderApprovalStatus(
+  locale: Locale,
+  status: BridgeRunApproval["status"],
+  decision: unknown
+): JSX.Element {
+  if (status === "PENDING") {
+    return <span>{locale === "zh-CN" ? "待处理" : "Pending"}</span>;
+  }
+
+  const isSessionAllow = decision === "acceptForSession";
+  const isAccepted = status === "APPROVED";
+  const isDeclined = status === "DENIED" || status === "CANCELLED" || status === "TIMEOUT" || status === "FAILED";
+
+  if (isAccepted) {
+    return (
+      <span style={{ display: "inline-flex", alignItems: "center", gap: 4, color: "var(--hint-info-text)" }}>
+        <Icon icon={isSessionAllow ? checkAllIcon : checkIcon} width={14} height={14} />
+        <span>{locale === "zh-CN" ? "已允许" : "Approved"}</span>
+      </span>
+    );
+  }
+
+  if (isDeclined) {
+    return (
+      <span style={{ display: "inline-flex", alignItems: "center", gap: 4, color: "var(--hint-error-text)" }}>
+        <Icon icon={alertCircleOutline} width={14} height={14} />
+        <span>{locale === "zh-CN" ? "已拒绝" : "Denied"}</span>
+      </span>
+    );
+  }
+
+  return <span>{status}</span>;
+}
+
+function stableDecisionKey(decision: unknown): string {
+  try {
+    return JSON.stringify(decision, (_key, value) => {
+      if (!value || typeof value !== "object" || Array.isArray(value)) {
+        return value;
+      }
+      return Object.fromEntries(
+        Object.keys(value as Record<string, unknown>)
+          .sort((a, b) => a.localeCompare(b))
+          .map((key) => [key, (value as Record<string, unknown>)[key]])
+      );
+    });
+  } catch {
+    return String(decision);
+  }
 }
 
 function buildBridgeHeaders(connection: BridgeConnection, includeJsonContentType = false): Record<string, string> {
@@ -2901,6 +4010,39 @@ const messageRenderToggleStyle: CSSProperties = {
   fontSize: 12,
   textDecoration: "underline",
   textUnderlineOffset: 2
+};
+
+const approvalCardStyle: CSSProperties = {
+  border: "1px solid var(--line)",
+  borderRadius: 10,
+  padding: "8px 10px",
+  background: "var(--panel)"
+};
+
+const collapsibleBlockStyle: CSSProperties = {
+  border: "1px solid var(--line)",
+  borderRadius: 10,
+  background: "var(--panel)"
+};
+
+const collapsibleSummaryStyle: CSSProperties = {
+  padding: "8px 10px",
+  cursor: "pointer",
+  fontSize: 12,
+  fontWeight: 600
+};
+
+const collapsibleContentStyle: CSSProperties = {
+  margin: 0,
+  padding: "0 10px 10px",
+  whiteSpace: "pre-wrap",
+  wordBreak: "break-word",
+  fontSize: 12,
+  fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace"
+};
+
+const collapsibleMarkdownBodyStyle: CSSProperties = {
+  padding: "0 10px 10px"
 };
 
 const rawMessageContentStyle: CSSProperties = {

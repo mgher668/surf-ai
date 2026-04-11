@@ -22,7 +22,13 @@ export class ClaudeAdapter implements AgentAdapter {
 
   public async generate(request: BridgeChatRequest, signal?: AbortSignal): Promise<string> {
     const prompt = buildPrompt(request);
-    const result = await runProcess("claude", ["-p", prompt], CLAUDE_TIMEOUT_MS, signal);
+    const modelArg = normalizeModel(request.model);
+    const result = await runProcess(
+      "claude",
+      ["-p", ...(modelArg ? ["--model", modelArg] : []), prompt],
+      CLAUDE_TIMEOUT_MS,
+      signal
+    );
 
     if (result.code !== 0) {
       throw new Error(result.stderr || `claude exited with code ${result.code ?? "unknown"}`);
@@ -41,9 +47,18 @@ export class ClaudeAdapter implements AgentAdapter {
     signal?: AbortSignal
   ): Promise<ClaudeSessionResult> {
     const prompt = buildPrompt(request);
+    const modelArg = normalizeModel(request.model);
     const result = await runProcess(
       "claude",
-      ["-p", "--output-format", "json", "--session-id", providerSessionId, prompt],
+      [
+        "-p",
+        "--output-format",
+        "json",
+        ...(modelArg ? ["--model", modelArg] : []),
+        "--session-id",
+        providerSessionId,
+        prompt
+      ],
       CLAUDE_TIMEOUT_MS,
       signal
     );
@@ -58,11 +73,21 @@ export class ClaudeAdapter implements AgentAdapter {
   public async resumeWithSession(
     providerSessionId: string,
     prompt: string,
+    model: string | undefined,
     signal?: AbortSignal
   ): Promise<string> {
+    const modelArg = normalizeModel(model);
     const result = await runProcess(
       "claude",
-      ["-p", "--output-format", "json", "--resume", providerSessionId, prompt],
+      [
+        "-p",
+        "--output-format",
+        "json",
+        ...(modelArg ? ["--model", modelArg] : []),
+        "--resume",
+        providerSessionId,
+        prompt
+      ],
       CLAUDE_TIMEOUT_MS,
       signal
     );
@@ -137,4 +162,18 @@ function findLastClaudeResultEvent(stdout: string): ClaudeJsonResultEvent | null
   }
 
   return null;
+}
+
+function normalizeModel(model: string | undefined): string | undefined {
+  if (!model) {
+    return undefined;
+  }
+  const normalized = model.trim();
+  if (!normalized) {
+    return undefined;
+  }
+  if (normalized.toLowerCase() === "auto") {
+    return undefined;
+  }
+  return normalized;
 }

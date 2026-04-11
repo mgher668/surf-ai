@@ -19,9 +19,15 @@ import type {
   BridgeSessionRunsResponse,
   BridgeSessionRenameRequest,
   BridgeSessionRenameResponse,
+  BridgeSessionRunApprovalDecisionRequest,
+  BridgeSessionRunApprovalDecisionResponse,
+  BridgeSessionRunApprovalsResponse,
+  BridgeSessionRunEventsResponse,
+  BridgeRunStreamEvent,
   BridgeSessionSendMessageResponse,
   BridgeSessionStarRequest,
   BridgeModelsResponse,
+  BridgeModelsUpdateRequest,
   BridgeTtsRequest,
   BridgeTtsResponse
 } from "@surf-ai/shared";
@@ -31,14 +37,21 @@ import { BridgeStore } from "./core/store";
 import { SessionManager } from "./core/session-manager";
 import { FixedWindowRateLimiter } from "./core/rate-limit";
 import { synthesizeWithMiniMax, TtsError } from "./tts/minimax";
+import { RunEventBus } from "./core/run-event-bus";
+import { RuntimeManager } from "./core/runtime-manager";
 
 const config = readConfig();
 const registry = new AdapterRegistry();
 const store = new BridgeStore(config.dbPath, config.users);
 const sessionManager = new SessionManager(store, registry);
 const rateLimiter = new FixedWindowRateLimiter(config.security.rateLimit);
+const runEventBus = new RunEventBus();
+const runtimeManager = new RuntimeManager(store, runEventBus);
 const activeRunControllers = new Map<string, AbortController>();
 const recoveredInterruptedRuns = store.recoverInterruptedRuns("bridge_restarted_before_run_completed");
+const recoveredInterruptedApprovals = store.recoverPendingApprovals(
+  "bridge_restarted_before_approval_decision"
+);
 
 const app = Fastify({
   logger: true,
@@ -50,6 +63,27 @@ if (recoveredInterruptedRuns > 0) {
     { recoveredInterruptedRuns },
     "Marked interrupted session runs as failed after bridge restart"
   );
+  recordAuditEvent({
+    eventType: "bridge_restarted_abort_run",
+    level: "WARN",
+    details: {
+      count: recoveredInterruptedRuns
+    }
+  });
+}
+
+if (recoveredInterruptedApprovals > 0) {
+  app.log.warn(
+    { recoveredInterruptedApprovals },
+    "Marked pending approvals as failed after bridge restart"
+  );
+  recordAuditEvent({
+    eventType: "bridge_restarted_abort_approval",
+    level: "WARN",
+    details: {
+      count: recoveredInterruptedApprovals
+    }
+  });
 }
 
 await app.register(cors, {
@@ -152,14 +186,19 @@ app.get("/health", async () => {
   const response: BridgeHealthResponse = {
     ok: true,
     version: "0.1.0",
-    adapters: registry.listModels().map((model) => model.adapter),
+    adapters: registry.listNativeAdapters(),
     now: new Date().toISOString()
   };
   return response;
 });
 
-app.get("/models", async () => {
-  const response: BridgeModelsResponse = { models: registry.listModels() };
+app.get("/models", async (request, reply) => {
+  const userId = requireAuthedUserId(request, reply);
+  if (!userId) {
+    return;
+  }
+
+  const response: BridgeModelsResponse = { models: store.listModels(userId) };
   return response;
 });
 
@@ -170,7 +209,7 @@ app.get("/capabilities", async () => {
     chat: {
       adapters: registry.listAdapterCapabilities(config.defaultAdapter),
       defaultAdapter: config.defaultAdapter,
-      supportsModelOverride: false
+      supportsModelOverride: true
     },
     tts: {
       minimax: {
@@ -190,9 +229,22 @@ const chatContextSchema = z.object({
   pageTextSource: z.enum(["readability", "dom"]).optional()
 });
 
+const codexReasoningEffortSchema = z.enum(["minimal", "low", "medium", "high", "xhigh"]);
+
+const bridgeModelSchema = z.object({
+  id: z.string().trim().min(1).max(120),
+  label: z.string().trim().min(1).max(120),
+  adapter: z.enum(["codex", "claude", "openai-compatible", "anthropic", "gemini", "mock"]),
+  enabled: z.boolean(),
+  isDefault: z.boolean(),
+  modelReasoningEffort: codexReasoningEffortSchema.optional()
+});
+type BridgeModelInput = z.infer<typeof bridgeModelSchema>;
+
 const chatRequestSchema = z.object({
   adapter: z.enum(["codex", "claude", "openai-compatible", "anthropic", "gemini", "mock"]),
   model: z.string().optional(),
+  modelReasoningEffort: codexReasoningEffortSchema.optional(),
   sessionId: z.string().min(1),
   messages: z.array(
     z.object({
@@ -222,6 +274,7 @@ const updateAdapterSchema = z.object({
 const sendSessionMessageSchema = z.object({
   adapter: z.enum(["codex", "claude", "openai-compatible", "anthropic", "gemini", "mock"]),
   model: z.string().optional(),
+  modelReasoningEffort: codexReasoningEffortSchema.optional(),
   content: z.string().trim().min(1),
   context: chatContextSchema.optional()
 });
@@ -229,12 +282,26 @@ const sendSessionMessageSchema = z.object({
 const createSessionRunSchema = z.object({
   adapter: z.enum(["codex", "claude", "openai-compatible", "anthropic", "gemini", "mock"]),
   model: z.string().optional(),
+  modelReasoningEffort: codexReasoningEffortSchema.optional(),
   content: z.string().trim().min(1),
   context: chatContextSchema.optional()
 });
 
 const listSessionRunsQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(50).optional()
+});
+
+const listRunApprovalsQuerySchema = z.object({
+  status: z.enum(["pending", "all"]).optional()
+});
+
+const listRunEventsQuerySchema = z.object({
+  limit: z.coerce.number().int().min(1).max(5000).optional()
+});
+
+const approvalDecisionSchema = z.object({
+  decision: z.unknown(),
+  reason: z.string().trim().min(1).max(500).optional()
 });
 
 const listSessionMessagesQuerySchema = z.object({
@@ -259,6 +326,10 @@ const purgeMaintenanceSchema = z.object({
   auditDays: z.coerce.number().int().min(1).max(3_650).optional()
 });
 
+const updateModelsSchema = z.object({
+  models: z.array(bridgeModelSchema).max(500)
+});
+
 app.get("/sessions", async (request, reply) => {
   const userId = requireAuthedUserId(request, reply);
   if (!userId) {
@@ -267,6 +338,28 @@ app.get("/sessions", async (request, reply) => {
 
   const response: BridgeSessionListResponse = {
     sessions: store.listSessions(userId)
+  };
+  return response;
+});
+
+app.put("/models", async (request, reply) => {
+  const userId = requireAuthedUserId(request, reply);
+  if (!userId) {
+    return;
+  }
+
+  const parsed = updateModelsSchema.safeParse(request.body);
+  if (!parsed.success) {
+    reply.code(400);
+    return { error: "invalid_request", details: parsed.error.flatten() };
+  }
+
+  const payload = parsed.data;
+  const response: BridgeModelsResponse = {
+    models: store.replaceModels(
+      userId,
+      payload.models.map((item) => normalizeBridgeModel(item))
+    )
   };
   return response;
 });
@@ -458,32 +551,50 @@ app.post("/sessions/:id/runs", async (request, reply) => {
     return { error: "session_run_in_progress", run: inFlightRun };
   }
 
+  if (store.countActiveRuns(userId) >= 10) {
+    reply.code(429);
+    return {
+      error: "too_many_concurrent_turns",
+      message: "Reached per-user concurrent run limit (10)."
+    };
+  }
+
   const sessionWithAdapter =
     store.updateSessionLastAdapter(userId, sessionId, parsed.data.adapter) ?? existingSession;
+  const requestedModel = normalizeRequestedModel(parsed.data.model);
   store.updateSessionStatus(userId, sessionId, "RUNNING");
   const userMessage = store.appendMessage(
     userId,
     sessionId,
     "user",
     parsed.data.content,
-    parsed.data.adapter
+    parsed.data.adapter,
+    requestedModel
   );
   const session = store.updateSessionStatus(userId, sessionId, "RUNNING") ?? sessionWithAdapter;
   const run = store.createSessionRun({
     userId,
     sessionId,
     adapter: parsed.data.adapter,
+    model: requestedModel,
     status: "QUEUED",
     userMessageId: userMessage.id
   });
+  publishRunStatusEvent(userId, run.id);
 
   const normalizedContext = normalizeChatContext(parsed.data.context);
+  const modelReasoningEffort = normalizeCodexReasoningEffort(
+    parsed.data.adapter,
+    parsed.data.modelReasoningEffort
+  );
   void executeSessionRun({
     userId,
     sessionId,
     runId: run.id,
     adapter: parsed.data.adapter,
-    ...(parsed.data.model ? { model: parsed.data.model } : {}),
+    content: parsed.data.content,
+    model: requestedModel,
+    ...(modelReasoningEffort ? { modelReasoningEffort } : {}),
     ...(normalizedContext ? { context: normalizedContext } : {})
   });
 
@@ -494,6 +605,195 @@ app.post("/sessions/:id/runs", async (request, reply) => {
     userMessage
   };
   return response;
+});
+
+app.get("/sessions/:id/runs/:runId/stream", async (request, reply) => {
+  const userId = requireAuthedUserId(request, reply);
+  if (!userId) {
+    return;
+  }
+
+  const params = request.params as { id: string; runId: string };
+  const sessionId = String(params.id);
+  const runId = String(params.runId);
+  const run = store.getSessionRun(userId, runId);
+  if (!run || run.sessionId !== sessionId) {
+    reply.code(404);
+    return { error: "run_not_found" };
+  }
+
+  reply.hijack();
+  reply.raw.writeHead(200, {
+    "content-type": "text/event-stream; charset=utf-8",
+    "cache-control": "no-cache, no-transform",
+    connection: "keep-alive",
+    "x-accel-buffering": "no"
+  });
+
+  const writeEvent = (event: BridgeRunStreamEvent): void => {
+    reply.raw.write(`data: ${JSON.stringify(event)}\n\n`);
+  };
+
+  const unsubscribe = runtimeManager.subscribeRunEvents(
+    userId,
+    sessionId,
+    runId,
+    writeEvent,
+    true
+  );
+  const heartbeat = setInterval(() => {
+    writeEvent({
+      eventId: randomEventId(),
+      sessionId,
+      runId,
+      type: "heartbeat",
+      ts: Date.now(),
+      data: {}
+    });
+  }, 15_000);
+
+  const close = (): void => {
+    clearInterval(heartbeat);
+    unsubscribe();
+    try {
+      reply.raw.end();
+    } catch {
+      // ignore close errors
+    }
+  };
+
+  request.raw.once("close", close);
+  request.raw.once("aborted", close);
+});
+
+app.get("/sessions/:id/runs/:runId/approvals", async (request, reply) => {
+  const userId = requireAuthedUserId(request, reply);
+  if (!userId) {
+    return;
+  }
+
+  const params = request.params as { id: string; runId: string };
+  const sessionId = String(params.id);
+  const runId = String(params.runId);
+  const run = store.getSessionRun(userId, runId);
+  if (!run || run.sessionId !== sessionId) {
+    reply.code(404);
+    return { error: "run_not_found" };
+  }
+
+  const parsed = listRunApprovalsQuerySchema.safeParse(request.query);
+  if (!parsed.success) {
+    reply.code(400);
+    return { error: "invalid_request", details: parsed.error.flatten() };
+  }
+
+  const response: BridgeSessionRunApprovalsResponse = {
+    approvals: store.listRunApprovals(
+      userId,
+      sessionId,
+      runId,
+      parsed.data.status ?? "all"
+    )
+  };
+  return response;
+});
+
+app.get("/sessions/:id/runs/:runId/events", async (request, reply) => {
+  const userId = requireAuthedUserId(request, reply);
+  if (!userId) {
+    return;
+  }
+
+  const params = request.params as { id: string; runId: string };
+  const sessionId = String(params.id);
+  const runId = String(params.runId);
+  const run = store.getSessionRun(userId, runId);
+  if (!run || run.sessionId !== sessionId) {
+    reply.code(404);
+    return { error: "run_not_found" };
+  }
+
+  const parsed = listRunEventsQuerySchema.safeParse(request.query);
+  if (!parsed.success) {
+    reply.code(400);
+    return { error: "invalid_request", details: parsed.error.flatten() };
+  }
+
+  const response: BridgeSessionRunEventsResponse = {
+    events: store.listRunEvents(
+      userId,
+      sessionId,
+      runId,
+      parsed.data.limit ?? 2000
+    )
+  };
+  return response;
+});
+
+app.post("/sessions/:id/runs/:runId/approvals/:approvalRequestId/decision", async (request, reply) => {
+  const userId = requireAuthedUserId(request, reply);
+  if (!userId) {
+    return;
+  }
+
+  const parsed = approvalDecisionSchema.safeParse(request.body);
+  if (!parsed.success) {
+    reply.code(400);
+    return { error: "invalid_request", details: parsed.error.flatten() };
+  }
+  const payload: BridgeSessionRunApprovalDecisionRequest = {
+    decision: parsed.data.decision,
+    ...(parsed.data.reason ? { reason: parsed.data.reason } : {})
+  };
+
+  const params = request.params as {
+    id: string;
+    runId: string;
+    approvalRequestId: string;
+  };
+  const sessionId = String(params.id);
+  const runId = String(params.runId);
+  const approvalRequestId = String(params.approvalRequestId);
+  const run = store.getSessionRun(userId, runId);
+  if (!run || run.sessionId !== sessionId) {
+    reply.code(404);
+    return { error: "run_not_found" };
+  }
+  if (run.adapter !== "codex") {
+    reply.code(409);
+    return { error: "approval_not_supported_for_adapter" };
+  }
+
+  try {
+    const result = await runtimeManager.submitCodexApprovalDecision({
+      userId,
+      runId,
+      approvalRequestId,
+      decision: payload.decision,
+      ...(payload.reason ? { reason: payload.reason } : {}),
+      decidedBy: userId
+    });
+    const response: BridgeSessionRunApprovalDecisionResponse = {
+      approval: result.approval
+    };
+    return response;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "approval_decision_failed";
+    if (message === "approval_request_not_found") {
+      reply.code(404);
+      return { error: message };
+    }
+    if (message === "approval_decision_invalid") {
+      reply.code(400);
+      return { error: message };
+    }
+    if (message === "approval_request_not_active") {
+      reply.code(409);
+      return { error: message };
+    }
+    reply.code(500);
+    return { error: "approval_decision_failed", message };
+  }
 });
 
 app.get("/runs/:id", async (request, reply) => {
@@ -539,6 +839,7 @@ app.post("/runs/:id/cancel", async (request, reply) => {
         finishedAt: Date.now()
       }) ?? run;
     store.updateSessionStatus(userId, run.sessionId, "IDLE");
+    publishRunStatusEvent(userId, runId);
     const response: BridgeSessionRunCancelResponse = { run: cancelled };
     return response;
   }
@@ -548,10 +849,14 @@ app.post("/runs/:id/cancel", async (request, reply) => {
       status: "CANCELLING",
       errorMessage: "cancel_requested"
     }) ?? run;
+  publishRunStatusEvent(userId, runId);
 
   const controller = activeRunControllers.get(runId);
   if (controller) {
     controller.abort();
+    if (run.adapter === "codex") {
+      await runtimeManager.cancelCodexRun(userId, runId).catch(() => undefined);
+    }
   } else {
     store.updateSessionRunStatus(userId, runId, {
       status: "CANCELLED",
@@ -559,6 +864,7 @@ app.post("/runs/:id/cancel", async (request, reply) => {
       finishedAt: Date.now()
     });
     store.updateSessionStatus(userId, run.sessionId, "IDLE");
+    publishRunStatusEvent(userId, runId);
   }
 
   const response: BridgeSessionRunCancelResponse = { run: cancelling };
@@ -700,15 +1006,22 @@ app.post("/sessions/:id/messages", async (request, reply) => {
   }
   const session =
     store.updateSessionLastAdapter(userId, sessionId, parsed.data.adapter) ?? existingSession;
+  const requestedModel = normalizeRequestedModel(parsed.data.model);
 
   const userMessage = store.appendMessage(
     userId,
     sessionId,
     "user",
     parsed.data.content,
-    parsed.data.adapter
+    parsed.data.adapter,
+    requestedModel
   );
   const normalizedContext = normalizeChatContext(parsed.data.context);
+  const modelOverride = toModelOverride(requestedModel);
+  const modelReasoningEffort = normalizeCodexReasoningEffort(
+    parsed.data.adapter,
+    parsed.data.modelReasoningEffort
+  );
 
   try {
     const sessionReply = await sessionManager.generateReply({
@@ -716,7 +1029,8 @@ app.post("/sessions/:id/messages", async (request, reply) => {
       sessionId,
       adapter: parsed.data.adapter,
       fallbackAdapter: config.defaultAdapter,
-      ...(parsed.data.model ? { model: parsed.data.model } : {}),
+      ...(modelOverride ? { model: modelOverride } : {}),
+      ...(modelReasoningEffort ? { modelReasoningEffort } : {}),
       ...(normalizedContext ? { context: normalizedContext } : {})
     });
 
@@ -726,7 +1040,8 @@ app.post("/sessions/:id/messages", async (request, reply) => {
       sessionId,
       "assistant",
       output,
-      parsed.data.adapter
+      parsed.data.adapter,
+      requestedModel
     );
 
     if (sessionReply.agentLink) {
@@ -951,12 +1266,61 @@ function normalizeHeaderValue(value: unknown): string | undefined {
   return undefined;
 }
 
+function toModelOverride(model: string | undefined): string | undefined {
+  if (!model) {
+    return undefined;
+  }
+  const normalized = model.trim();
+  if (!normalized) {
+    return undefined;
+  }
+  if (normalized.toLowerCase() === "auto") {
+    return undefined;
+  }
+  return normalized;
+}
+
+function normalizeRequestedModel(model: string | undefined): string {
+  return toModelOverride(model) ?? "auto";
+}
+
+function normalizeCodexReasoningEffort(
+  adapter: BridgeChatRequest["adapter"],
+  value: BridgeChatRequest["modelReasoningEffort"] | undefined
+): BridgeChatRequest["modelReasoningEffort"] | undefined {
+  if (adapter !== "codex") {
+    return undefined;
+  }
+  return value;
+}
+
+function normalizeBridgeModel(model: BridgeModelInput): BridgeModelsUpdateRequest["models"][number] {
+  const normalized = {
+    id: model.id,
+    label: model.label,
+    adapter: model.adapter,
+    enabled: model.enabled,
+    isDefault: model.isDefault
+  };
+
+  if (model.adapter === "codex" && model.modelReasoningEffort) {
+    return {
+      ...normalized,
+      modelReasoningEffort: model.modelReasoningEffort
+    };
+  }
+
+  return normalized;
+}
+
 async function executeSessionRun(input: {
   userId: string;
   sessionId: string;
   runId: string;
   adapter: BridgeSessionRunCreateRequest["adapter"];
+  content: string;
   model?: string;
+  modelReasoningEffort?: BridgeSessionRunCreateRequest["modelReasoningEffort"];
   context?: BridgeChatRequest["context"];
 }): Promise<void> {
   const latestRun = store.getSessionRun(input.userId, input.runId);
@@ -973,38 +1337,72 @@ async function executeSessionRun(input: {
       startedAt: Date.now()
     });
     store.updateSessionStatus(input.userId, input.sessionId, "RUNNING");
+    publishRunStatusEvent(input.userId, input.runId);
 
     if (store.getSessionRun(input.userId, input.runId)?.status === "CANCELLING") {
       controller.abort();
     }
 
-    const sessionReply = await sessionManager.generateReply({
-      userId: input.userId,
-      sessionId: input.sessionId,
-      adapter: input.adapter,
-      fallbackAdapter: config.defaultAdapter,
-      ...(input.model ? { model: input.model } : {}),
-      ...(input.context ? { context: input.context } : {}),
-      signal: controller.signal
-    });
+    let output = "";
+    if (input.adapter === "codex") {
+      const runtimeResult = await runtimeManager.runWithCodex({
+        userId: input.userId,
+        sessionId: input.sessionId,
+        runId: input.runId,
+        adapter: input.adapter,
+        content: input.content,
+        ...(input.model ? { model: input.model } : {}),
+        ...(input.modelReasoningEffort
+          ? { modelReasoningEffort: input.modelReasoningEffort }
+          : {}),
+        ...(input.context ? { context: input.context } : {})
+      });
+      output = runtimeResult.output;
+      const syncedSeq = store.listAllMessagesBySession(input.userId, input.sessionId).at(-1)?.seq ?? 0;
+      sessionManager.syncAgentLink(
+        input.userId,
+        input.sessionId,
+        "codex",
+        runtimeResult.threadId,
+        syncedSeq
+      );
+    } else {
+      const modelOverride = toModelOverride(input.model);
+      const sessionReply = await sessionManager.generateReply({
+        userId: input.userId,
+        sessionId: input.sessionId,
+        adapter: input.adapter,
+        fallbackAdapter: config.defaultAdapter,
+        ...(modelOverride ? { model: modelOverride } : {}),
+        ...(input.modelReasoningEffort
+          ? { modelReasoningEffort: input.modelReasoningEffort }
+          : {}),
+        ...(input.context ? { context: input.context } : {}),
+        signal: controller.signal
+      });
+      output = sessionReply.output;
+
+      if (sessionReply.agentLink) {
+        const syncedSeq =
+          store.listAllMessagesBySession(input.userId, input.sessionId).at(-1)?.seq ?? 0;
+        sessionManager.syncAgentLink(
+          input.userId,
+          input.sessionId,
+          sessionReply.agentLink.provider,
+          sessionReply.agentLink.providerSessionId,
+          syncedSeq
+        );
+      }
+    }
 
     const assistantMessage = store.appendMessage(
       input.userId,
       input.sessionId,
       "assistant",
-      sessionReply.output,
-      input.adapter
+      output,
+      input.adapter,
+      normalizeRequestedModel(input.model)
     );
-
-    if (sessionReply.agentLink) {
-      sessionManager.syncAgentLink(
-        input.userId,
-        input.sessionId,
-        sessionReply.agentLink.provider,
-        sessionReply.agentLink.providerSessionId,
-        assistantMessage.seq ?? 0
-      );
-    }
 
     store.updateSessionRunStatus(input.userId, input.runId, {
       status: "SUCCEEDED",
@@ -1012,6 +1410,7 @@ async function executeSessionRun(input: {
       finishedAt: Date.now()
     });
     store.updateSessionStatus(input.userId, input.sessionId, "IDLE");
+    publishRunStatusEvent(input.userId, input.runId);
   } catch (error) {
     const latest = store.getSessionRun(input.userId, input.runId);
     const cancelled =
@@ -1024,6 +1423,7 @@ async function executeSessionRun(input: {
         finishedAt: Date.now()
       });
       store.updateSessionStatus(input.userId, input.sessionId, "IDLE");
+      publishRunStatusEvent(input.userId, input.runId);
       return;
     }
 
@@ -1034,6 +1434,8 @@ async function executeSessionRun(input: {
       finishedAt: Date.now()
     });
     store.updateSessionStatus(input.userId, input.sessionId, "ERROR");
+    publishRunStatusEvent(input.userId, input.runId);
+    publishRunErrorEvent(input.userId, input.runId, message);
     recordAuditEvent({
       userId: input.userId,
       eventType: "session_run_failed",
@@ -1067,6 +1469,44 @@ function toRunErrorMessage(error: unknown): string {
     return error.message.slice(0, 500);
   }
   return "unknown session run error";
+}
+
+function publishRunStatusEvent(userId: string, runId: string): void {
+  const run = store.getSessionRun(userId, runId);
+  if (!run) {
+    return;
+  }
+  const event: BridgeRunStreamEvent = {
+    eventId: randomEventId(),
+    sessionId: run.sessionId,
+    runId: run.id,
+    type: "run.status",
+    ts: Date.now(),
+    data: { run }
+  };
+  store.appendRunEvent(userId, event);
+  runEventBus.publish(event);
+}
+
+function publishRunErrorEvent(userId: string, runId: string, message: string): void {
+  const run = store.getSessionRun(userId, runId);
+  if (!run) {
+    return;
+  }
+  const event: BridgeRunStreamEvent = {
+    eventId: randomEventId(),
+    sessionId: run.sessionId,
+    runId: run.id,
+    type: "error",
+    ts: Date.now(),
+    data: { message }
+  };
+  store.appendRunEvent(userId, event);
+  runEventBus.publish(event);
+}
+
+function randomEventId(): string {
+  return `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
 function normalizeChatContext(

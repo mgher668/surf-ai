@@ -437,23 +437,103 @@ Error examples:
 
 MiniMax credentials must be configured in bridge env (`apps/bridge/.env.example`), not in extension UI.
 
-## Planned API (Backend Session Mode)
+## Run Streaming APIs (Codex App Server)
 
-For future shared backend deployment mode, session/message authority moves to bridge server.
-See `docs/BACKEND_SESSION_MODE.md` for full flow.
+Codex run path is now app-server based for `/sessions/:id/runs`.
 
-Proposed endpoints:
+### POST /sessions/:id/runs
 
-- `POST /sessions`
-- `GET /sessions`
-- `POST /sessions/:id/star`
-- `DELETE /sessions/:id`
-- `GET /sessions/:id/messages?afterSeq=...`
-- `POST /sessions/:id/messages`
+Creates a queued run and appends the user message.
 
-Codex/Claude continuity rule in this mode:
+Behavior:
 
-- Always resume with explicit provider session id.
-- Never rely on `--last` in backend automation.
-- Maintain per-adapter sync cursor (`synced_seq`) for delta handoff.
-- Handoff uses adaptive context packaging (summary + dynamic recent window + evidence refs).
+- per-user concurrent active run cap is `10`.
+- over cap returns `429` with `error=too_many_concurrent_turns`.
+
+### GET /sessions/:id/runs/:runId/stream
+
+Server-Sent Events stream for one run.
+
+Response header:
+
+- `content-type: text/event-stream`
+
+Data frame (`data: ...`):
+
+```json
+{
+  "eventId": "evt_xxx",
+  "sessionId": "session-id",
+  "runId": "run-id",
+  "type": "approval.requested",
+  "ts": 1770000000000,
+  "data": {}
+}
+```
+
+Current event types:
+
+- `run.started`
+- `run.status`
+- `assistant.delta`
+- `assistant.completed`
+- `reasoning.summary.delta`
+- `reasoning.text.delta`
+- `command.output.delta`
+- `approval.requested`
+- `approval.updated`
+- `error`
+- `heartbeat`
+
+### GET /sessions/:id/runs/:runId/approvals?status=pending|all
+
+List approval records for one run.
+
+Response:
+
+```json
+{
+  "approvals": [
+    {
+      "id": "uuid",
+      "approvalRequestId": "req-1",
+      "kind": "commandExecution",
+      "status": "PENDING",
+      "availableDecisions": ["accept", "acceptForSession", "decline", "cancel"],
+      "payload": {}
+    }
+  ]
+}
+```
+
+### POST /sessions/:id/runs/:runId/approvals/:approvalRequestId/decision
+
+Submit one approval decision.
+
+Request:
+
+```json
+{
+  "decision": "accept",
+  "reason": "optional"
+}
+```
+
+Response:
+
+```json
+{
+  "approval": {
+    "id": "uuid",
+    "status": "APPROVED",
+    "decision": "accept"
+  }
+}
+```
+
+### Restart Recovery
+
+On bridge startup:
+
+- interrupted runs (`QUEUED/RUNNING/CANCELLING`) are marked `FAILED`;
+- pending approvals are marked `FAILED`.

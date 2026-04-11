@@ -9,6 +9,9 @@ import { runProcess } from "../core/process";
 
 const CODEX_TIMEOUT_MS = 0;
 const DEFAULT_SESSION_INDEX_PATH = join(homedir(), ".codex", "session_index.jsonl");
+const CODEX_APPROVAL_POLICY = normalizeApprovalPolicy(
+  process.env.SURF_AI_CODEX_APPROVAL_POLICY
+);
 
 interface CodexResult {
   output: string;
@@ -49,7 +52,12 @@ export class CodexAdapter implements AgentAdapter {
     return await this.withLock(async () => {
       const before = await this.readSessionIndexMap();
       const prompt = buildPrompt(request);
-      const execResult = await this.execOnce(prompt, signal);
+      const execResult = await this.execOnce(
+        prompt,
+        request.model,
+        request.modelReasoningEffort,
+        signal
+      );
       const providerSessionId =
         execResult.providerSessionId ??
         pickLatestUpdatedSessionId(before, await this.readSessionIndexMap());
@@ -70,12 +78,25 @@ export class CodexAdapter implements AgentAdapter {
   public async resumeWithSession(
     providerSessionId: string,
     prompt: string,
+    model: string | undefined,
+    modelReasoningEffort: BridgeChatRequest["modelReasoningEffort"] | undefined,
     signal?: AbortSignal
   ): Promise<string> {
     return await this.withLock(async () => {
+      const modelArg = normalizeModel(model);
+      const reasoningArgs = buildReasoningArgs(modelReasoningEffort);
       const result = await runProcess(
         "codex",
-        ["exec", "resume", "--skip-git-repo-check", providerSessionId, prompt],
+        [
+          ...buildGlobalArgs(),
+          "exec",
+          "resume",
+          "--skip-git-repo-check",
+          ...reasoningArgs,
+          ...(modelArg ? ["--model", modelArg] : []),
+          providerSessionId,
+          prompt
+        ],
         CODEX_TIMEOUT_MS,
         signal
       );
@@ -83,13 +104,30 @@ export class CodexAdapter implements AgentAdapter {
     });
   }
 
-  private async execOnce(prompt: string, signal?: AbortSignal): Promise<ExecOnceResult> {
+  private async execOnce(
+    prompt: string,
+    model: string | undefined,
+    modelReasoningEffort: BridgeChatRequest["modelReasoningEffort"] | undefined,
+    signal?: AbortSignal
+  ): Promise<ExecOnceResult> {
     const tmpDir = await mkdtemp(join(tmpdir(), "surf-ai-codex-"));
     const outputPath = join(tmpDir, "last-message.txt");
     try {
+      const modelArg = normalizeModel(model);
+      const reasoningArgs = buildReasoningArgs(modelReasoningEffort);
       const result = await runProcess(
         "codex",
-        ["exec", "--skip-git-repo-check", "--json", "--output-last-message", outputPath, prompt],
+        [
+          ...buildGlobalArgs(),
+          "exec",
+          "--skip-git-repo-check",
+          ...reasoningArgs,
+          ...(modelArg ? ["--model", modelArg] : []),
+          "--json",
+          "--output-last-message",
+          outputPath,
+          prompt
+        ],
         CODEX_TIMEOUT_MS,
         signal
       );
@@ -281,4 +319,39 @@ function parseCodexJsonLines(stdout: string): CodexJsonEvent[] {
     }
   }
   return events;
+}
+
+function normalizeModel(model: string | undefined): string | undefined {
+  if (!model) {
+    return undefined;
+  }
+  const normalized = model.trim();
+  if (!normalized) {
+    return undefined;
+  }
+  if (normalized.toLowerCase() === "auto") {
+    return undefined;
+  }
+  return normalized;
+}
+
+function buildReasoningArgs(
+  modelReasoningEffort: BridgeChatRequest["modelReasoningEffort"] | undefined
+): string[] {
+  if (!modelReasoningEffort) {
+    return [];
+  }
+  return ["-c", `model_reasoning_effort="${modelReasoningEffort}"`];
+}
+
+function buildGlobalArgs(): string[] {
+  return ["-a", CODEX_APPROVAL_POLICY];
+}
+
+function normalizeApprovalPolicy(raw: string | undefined): "untrusted" | "on-request" | "never" {
+  if (raw === "untrusted" || raw === "on-request" || raw === "never") {
+    return raw;
+  }
+  // bridge runs codex non-interactively; defaulting to "never" avoids stuck/cancelled tool calls.
+  return "never";
 }

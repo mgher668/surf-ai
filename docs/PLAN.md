@@ -94,3 +94,4 @@ Progress update:
 
 - 2026-04-06: retrieval enhancement completed (session-local hybrid recall/ranking on top of BM25).
 - 2026-04-06: lightweight security alert UX completed (sidepanel runtime alert + extension badge + recent audit preview).
+- 2026-04-09: codex run path migrated to App Server runtime (`/sessions/:id/runs`), with SSE run stream and inline approval APIs (`/stream`, `/approvals`, `/decision`).

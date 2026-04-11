@@ -41,6 +41,7 @@ export interface ChatSession {
 }
 
 export type MessageRole = "user" | "assistant" | "system";
+export type CodexReasoningEffort = "minimal" | "low" | "medium" | "high" | "xhigh";
 
 export interface ChatMessage {
   id: string;
@@ -48,6 +49,7 @@ export interface ChatMessage {
   seq?: number;
   role: MessageRole;
   adapter?: BridgeAdapter;
+  model?: string;
   content: string;
   createdAt: number;
 }
@@ -121,12 +123,20 @@ export interface BridgeHealthResponse {
 }
 
 export interface BridgeModel {
+  // Model id passed to CLI --model. Use "auto" to keep provider default.
   id: string;
   label: string;
   adapter: BridgeAdapter;
+  enabled: boolean;
+  isDefault: boolean;
+  modelReasoningEffort?: CodexReasoningEffort;
 }
 
 export interface BridgeModelsResponse {
+  models: BridgeModel[];
+}
+
+export interface BridgeModelsUpdateRequest {
   models: BridgeModel[];
 }
 
@@ -159,6 +169,7 @@ export interface BridgeCapabilitiesResponse {
 export interface BridgeChatRequest {
   adapter: BridgeAdapter;
   model?: string;
+  modelReasoningEffort?: CodexReasoningEffort;
   sessionId: string;
   messages: Array<{ role: MessageRole; content: string }>;
   context?: {
@@ -199,6 +210,7 @@ export interface BridgeSessionSendMessageRequest {
   adapter: BridgeAdapter;
   content: string;
   model?: string;
+  modelReasoningEffort?: CodexReasoningEffort;
   context?: BridgeChatRequest["context"];
 }
 
@@ -212,6 +224,7 @@ export interface BridgeSessionRun {
   id: string;
   sessionId: string;
   adapter: BridgeAdapter;
+  model?: string;
   status: SessionRunStatus;
   userMessageId: string;
   assistantMessageId?: string;
@@ -226,6 +239,7 @@ export interface BridgeSessionRunCreateRequest {
   adapter: BridgeAdapter;
   content: string;
   model?: string;
+  modelReasoningEffort?: CodexReasoningEffort;
   context?: BridgeChatRequest["context"];
 }
 
@@ -246,6 +260,162 @@ export interface BridgeSessionRunsResponse {
 export interface BridgeSessionRunCancelResponse {
   run: BridgeSessionRun;
 }
+
+export type BridgeApprovalKind =
+  | "commandExecution"
+  | "fileChange"
+  | "permissions"
+  | "toolUserInput";
+
+export type BridgeApprovalStatus =
+  | "PENDING"
+  | "APPROVED"
+  | "DENIED"
+  | "CANCELLED"
+  | "TIMEOUT"
+  | "FAILED";
+
+export interface BridgeRunApproval {
+  id: string;
+  userId: string;
+  sessionId: string;
+  runId: string;
+  adapter: BridgeAdapter;
+  threadId?: string;
+  turnId?: string;
+  approvalRequestId: string;
+  kind: BridgeApprovalKind;
+  title?: string;
+  payload: Record<string, unknown>;
+  availableDecisions: unknown[];
+  status: BridgeApprovalStatus;
+  decision?: unknown;
+  decidedBy?: string;
+  decisionReason?: string;
+  requestedAt: number;
+  decidedAt?: number;
+  expiresAt: number;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface BridgeSessionRunApprovalsResponse {
+  approvals: BridgeRunApproval[];
+}
+
+export interface BridgeSessionRunEventsResponse {
+  events: BridgeRunStreamEvent[];
+}
+
+export interface BridgeSessionRunApprovalDecisionRequest {
+  decision: unknown;
+  reason?: string;
+}
+
+export interface BridgeSessionRunApprovalDecisionResponse {
+  approval: BridgeRunApproval;
+}
+
+export type BridgeRunStreamEventType =
+  | "run.started"
+  | "run.status"
+  | "assistant.delta"
+  | "assistant.completed"
+  | "reasoning.summary.delta"
+  | "reasoning.text.delta"
+  | "command.output.delta"
+  | "approval.requested"
+  | "approval.updated"
+  | "error"
+  | "heartbeat";
+
+export type BridgeAssistantMessagePhase = "commentary" | "final_answer" | "unknown";
+
+export interface BridgeRunStreamEventEnvelope<
+  Type extends BridgeRunStreamEventType,
+  Data
+> {
+  eventId: string;
+  sessionId: string;
+  runId: string;
+  type: Type;
+  ts: number;
+  data: Data;
+}
+
+export type BridgeRunStreamEvent =
+  | BridgeRunStreamEventEnvelope<
+      "run.started",
+      {
+        run: BridgeSessionRun;
+        threadId?: string;
+        turnId?: string;
+      }
+    >
+  | BridgeRunStreamEventEnvelope<
+      "run.status",
+      {
+        run: BridgeSessionRun;
+      }
+    >
+  | BridgeRunStreamEventEnvelope<
+      "assistant.delta",
+      {
+        delta: string;
+        itemId?: string;
+        phase?: BridgeAssistantMessagePhase;
+      }
+    >
+  | BridgeRunStreamEventEnvelope<
+      "assistant.completed",
+      {
+        message?: ChatMessage;
+        content?: string;
+        itemId?: string;
+        phase?: BridgeAssistantMessagePhase;
+      }
+    >
+  | BridgeRunStreamEventEnvelope<
+      "reasoning.summary.delta",
+      {
+        itemId: string;
+        delta: string;
+      }
+    >
+  | BridgeRunStreamEventEnvelope<
+      "reasoning.text.delta",
+      {
+        itemId: string;
+        delta: string;
+      }
+    >
+  | BridgeRunStreamEventEnvelope<
+      "command.output.delta",
+      {
+        itemId: string;
+        delta: string;
+      }
+    >
+  | BridgeRunStreamEventEnvelope<
+      "approval.requested",
+      {
+        approval: BridgeRunApproval;
+      }
+    >
+  | BridgeRunStreamEventEnvelope<
+      "approval.updated",
+      {
+        approval: BridgeRunApproval;
+      }
+    >
+  | BridgeRunStreamEventEnvelope<
+      "error",
+      {
+        message: string;
+        code?: string;
+      }
+    >
+  | BridgeRunStreamEventEnvelope<"heartbeat", Record<string, never>>;
 
 export interface BridgeSessionStarRequest {
   starred: boolean;

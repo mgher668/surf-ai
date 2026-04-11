@@ -23,6 +23,7 @@ export interface SessionReplyRequest {
   adapter: BridgeChatRequest["adapter"];
   fallbackAdapter: LocalBridgeAdapter;
   model?: string;
+  modelReasoningEffort?: BridgeChatRequest["modelReasoningEffort"];
   context?: BridgeChatRequest["context"];
   signal?: AbortSignal;
 }
@@ -110,6 +111,9 @@ export class SessionManager {
         content: item.content
       })),
       ...(request.model ? { model: request.model } : {}),
+      ...(request.modelReasoningEffort
+        ? { modelReasoningEffort: request.modelReasoningEffort }
+        : {}),
       ...(request.context ? { context: request.context } : {})
     };
 
@@ -205,6 +209,8 @@ export class SessionManager {
         const output = await codexAdapter.resumeWithSession(
           link.providerSessionId,
           resumePrompt,
+          request.model,
+          request.modelReasoningEffort,
           request.signal
         );
         return {
@@ -261,6 +267,7 @@ export class SessionManager {
         const output = await claudeAdapter.resumeWithSession(
           link.providerSessionId,
           resumePrompt,
+          request.model,
           request.signal
         );
         return {
