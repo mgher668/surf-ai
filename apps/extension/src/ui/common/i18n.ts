@@ -51,7 +51,7 @@ const dictionary = {
     languageEnUs: "English",
     favorite: "收藏",
     unfavorite: "取消收藏",
-    moreActions: "更多操作",
+    moreActions: "操作",
     renameSession: "重命名",
     renameSessionPrompt: "输入新的会话名称",
     renameSessionDescription: "修改会话标题，不影响消息内容。",

@@ -1,7 +1,16 @@
 import { useEffect, useMemo, useState } from "react";
+import { Icon } from "@iconify/react/dist/offline";
+import dotsVertical from "@iconify-icons/mdi/dots-vertical";
 import type { BridgeAdapter, BridgeModel, CodexReasoningEffort } from "@surf-ai/shared";
 import { type Locale, t } from "../../common/i18n";
 import { Button } from "../../components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger
+} from "../../components/ui/dropdown-menu";
 import { Input } from "../../components/ui/input";
 import {
   Select,
@@ -180,7 +189,7 @@ function AdapterModelsTableSection({
   return (
     <section className="grid gap-3 rounded-lg border border-border p-3">
       <div className="overflow-x-auto rounded-md border border-border">
-        <table className="w-full min-w-[760px] border-collapse text-xs">
+        <table className="w-full min-w-[680px] border-collapse text-xs">
           <thead>
             <tr className="bg-muted/40 text-muted-foreground">
               <th className="border-b border-border px-3 py-2 text-left font-medium">{t(locale, "modelId")}</th>
@@ -188,19 +197,15 @@ function AdapterModelsTableSection({
               <th className="border-b border-border px-3 py-2 text-left font-medium">
                 {t(locale, "codexReasoningEffort")}
               </th>
-              <th className="border-b border-border px-3 py-2 text-left font-medium">
-                {t(locale, "modelSetDefault")}
+              <th className="w-[104px] border-b border-border px-3 py-2 text-right font-medium">
+                {t(locale, "moreActions")}
               </th>
-              <th className="border-b border-border px-3 py-2 text-left font-medium">
-                {t(locale, "modelEnable")}
-              </th>
-              <th className="border-b border-border px-3 py-2 text-left font-medium">{t(locale, "moreActions")}</th>
             </tr>
           </thead>
           <tbody>
             {models.length === 0 ? (
               <tr>
-                <td colSpan={6} className="px-3 py-4 text-muted-foreground">
+                <td colSpan={4} className="px-3 py-4 text-muted-foreground">
                   {t(locale, "empty")}
                 </td>
               </tr>
@@ -262,38 +267,38 @@ function AdapterModelsTableSection({
                       <span className="text-muted-foreground">-</span>
                     )}
                   </td>
-                  <td className="border-b border-border px-3 py-2">
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant={item.isDefault ? "default" : "outline"}
-                      className="h-8"
-                      onClick={() => onSetDefaultModel(item.id)}
-                    >
-                      {t(locale, "modelSetDefault")}
-                    </Button>
-                  </td>
-                  <td className="border-b border-border px-3 py-2">
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant="outline"
-                      className="h-8"
-                      onClick={() => onToggleModelEnabled(item.id)}
-                    >
-                      {item.enabled ? t(locale, "modelDisable") : t(locale, "modelEnable")}
-                    </Button>
-                  </td>
-                  <td className="border-b border-border px-3 py-2">
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant="outline"
-                      className="h-8"
-                      onClick={() => onRemoveModel(item.id)}
-                    >
-                      {t(locale, "modelDelete")}
-                    </Button>
+                  <td className="border-b border-border px-3 py-2 text-right">
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon"
+                          className="h-8 w-8 text-muted-foreground hover:bg-muted/70 hover:text-foreground"
+                          aria-label={t(locale, "moreActions")}
+                        >
+                          <Icon icon={dotsVertical} width={16} height={16} />
+                        </Button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="end" className="min-w-[156px]">
+                        <DropdownMenuItem
+                          onSelect={() => onSetDefaultModel(item.id)}
+                          disabled={item.isDefault}
+                        >
+                          {t(locale, "modelSetDefault")}
+                        </DropdownMenuItem>
+                        <DropdownMenuItem onSelect={() => onToggleModelEnabled(item.id)}>
+                          {item.enabled ? t(locale, "modelDisable") : t(locale, "modelEnable")}
+                        </DropdownMenuItem>
+                        <DropdownMenuSeparator />
+                        <DropdownMenuItem
+                          onSelect={() => onRemoveModel(item.id)}
+                          className="text-destructive focus:text-destructive"
+                        >
+                          {t(locale, "modelDelete")}
+                        </DropdownMenuItem>
+                      </DropdownMenuContent>
+                    </DropdownMenu>
                   </td>
                 </tr>
               ))
