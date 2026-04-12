@@ -3,6 +3,8 @@ import { Icon } from "@iconify/react/dist/offline";
 import dotsVertical from "@iconify-icons/mdi/dots-vertical";
 import cogOutline from "@iconify-icons/mdi/cog-outline";
 import openInNew from "@iconify-icons/mdi/open-in-new";
+import menuIcon from "@iconify-icons/mdi/menu";
+import sidebarModeIcon from "@iconify-icons/mdi/page-layout-sidebar-left";
 import themeLightDark from "@iconify-icons/mdi/theme-light-dark";
 import checkIcon from "@iconify-icons/mdi/check";
 import checkAllIcon from "@iconify-icons/mdi/check-all";
@@ -46,6 +48,7 @@ import type {
   PageContentPayload,
   QuickAction,
   SelectionPayload,
+  UiSidebarMode,
   UiThemeMode,
   UiStatusBadgeLevel,
   UiToExtensionMessage,
@@ -59,10 +62,14 @@ import {
   getDefaultAdapter,
   getConnections,
   getLocale,
+  getSidebarCollapsed,
+  getSidebarMode,
   getTheme,
   getSessions,
   onStorageChanged,
   setActiveSessionId as setStoredActiveSessionId,
+  setSidebarCollapsed,
+  setSidebarMode,
   setSessions,
   setTheme
 } from "../../lib/storage";
@@ -97,6 +104,8 @@ import {
   DialogHeader,
   DialogTitle
 } from "../components/ui/dialog";
+import { Sheet, SheetContent } from "../components/ui/sheet";
+import { Sidebar, SidebarInset, SidebarProvider } from "../components/ui/sidebar";
 
 const ACTION_PROMPT_PREFIX: Record<QuickAction, string> = {
   summarize: "Please summarize this content:",
@@ -179,6 +188,9 @@ type ConversationTimelineItem =
 export function App(): JSX.Element {
   const [locale, setLocaleState] = useState<Locale>(resolveLocale(navigator.language));
   const [themeMode, setThemeModeState] = useState<UiThemeMode>("system");
+  const [sidebarMode, setSidebarModeState] = useState<UiSidebarMode>("docked");
+  const [sidebarCollapsed, setSidebarCollapsedState] = useState(false);
+  const [sidebarOverlayOpen, setSidebarOverlayOpen] = useState(false);
 
   const [connections, setConnectionsState] = useState<BridgeConnection[]>([]);
   const [activeConnectionId, setActiveConnectionIdState] = useState<string | undefined>();
@@ -256,7 +268,8 @@ export function App(): JSX.Element {
         activeRun.status === "RUNNING" ||
         activeRun.status === "CANCELLING")
   );
-  const isKeyboardShortcutBlocked = renameDialogOpen || isAnyDropdownMenuOpen || isAdapterSelectOpen;
+  const isKeyboardShortcutBlocked =
+    renameDialogOpen || isAnyDropdownMenuOpen || isAdapterSelectOpen || sidebarOverlayOpen;
   const previewMessage = useMemo(
     () => messages.find((item) => item.id === previewMessageId),
     [messages, previewMessageId]
@@ -402,6 +415,20 @@ export function App(): JSX.Element {
         setThemeModeState(nextTheme);
       }
 
+      const sidebarModeChange = changes[STORAGE_KEYS.sidebarMode];
+      if (sidebarModeChange) {
+        const nextMode = normalizeSidebarMode(sidebarModeChange.newValue);
+        setSidebarModeState(nextMode);
+        if (nextMode === "docked") {
+          setSidebarOverlayOpen(false);
+        }
+      }
+
+      const sidebarCollapsedChange = changes[STORAGE_KEYS.sidebarCollapsed];
+      if (sidebarCollapsedChange) {
+        setSidebarCollapsedState(Boolean(sidebarCollapsedChange.newValue));
+      }
+
       const connectionChanged =
         Boolean(changes[STORAGE_KEYS.connections]) ||
         Boolean(changes[STORAGE_KEYS.activeConnectionId]);
@@ -448,6 +475,38 @@ export function App(): JSX.Element {
       applyTheme("system");
     });
   }, [themeMode]);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if (event.key.toLowerCase() !== "b") {
+        return;
+      }
+      if (!(event.metaKey || event.ctrlKey) || event.altKey || event.shiftKey) {
+        return;
+      }
+
+      const target = event.target as HTMLElement | null;
+      if (
+        target?.closest(
+          "input, textarea, select, [contenteditable='true'], [role='textbox']"
+        )
+      ) {
+        return;
+      }
+
+      event.preventDefault();
+      if (sidebarMode === "overlay") {
+        setSidebarOverlayOpen((previous) => !previous);
+        return;
+      }
+      void updateSidebarCollapsedValue(!sidebarCollapsed);
+    };
+
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+    };
+  }, [sidebarMode, sidebarCollapsed]);
 
   async function consumePendingSelectionPayload(): Promise<void> {
     try {
@@ -1488,17 +1547,25 @@ export function App(): JSX.Element {
     });
   }, [messages]);
 
-  async function bootstrap(): Promise<void> {
-    const [storedLocale, storedDefaultAdapter, storedTheme] = await Promise.all([
+async function bootstrap(): Promise<void> {
+    const [storedLocale, storedDefaultAdapter, storedTheme, storedSidebarMode, storedSidebarCollapsed] =
+      await Promise.all([
       getLocale(),
       getDefaultAdapter(),
-      getTheme()
+      getTheme(),
+      getSidebarMode(),
+      getSidebarCollapsed()
     ]);
     if (storedLocale) {
       setLocaleState(resolveLocale(storedLocale));
     }
     setDefaultAdapterState(storedDefaultAdapter);
     setThemeModeState(normalizeThemeMode(storedTheme));
+    setSidebarModeState(normalizeSidebarMode(storedSidebarMode));
+    setSidebarCollapsedState(storedSidebarCollapsed);
+    if (normalizeSidebarMode(storedSidebarMode) === "docked") {
+      setSidebarOverlayOpen(false);
+    }
 
     await bootstrapConnectionsAndSessions();
   }
@@ -2539,184 +2606,258 @@ export function App(): JSX.Element {
     await setTheme(nextThemeMode);
   }
 
-  return (
-    <div style={{ display: "grid", gridTemplateColumns: "220px 1fr", height: "100vh" }}>
-      <aside
-        style={{
-          borderRight: "1px solid var(--line)",
-          background: "var(--panel)",
-          padding: 12,
-          overflowY: "auto",
-          overflowX: "hidden"
-        }}
-      >
-        <h2 style={{ margin: "0 0 10px", fontSize: 16 }}>{t(locale, "sessions")}</h2>
-        <Button type="button" onClick={() => void createNewSession()} className="w-full">
-          {t(locale, "newSession")}
-        </Button>
+  async function updateSidebarModeValue(nextMode: UiSidebarMode): Promise<void> {
+    setSidebarModeState(nextMode);
+    await setSidebarMode(nextMode);
+    if (nextMode === "docked") {
+      setSidebarOverlayOpen(false);
+      if (sidebarCollapsed) {
+        setSidebarCollapsedState(false);
+        await setSidebarCollapsed(false);
+      }
+    }
+  }
 
-        <TooltipProvider delayDuration={240}>
-          <div style={{ marginTop: 8, display: "grid", gap: 3 }}>
-            {sessions.map((session) => (
-              <Tooltip
-                key={session.id}
-                open={hoverSessionId === session.id && truncatedTitleSessionId === session.id}
-              >
-                <TooltipTrigger asChild>
-                  <div
-                    onClick={() => setActiveSessionId(session.id)}
-                    style={{
-                      position: "relative",
-                      ...rowButtonStyle,
-                      background:
-                        activeSessionId === session.id
-                          ? "var(--session-active-bg)"
-                          : hoverSessionId === session.id
-                            ? "var(--session-hover-bg)"
-                            : "transparent",
-                      transition: "background-color 150ms ease",
-                      cursor: "pointer",
-                      padding: "2px 4px 2px 8px",
-                      gap: 4,
-                      overflow: "hidden"
-                    }}
-                    onMouseEnter={(event) => {
-                      setHoverSessionId(session.id);
-                      const titleElement = event.currentTarget.querySelector(
-                        "[data-session-title='true']"
-                      ) as HTMLElement | null;
+  async function updateSidebarCollapsedValue(nextCollapsed: boolean): Promise<void> {
+    setSidebarCollapsedState(nextCollapsed);
+    await setSidebarCollapsed(nextCollapsed);
+  }
 
-                      if (!titleElement || titleElement.scrollWidth <= titleElement.clientWidth) {
-                        setTruncatedTitleSessionId((previous) =>
-                          previous === session.id ? undefined : previous
-                        );
-                        return;
-                      }
+  function toggleSidebarPanel(): void {
+    if (sidebarMode === "overlay") {
+      setSidebarOverlayOpen((previous) => !previous);
+      return;
+    }
+    void updateSidebarCollapsedValue(!sidebarCollapsed);
+  }
 
-                      setTruncatedTitleSessionId(session.id);
-                    }}
-                    onMouseLeave={() => {
-                      setHoverSessionId((previous) =>
-                        previous === session.id ? undefined : previous
-                      );
+  async function createSessionFromSidebar(): Promise<void> {
+    await createNewSession();
+    if (sidebarMode === "overlay") {
+      setSidebarOverlayOpen(false);
+    }
+  }
+
+  function selectSessionFromSidebar(sessionId: string): void {
+    setActiveSessionId(sessionId);
+    if (sidebarMode === "overlay") {
+      setSidebarOverlayOpen(false);
+    }
+  }
+
+  async function openSettingsFromSidebar(): Promise<void> {
+    if (sidebarMode === "overlay") {
+      setSidebarOverlayOpen(false);
+    }
+    await openSettingsPage();
+  }
+
+  const isSidebarVisible =
+    sidebarMode === "overlay" ? sidebarOverlayOpen : !sidebarCollapsed;
+
+  const sessionSidebarContent = (
+    <div className="flex h-full min-h-0 flex-col bg-[var(--panel)] p-3">
+      <h2 style={{ margin: "0 0 10px", fontSize: 16 }}>{t(locale, "sessions")}</h2>
+      <Button type="button" onClick={() => void createSessionFromSidebar()} className="w-full">
+        {t(locale, "newSession")}
+      </Button>
+
+      <TooltipProvider delayDuration={240}>
+        <div
+          style={{
+            marginTop: 8,
+            display: "grid",
+            gap: 3,
+            overflowY: "auto",
+            minHeight: 0,
+            flex: 1,
+            alignContent: "start"
+          }}
+        >
+          {sessions.map((session) => (
+            <Tooltip
+              key={session.id}
+              open={hoverSessionId === session.id && truncatedTitleSessionId === session.id}
+            >
+              <TooltipTrigger asChild>
+                <div
+                  onClick={() => selectSessionFromSidebar(session.id)}
+                  style={{
+                    position: "relative",
+                    ...rowButtonStyle,
+                    background:
+                      activeSessionId === session.id
+                        ? "var(--session-active-bg)"
+                        : hoverSessionId === session.id
+                          ? "var(--session-hover-bg)"
+                          : "transparent",
+                    transition: "background-color 150ms ease",
+                    cursor: "pointer",
+                    padding: "2px 4px 2px 8px",
+                    gap: 4,
+                    overflow: "hidden"
+                  }}
+                  onMouseEnter={(event) => {
+                    setHoverSessionId(session.id);
+                    const titleElement = event.currentTarget.querySelector(
+                      "[data-session-title='true']"
+                    ) as HTMLElement | null;
+
+                    if (!titleElement || titleElement.scrollWidth <= titleElement.clientWidth) {
                       setTruncatedTitleSessionId((previous) =>
                         previous === session.id ? undefined : previous
                       );
-                    }}
-                  >
-                    <button
-                      type="button"
-                      onClick={() => setActiveSessionId(session.id)}
-                      style={sessionTitleButtonStyle}
-                    >
-                      {session.status === "RUNNING" ? (
-                        <span
-                          aria-hidden="true"
-                          style={{
-                            width: 6,
-                            height: 6,
-                            borderRadius: "50%",
-                            background: "var(--hint-info-text)",
-                            marginRight: 6,
-                            flexShrink: 0
-                          }}
-                        />
-                      ) : session.status === "ERROR" ? (
-                        <span
-                          aria-hidden="true"
-                          style={{
-                            width: 6,
-                            height: 6,
-                            borderRadius: "50%",
-                            background: "var(--hint-error-text)",
-                            marginRight: 6,
-                            flexShrink: 0
-                          }}
-                        />
-                      ) : null}
-                      <span
-                        data-session-title="true"
-                        style={{
-                          display: "block",
-                          width: "100%",
-                          minWidth: 0,
-                          textAlign: "left",
-                          overflow: "hidden",
-                          textOverflow: "ellipsis",
-                          whiteSpace: "nowrap"
-                        }}
-                      >
-                        {session.title}
-                      </span>
-                    </button>
+                      return;
+                    }
 
-                    <DropdownMenu onOpenChange={setIsAnyDropdownMenuOpen}>
-                      <DropdownMenuTrigger asChild>
-                        <Button
-                          type="button"
-                          aria-label={t(locale, "moreActions")}
-                          variant="ghost"
-                          size="icon"
-                          className="h-7 w-7 rounded-md p-0 text-[hsl(var(--muted-foreground))] hover:bg-accent"
-                          onClick={(event) => event.stopPropagation()}
-                          onPointerDown={(event) => event.stopPropagation()}
-                        >
-                          <Icon icon={dotsVertical} width={16} height={16} />
-                        </Button>
-                      </DropdownMenuTrigger>
-                      <DropdownMenuContent align="end" className="min-w-[150px]">
-                        <DropdownMenuItem onSelect={() => void toggleStarSession(session.id)}>
-                          <Icon
-                            icon={session.starred ? starOutlineIcon : starIcon}
-                            width={16}
-                            height={16}
-                          />
-                          <span>{session.starred ? t(locale, "unfavorite") : t(locale, "favorite")}</span>
-                        </DropdownMenuItem>
-
-                        <DropdownMenuItem onSelect={() => openRenameDialog(session)}>
-                          <Icon icon={pencilOutline} width={16} height={16} />
-                          <span>{t(locale, "renameSession")}</span>
-                        </DropdownMenuItem>
-
-                        <DropdownMenuSeparator />
-
-                        <DropdownMenuItem
-                          onSelect={() => void deleteSession(session.id)}
-                          className="text-destructive focus:text-destructive"
-                        >
-                          <Icon icon={deleteOutline} width={16} height={16} />
-                          <span>{t(locale, "deleteSession")}</span>
-                        </DropdownMenuItem>
-                      </DropdownMenuContent>
-                    </DropdownMenu>
-                  </div>
-                </TooltipTrigger>
-                <TooltipContent
-                  side="right"
-                  sideOffset={8}
-                  className="max-w-[280px] whitespace-normal break-words"
+                    setTruncatedTitleSessionId(session.id);
+                  }}
+                  onMouseLeave={() => {
+                    setHoverSessionId((previous) =>
+                      previous === session.id ? undefined : previous
+                    );
+                    setTruncatedTitleSessionId((previous) =>
+                      previous === session.id ? undefined : previous
+                    );
+                  }}
                 >
-                  {session.title}
-                </TooltipContent>
-              </Tooltip>
-            ))}
-          </div>
-        </TooltipProvider>
+                  <button
+                    type="button"
+                    onClick={() => selectSessionFromSidebar(session.id)}
+                    style={sessionTitleButtonStyle}
+                  >
+                    {session.status === "RUNNING" ? (
+                      <span
+                        aria-hidden="true"
+                        style={{
+                          width: 6,
+                          height: 6,
+                          borderRadius: "50%",
+                          background: "var(--hint-info-text)",
+                          marginRight: 6,
+                          flexShrink: 0
+                        }}
+                      />
+                    ) : session.status === "ERROR" ? (
+                      <span
+                        aria-hidden="true"
+                        style={{
+                          width: 6,
+                          height: 6,
+                          borderRadius: "50%",
+                          background: "var(--hint-error-text)",
+                          marginRight: 6,
+                          flexShrink: 0
+                        }}
+                      />
+                    ) : null}
+                    <span
+                      data-session-title="true"
+                      style={{
+                        display: "block",
+                        width: "100%",
+                        minWidth: 0,
+                        textAlign: "left",
+                        overflow: "hidden",
+                        textOverflow: "ellipsis",
+                        whiteSpace: "nowrap"
+                      }}
+                    >
+                      {session.title}
+                    </span>
+                  </button>
 
-        <Separator className="my-3" />
-        <div className="grid gap-2 rounded-md border border-border bg-card p-2">
-          <span className="text-xs text-muted-foreground">{t(locale, "currentConnection")}</span>
-          <span className="truncate text-xs font-medium">
-            {activeConnection?.name ?? t(locale, "noConnection")}
-          </span>
-          <Button type="button" variant="outline" size="sm" onClick={() => void openSettingsPage()}>
-            {t(locale, "openSettings")}
-          </Button>
+                  <DropdownMenu onOpenChange={setIsAnyDropdownMenuOpen}>
+                    <DropdownMenuTrigger asChild>
+                      <Button
+                        type="button"
+                        aria-label={t(locale, "moreActions")}
+                        variant="ghost"
+                        size="icon"
+                        className="h-7 w-7 rounded-md p-0 text-[hsl(var(--muted-foreground))] hover:bg-accent"
+                        onClick={(event) => event.stopPropagation()}
+                        onPointerDown={(event) => event.stopPropagation()}
+                      >
+                        <Icon icon={dotsVertical} width={16} height={16} />
+                      </Button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end" className="min-w-[150px]">
+                      <DropdownMenuItem onSelect={() => void toggleStarSession(session.id)}>
+                        <Icon
+                          icon={session.starred ? starOutlineIcon : starIcon}
+                          width={16}
+                          height={16}
+                        />
+                        <span>{session.starred ? t(locale, "unfavorite") : t(locale, "favorite")}</span>
+                      </DropdownMenuItem>
+
+                      <DropdownMenuItem onSelect={() => openRenameDialog(session)}>
+                        <Icon icon={pencilOutline} width={16} height={16} />
+                        <span>{t(locale, "renameSession")}</span>
+                      </DropdownMenuItem>
+
+                      <DropdownMenuSeparator />
+
+                      <DropdownMenuItem
+                        onSelect={() => void deleteSession(session.id)}
+                        className="text-destructive focus:text-destructive"
+                      >
+                        <Icon icon={deleteOutline} width={16} height={16} />
+                        <span>{t(locale, "deleteSession")}</span>
+                      </DropdownMenuItem>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                </div>
+              </TooltipTrigger>
+              <TooltipContent
+                side="right"
+                sideOffset={8}
+                className="max-w-[280px] whitespace-normal break-words"
+              >
+                {session.title}
+              </TooltipContent>
+            </Tooltip>
+          ))}
         </div>
-      </aside>
+      </TooltipProvider>
 
-      <main style={{ display: "grid", gridTemplateRows: "auto 1fr auto", minHeight: 0 }}>
+      <Separator className="my-3" />
+      <div className="grid gap-2 rounded-md border border-border bg-card p-2">
+        <span className="text-xs text-muted-foreground">{t(locale, "currentConnection")}</span>
+        <span className="truncate text-xs font-medium">
+          {activeConnection?.name ?? t(locale, "noConnection")}
+        </span>
+        <Button type="button" variant="outline" size="sm" onClick={() => void openSettingsFromSidebar()}>
+          {t(locale, "openSettings")}
+        </Button>
+      </div>
+    </div>
+  );
+
+  return (
+    <SidebarProvider
+      open={!sidebarCollapsed}
+      onOpenChange={(open) => {
+        void updateSidebarCollapsedValue(!open);
+      }}
+      className="h-screen w-full"
+    >
+      <div className="relative flex h-screen w-full overflow-hidden">
+        {sidebarMode === "docked" ? (
+          <Sidebar collapsible="offcanvas" className="bg-transparent">
+            {sessionSidebarContent}
+          </Sidebar>
+        ) : null}
+        {sidebarMode === "overlay" ? (
+          <Sheet open={sidebarOverlayOpen} onOpenChange={setSidebarOverlayOpen}>
+            <SheetContent side="left" className="w-[min(360px,88vw)] max-w-none p-0">
+              {sessionSidebarContent}
+            </SheetContent>
+          </Sheet>
+        ) : null}
+
+        <SidebarInset>
+          <main style={{ display: "grid", gridTemplateRows: "auto 1fr auto", minHeight: 0, flex: 1 }}>
         <header
           style={{
             display: "flex",
@@ -2728,6 +2869,53 @@ export function App(): JSX.Element {
             backdropFilter: "blur(4px)"
           }}
         >
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            className={`h-8 w-8 rounded-md p-0 text-[hsl(var(--muted-foreground))] hover:bg-accent ${
+              isSidebarVisible ? "bg-accent text-accent-foreground" : ""
+            }`}
+            title={t(locale, "toggleSidebar")}
+            aria-label={t(locale, "toggleSidebar")}
+            onClick={toggleSidebarPanel}
+          >
+            <Icon icon={menuIcon} width={18} height={18} />
+          </Button>
+          <DropdownMenu onOpenChange={setIsAnyDropdownMenuOpen}>
+            <DropdownMenuTrigger asChild>
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                className="h-8 w-8 rounded-md p-0 text-[hsl(var(--muted-foreground))] hover:bg-accent"
+                title={t(locale, "sidebarMode")}
+                aria-label={t(locale, "sidebarMode")}
+              >
+                <Icon icon={sidebarModeIcon} width={18} height={18} />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="start" className="min-w-[156px]">
+              <DropdownMenuItem onSelect={() => void updateSidebarModeValue("docked")}>
+                <Icon
+                  icon={checkIcon}
+                  width={16}
+                  height={16}
+                  className={sidebarMode === "docked" ? "opacity-100" : "opacity-0"}
+                />
+                <span>{t(locale, "sidebarModeDocked")}</span>
+              </DropdownMenuItem>
+              <DropdownMenuItem onSelect={() => void updateSidebarModeValue("overlay")}>
+                <Icon
+                  icon={checkIcon}
+                  width={16}
+                  height={16}
+                  className={sidebarMode === "overlay" ? "opacity-100" : "opacity-0"}
+                />
+                <span>{t(locale, "sidebarModeOverlay")}</span>
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
           <strong style={{ flex: 1 }}>{t(locale, "appTitle")}</strong>
           <DropdownMenu onOpenChange={setIsAnyDropdownMenuOpen}>
             <DropdownMenuTrigger asChild>
@@ -3314,8 +3502,14 @@ export function App(): JSX.Element {
           </form>
         </DialogContent>
       </Dialog>
-    </div>
+        </SidebarInset>
+      </div>
+    </SidebarProvider>
   );
+}
+
+function normalizeSidebarMode(value: unknown): UiSidebarMode {
+  return value === "overlay" ? "overlay" : "docked";
 }
 
 function createSession(title: string): ChatSession {

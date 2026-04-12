@@ -471,6 +471,7 @@ export interface BridgeAuditEventsResponse {
 
 export type UiStatusBadgeLevel = "clear" | "warn" | "error";
 export type UiThemeMode = "light" | "dark" | "system";
+export type UiSidebarMode = "docked" | "overlay";
 
 export const STORAGE_KEYS = {
   connections: "surf.connections",
@@ -479,5 +480,7 @@ export const STORAGE_KEYS = {
   sessions: "surf.sessions",
   locale: "surf.locale",
   defaultAdapter: "surf.defaultAdapter",
-  theme: "surf.theme"
+  theme: "surf.theme",
+  sidebarMode: "surf.sidebarMode",
+  sidebarCollapsed: "surf.sidebarCollapsed"
 } as const;

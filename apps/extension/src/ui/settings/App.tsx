@@ -6,6 +6,7 @@ import type {
   BridgeModelsResponse,
   BridgeModelsUpdateRequest,
   CodexReasoningEffort,
+  UiSidebarMode,
   UiThemeMode
 } from "@surf-ai/shared";
 import { STORAGE_KEYS } from "@surf-ai/shared";
@@ -14,12 +15,14 @@ import {
   getConnections,
   getDefaultAdapter,
   getLocale,
+  getSidebarMode,
   getTheme,
   onStorageChanged,
   setActiveConnectionId,
   setConnections,
   setDefaultAdapter,
   setLocale,
+  setSidebarMode,
   setTheme
 } from "../../lib/storage";
 import { type Locale, resolveLocale, t } from "../common/i18n";
@@ -55,6 +58,7 @@ export function App(): JSX.Element {
   const [connections, setConnectionsState] = useState<BridgeConnection[]>([]);
   const [activeConnectionId, setActiveConnectionIdState] = useState<string | undefined>();
   const [defaultAdapter, setDefaultAdapterState] = useState<BridgeAdapter>("codex");
+  const [sidebarMode, setSidebarModeState] = useState<UiSidebarMode>("docked");
   const [themeMode, setThemeModeState] = useState<UiThemeMode>("system");
   const [activeSection, setActiveSection] = useState<SettingsSection>(() =>
     resolveSettingsSection(window.location.hash.replace("#", "")) ?? "general"
@@ -116,6 +120,10 @@ export function App(): JSX.Element {
         const nextTheme = normalizeThemeMode(themeChange.newValue as string | undefined);
         setThemeModeState(nextTheme);
       }
+      const sidebarModeChange = changes[STORAGE_KEYS.sidebarMode];
+      if (sidebarModeChange) {
+        setSidebarModeState(normalizeSidebarMode(sidebarModeChange.newValue));
+      }
     });
 
     return () => {
@@ -169,6 +177,7 @@ export function App(): JSX.Element {
       storedActiveConnectionId,
       storedLocale,
       storedDefaultAdapter,
+      storedSidebarMode,
       storedTheme
     ] =
       await Promise.all([
@@ -176,6 +185,7 @@ export function App(): JSX.Element {
         getActiveConnectionId(),
         getLocale(),
         getDefaultAdapter(),
+        getSidebarMode(),
         getTheme()
       ]);
 
@@ -187,6 +197,7 @@ export function App(): JSX.Element {
     if (storedDefaultAdapter) {
       setDefaultAdapterState(storedDefaultAdapter);
     }
+    setSidebarModeState(normalizeSidebarMode(storedSidebarMode));
     setThemeModeState(normalizeThemeMode(storedTheme));
   }
 
@@ -237,6 +248,11 @@ export function App(): JSX.Element {
   async function updateThemeMode(nextTheme: UiThemeMode): Promise<void> {
     setThemeModeState(nextTheme);
     await setTheme(nextTheme);
+  }
+
+  async function updateSidebarMode(nextMode: UiSidebarMode): Promise<void> {
+    setSidebarModeState(nextMode);
+    await setSidebarMode(nextMode);
   }
 
   async function loadModels(connection: BridgeConnection | undefined): Promise<void> {
@@ -623,6 +639,22 @@ export function App(): JSX.Element {
               </div>
 
               <div className="grid gap-2">
+                <span className="text-xs text-muted-foreground">{t(locale, "sidebarMode")}</span>
+                <Select
+                  value={sidebarMode}
+                  onValueChange={(value) => void updateSidebarMode(value as UiSidebarMode)}
+                >
+                  <SelectTrigger>
+                    <SelectValue placeholder={t(locale, "sidebarMode")} />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="docked">{t(locale, "sidebarModeDocked")}</SelectItem>
+                    <SelectItem value="overlay">{t(locale, "sidebarModeOverlay")}</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div className="grid gap-2">
                 <span className="text-xs text-muted-foreground">{t(locale, "theme")}</span>
                 <Select
                   value={themeMode}
@@ -788,6 +820,10 @@ function normalizeModelList(models: BridgeModel[]): BridgeModel[] {
     }
     return a.label.localeCompare(b.label);
   });
+}
+
+function normalizeSidebarMode(value: unknown): UiSidebarMode {
+  return value === "overlay" ? "overlay" : "docked";
 }
 
 function resolveSettingsSection(raw: string): SettingsSection | undefined {

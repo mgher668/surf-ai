@@ -4,6 +4,7 @@ import {
   type BridgeAdapter,
   type BridgeConnection,
   type ChatSession,
+  type UiSidebarMode,
   type UiThemeMode
 } from "@surf-ai/shared";
 
@@ -15,6 +16,8 @@ interface ExtensionStorageShape {
   [STORAGE_KEYS.locale]?: string;
   [STORAGE_KEYS.defaultAdapter]?: BridgeAdapter;
   [STORAGE_KEYS.theme]?: UiThemeMode;
+  [STORAGE_KEYS.sidebarMode]?: UiSidebarMode;
+  [STORAGE_KEYS.sidebarCollapsed]?: boolean;
 }
 
 export async function getConnections(): Promise<BridgeConnection[]> {
@@ -101,6 +104,24 @@ export async function getTheme(): Promise<UiThemeMode | undefined> {
 
 export async function setTheme(theme: UiThemeMode): Promise<void> {
   await chrome.storage.local.set({ [STORAGE_KEYS.theme]: theme });
+}
+
+export async function getSidebarMode(): Promise<UiSidebarMode | undefined> {
+  const data = await chrome.storage.local.get(STORAGE_KEYS.sidebarMode);
+  return data[STORAGE_KEYS.sidebarMode] as UiSidebarMode | undefined;
+}
+
+export async function setSidebarMode(mode: UiSidebarMode): Promise<void> {
+  await chrome.storage.local.set({ [STORAGE_KEYS.sidebarMode]: mode });
+}
+
+export async function getSidebarCollapsed(): Promise<boolean> {
+  const data = await chrome.storage.local.get(STORAGE_KEYS.sidebarCollapsed);
+  return Boolean(data[STORAGE_KEYS.sidebarCollapsed]);
+}
+
+export async function setSidebarCollapsed(collapsed: boolean): Promise<void> {
+  await chrome.storage.local.set({ [STORAGE_KEYS.sidebarCollapsed]: collapsed });
 }
 
 export function onStorageChanged(
