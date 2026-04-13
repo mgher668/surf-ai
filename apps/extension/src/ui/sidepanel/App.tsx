@@ -1262,10 +1262,11 @@ export function App(): JSX.Element {
 
       if (event.type === "assistant.completed") {
         if (typeof event.data.content === "string") {
+          const completedContent = event.data.content;
           const phase = normalizeAssistantStreamPhase(event.data.phase);
           setStreamAssistantByPhase((prev) => ({
             ...prev,
-            [phase]: event.data.content ?? prev[phase]
+            [phase]: mergeAssistantCompletedContent(phase, prev[phase] ?? "", completedContent)
           }));
         }
         return;
@@ -3604,6 +3605,32 @@ function normalizeAssistantStreamPhase(phase: string | undefined): BridgeAssista
   return "unknown";
 }
 
+function mergeAssistantCompletedContent(
+  phase: BridgeAssistantMessagePhase,
+  existing: string,
+  completed: string
+): string {
+  if (phase !== "commentary") {
+    return completed;
+  }
+
+  const nextText = completed.trim();
+  if (!nextText) {
+    return existing;
+  }
+
+  const currentText = existing.trim();
+  if (!currentText) {
+    return completed;
+  }
+
+  if (currentText === nextText || currentText.endsWith(nextText)) {
+    return existing;
+  }
+
+  return `${existing.replace(/\s+$/u, "")}\n\n${completed}`;
+}
+
 function buildRunArtifacts(events: BridgeRunStreamEvent[]): RunArtifacts {
   const assistantByPhase = createEmptyStreamAssistantByPhase();
   let reasoningSummary = "";
@@ -3623,7 +3650,11 @@ function buildRunArtifacts(events: BridgeRunStreamEvent[]): RunArtifacts {
         continue;
       }
       const phase = normalizeAssistantStreamPhase(event.data.phase);
-      assistantByPhase[phase] = event.data.content;
+      assistantByPhase[phase] = mergeAssistantCompletedContent(
+        phase,
+        assistantByPhase[phase] ?? "",
+        event.data.content
+      );
       continue;
     }
 

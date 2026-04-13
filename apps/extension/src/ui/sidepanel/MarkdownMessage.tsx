@@ -14,6 +14,12 @@ interface MarkdownMessageProps {
 
 let mermaidLoader: Promise<Mermaid> | null = null;
 
+type RemarkNode = {
+  type?: string;
+  value?: string;
+  children?: RemarkNode[];
+};
+
 function getMermaid(): Promise<Mermaid> {
   if (!mermaidLoader) {
     mermaidLoader = import("mermaid").then((module) => module.default);
@@ -118,6 +124,120 @@ const markdownComponents: Components = {
   }
 };
 
+function hasSoftNewlineInParagraph(paragraph: RemarkNode): boolean {
+  if (!Array.isArray(paragraph.children)) {
+    return false;
+  }
+  return paragraph.children.some(
+    (child) =>
+      child.type === "break" ||
+      (child.type === "text" && typeof child.value === "string" && child.value.includes("\n"))
+  );
+}
+
+function splitParagraphChildrenBySoftNewline(children: RemarkNode[]): RemarkNode[][] {
+  const paragraphs: RemarkNode[][] = [[]];
+
+  const getCurrentSegment = (): RemarkNode[] => {
+    const segment = paragraphs[paragraphs.length - 1];
+    if (segment) {
+      return segment;
+    }
+    const fallback: RemarkNode[] = [];
+    paragraphs.push(fallback);
+    return fallback;
+  };
+
+  const pushSegment = (): void => {
+    paragraphs.push([]);
+  };
+
+  for (const child of children) {
+    if (child.type === "break") {
+      pushSegment();
+      continue;
+    }
+
+    if (child.type !== "text" || typeof child.value !== "string" || !child.value.includes("\n")) {
+      getCurrentSegment().push(child);
+      continue;
+    }
+
+    const parts = child.value.split("\n");
+    parts.forEach((part, index) => {
+      if (part.length > 0) {
+        getCurrentSegment().push({ ...child, value: part });
+      }
+      if (index < parts.length - 1) {
+        pushSegment();
+      }
+    });
+  }
+
+  return paragraphs;
+}
+
+function paragraphSegmentHasVisibleContent(segment: RemarkNode[]): boolean {
+  return segment.some((child) => {
+    if (child.type === "text") {
+      return typeof child.value === "string" && child.value.trim().length > 0;
+    }
+    return true;
+  });
+}
+
+function splitListItemParagraph(paragraph: RemarkNode): RemarkNode[] {
+  const children = paragraph.children ?? [];
+  const segments = splitParagraphChildrenBySoftNewline(children).filter(paragraphSegmentHasVisibleContent);
+  if (segments.length <= 1) {
+    return [paragraph];
+  }
+  return segments.map((segment) => ({
+    ...paragraph,
+    children: segment
+  }));
+}
+
+function traverseRemarkTree(node: RemarkNode, visitor: (current: RemarkNode) => void): void {
+  visitor(node);
+  if (!Array.isArray(node.children)) {
+    return;
+  }
+  for (const child of node.children) {
+    traverseRemarkTree(child, visitor);
+  }
+}
+
+function remarkSplitListSoftBreakToParagraph() {
+  return (tree: RemarkNode): void => {
+    traverseRemarkTree(tree, (node) => {
+      if (node.type !== "listItem" || !Array.isArray(node.children)) {
+        return;
+      }
+
+      const nextChildren: RemarkNode[] = [];
+      let changed = false;
+
+      for (const child of node.children) {
+        if (child.type !== "paragraph" || !Array.isArray(child.children) || !hasSoftNewlineInParagraph(child)) {
+          nextChildren.push(child);
+          continue;
+        }
+
+        const splitResult = splitListItemParagraph(child);
+        if (splitResult.length > 1) {
+          changed = true;
+        }
+        nextChildren.push(...splitResult);
+      }
+
+      if (changed) {
+        node.children = nextChildren;
+      }
+    });
+  };
+}
+
 export function MarkdownMessage({ content }: MarkdownMessageProps): JSX.Element {
   const [themeVersion, setThemeVersion] = useState(0);
 
@@ -136,7 +256,11 @@ export function MarkdownMessage({ content }: MarkdownMessageProps): JSX.Element 
     <div className="surf-md" key={themeVersion}>
       <ReactMarkdown
         components={markdownComponents}
-        remarkPlugins={[remarkGfm, [remarkMath, { singleDollarTextMath: false }]]}
+        remarkPlugins={[
+          remarkGfm,
+          [remarkMath, { singleDollarTextMath: false }],
+          remarkSplitListSoftBreakToParagraph
+        ]}
         rehypePlugins={[rehypeKatex]}
       >
         {content}

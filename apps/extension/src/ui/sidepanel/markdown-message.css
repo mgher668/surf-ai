@@ -22,11 +22,50 @@
 .surf-md ul,
 .surf-md ol {
   margin: 0 0 10px;
-  padding-left: 20px;
+  padding-left: 1.5em;
+  list-style-position: outside;
+}
+
+.surf-md ul {
+  list-style-type: disc;
+}
+
+.surf-md ol {
+  list-style-type: decimal;
+  list-style-position: inside;
+  padding-left: 0;
+}
+
+.surf-md ul ul {
+  list-style-type: circle;
+}
+
+.surf-md ul ul ul {
+  list-style-type: square;
+}
+
+.surf-md ol ol {
+  list-style-type: lower-alpha;
+}
+
+.surf-md ol ol ol {
+  list-style-type: lower-roman;
+}
+
+.surf-md li::marker {
+  color: currentColor;
 }
 
 .surf-md li + li {
   margin-top: 4px;
+}
+
+.surf-md li > p:first-child {
+  display: inline;
+}
+
+.surf-md li > p:first-child + p {
+  margin-top: 8px;
 }
 
 .surf-md h1,
@@ -37,6 +76,33 @@
 .surf-md h6 {
   margin: 12px 0 8px;
   line-height: 1.3;
+  font-weight: 700;
+}
+
+.surf-md h1 {
+  font-size: 1.5rem;
+  letter-spacing: -0.01em;
+}
+
+.surf-md h2 {
+  font-size: 1.3rem;
+}
+
+.surf-md h3 {
+  font-size: 1.15rem;
+}
+
+.surf-md h4 {
+  font-size: 1rem;
+}
+
+.surf-md h5 {
+  font-size: 0.92rem;
+}
+
+.surf-md h6 {
+  font-size: 0.86rem;
+  color: var(--muted-text);
 }
 
 .surf-md blockquote {
