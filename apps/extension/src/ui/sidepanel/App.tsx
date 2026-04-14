@@ -168,6 +168,7 @@ interface ProcessTimelineItem {
     | "runtime_error";
   approval?: BridgeRunApproval;
   content?: string;
+  segments?: string[];
   message?: string;
 }
 
@@ -3156,13 +3157,30 @@ async function bootstrap(): Promise<void> {
               }
 
               if (process.kind === "commentary" && process.content) {
+                const commentarySegments =
+                  process.segments && process.segments.length > 0
+                    ? process.segments
+                    : [process.content];
                 return (
                   <details key={item.id} style={collapsibleBlockStyle}>
                     <summary style={collapsibleSummaryStyle}>
                       {t(locale, "assistantCommentaryTitle")}
                     </summary>
                     <div style={collapsibleMarkdownBodyStyle}>
-                      <MarkdownMessage content={process.content} />
+                      {commentarySegments.map((segment, index) => (
+                        <p
+                          key={`${item.id}:commentary:${index}`}
+                          style={{
+                            margin: index === 0 ? "0 0 8px" : "8px 0",
+                            whiteSpace: "pre-wrap",
+                            wordBreak: "break-word",
+                            fontSize: 13,
+                            lineHeight: 1.5
+                          }}
+                        >
+                          {segment}
+                        </p>
+                      ))}
                     </div>
                   </details>
                 );
@@ -3712,6 +3730,7 @@ function buildProcessTimelineItems(
   const firstSeen = extractProcessFirstSeenTs(events);
   const items: ProcessTimelineItem[] = [];
   const mergedApprovals = mergeApprovalsFromEvents(events, approvals);
+  const commentarySegments = extractCommentarySegments(events);
 
   for (const approval of mergedApprovals) {
     items.push({
@@ -3722,12 +3741,21 @@ function buildProcessTimelineItems(
     });
   }
 
-  if (artifacts.assistantByPhase.commentary && typeof firstSeen.commentary === "number") {
+  if (commentarySegments.length > 0 && typeof firstSeen.commentary === "number") {
     items.push({
       id: `${runId}:commentary`,
       ts: firstSeen.commentary,
       kind: "commentary",
-      content: artifacts.assistantByPhase.commentary
+      content: commentarySegments.join("\n\n"),
+      segments: commentarySegments
+    });
+  } else if (artifacts.assistantByPhase.commentary && typeof firstSeen.commentary === "number") {
+    items.push({
+      id: `${runId}:commentary`,
+      ts: firstSeen.commentary,
+      kind: "commentary",
+      content: artifacts.assistantByPhase.commentary,
+      segments: [artifacts.assistantByPhase.commentary]
     });
   }
 
@@ -3774,6 +3802,32 @@ function buildProcessTimelineItems(
     return left.id.localeCompare(right.id);
   });
   return items;
+}
+
+function extractCommentarySegments(events: BridgeRunStreamEvent[]): string[] {
+  const segments: string[] = [];
+  for (const event of events) {
+    if (event.type !== "assistant.completed") {
+      continue;
+    }
+    const phase = normalizeAssistantStreamPhase(event.data.phase);
+    if (phase !== "commentary") {
+      continue;
+    }
+    if (typeof event.data.content !== "string") {
+      continue;
+    }
+    const text = event.data.content.trim();
+    if (!text) {
+      continue;
+    }
+    const prev = segments[segments.length - 1];
+    if (prev === text) {
+      continue;
+    }
+    segments.push(text);
+  }
+  return segments;
 }
 
 function mergeApprovalsFromEvents(
