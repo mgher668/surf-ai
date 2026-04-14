@@ -2,9 +2,14 @@ import type {
   BridgeApprovalKind,
   BridgeAdapter,
   BridgeChatRequest,
+  ChatAttachment,
   BridgeRunApproval,
   BridgeRunStreamEvent
 } from "@surf-ai/shared";
+
+export interface RuntimeInputAttachment extends ChatAttachment {
+  path: string;
+}
 
 export interface RuntimeStartRunInput {
   userId: string;
@@ -14,6 +19,7 @@ export interface RuntimeStartRunInput {
   model?: string;
   modelReasoningEffort?: BridgeChatRequest["modelReasoningEffort"];
   content: string;
+  attachments?: RuntimeInputAttachment[];
   context?: BridgeChatRequest["context"];
 }
 

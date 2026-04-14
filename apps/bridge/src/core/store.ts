@@ -6,11 +6,13 @@ import type {
   BridgeApprovalKind,
   BridgeApprovalStatus,
   BridgeAdapter,
+  ChatAttachment,
   BridgeModel,
   BridgeRunApproval,
   BridgeRunStreamEvent,
   BridgeSessionRun,
   ChatMessage,
+  ChatMessagePart,
   ChatSession,
   CodexReasoningEffort,
   MessageRole,
@@ -38,7 +40,28 @@ interface MessageRow {
   adapter: BridgeAdapter | null;
   model: string | null;
   content: string;
+  parts_json: string | null;
   created_at: number;
+}
+
+export interface StoredAttachment extends ChatAttachment {
+  userId: string;
+  sessionId: string;
+  storagePath: string;
+  sha256?: string;
+}
+
+interface AttachmentRow {
+  id: string;
+  user_id: string;
+  session_id: string;
+  storage_path: string;
+  mime_type: string;
+  file_name: string | null;
+  byte_size: number;
+  sha256: string | null;
+  created_at: number;
+  updated_at: number;
 }
 
 interface SessionRunRow {
@@ -408,9 +431,89 @@ export class BridgeStore {
     return result.changes > 0;
   }
 
+  public createAttachment(input: {
+    userId: string;
+    sessionId: string;
+    storagePath: string;
+    mimeType: string;
+    byteSize: number;
+    fileName?: string;
+    sha256?: string;
+  }): StoredAttachment {
+    this.assertSessionOwnership(input.userId, input.sessionId);
+    const now = Date.now();
+    const id = randomUUID();
+
+    this.db.prepare(
+      `INSERT INTO attachments (
+        id, user_id, session_id, storage_path, mime_type, file_name, byte_size, sha256, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(
+      id,
+      input.userId,
+      input.sessionId,
+      input.storagePath,
+      input.mimeType,
+      input.fileName?.slice(0, 240) ?? null,
+      input.byteSize,
+      input.sha256 ?? null,
+      now,
+      now
+    );
+
+    const row = this.getAttachmentRow(input.userId, id);
+    if (!row) {
+      throw new Error("attachment_insert_failed");
+    }
+    return mapAttachmentRow(row);
+  }
+
+  public getAttachment(userId: string, attachmentId: string): StoredAttachment | null {
+    const row = this.getAttachmentRow(userId, attachmentId);
+    return row ? mapAttachmentRow(row) : null;
+  }
+
+  public listAttachmentsByIds(
+    userId: string,
+    sessionId: string,
+    attachmentIds: string[]
+  ): StoredAttachment[] {
+    if (attachmentIds.length === 0) {
+      return [];
+    }
+    const uniqueIds = [...new Set(attachmentIds.filter(Boolean))];
+    if (uniqueIds.length === 0) {
+      return [];
+    }
+
+    const placeholders = uniqueIds.map(() => "?").join(", ");
+    const rows = this.db.prepare(
+      `SELECT
+         id, user_id, session_id, storage_path, mime_type, file_name, byte_size, sha256, created_at, updated_at
+       FROM attachments
+       WHERE user_id = ?
+         AND session_id = ?
+         AND id IN (${placeholders})`
+    ).all(userId, sessionId, ...uniqueIds) as unknown as AttachmentRow[];
+    const byId = new Map(rows.map((row) => [row.id, mapAttachmentRow(row)]));
+    return uniqueIds.map((id) => byId.get(id)).filter((item): item is StoredAttachment => Boolean(item));
+  }
+
+  public listAttachmentsBySession(userId: string, sessionId: string): StoredAttachment[] {
+    this.assertSessionOwnership(userId, sessionId);
+    const rows = this.db.prepare(
+      `SELECT
+         id, user_id, session_id, storage_path, mime_type, file_name, byte_size, sha256, created_at, updated_at
+       FROM attachments
+       WHERE user_id = ? AND session_id = ?
+       ORDER BY created_at ASC`
+    ).all(userId, sessionId) as unknown as AttachmentRow[];
+    return rows.map(mapAttachmentRow);
+  }
+
   public listMessages(userId: string, sessionId: string, afterSeq: number, limit: number): ChatMessage[] {
     const rows = this.db.prepare(
-      `SELECT id, session_id, seq, role, adapter, model, content, created_at
+      `SELECT id, session_id, seq, role, adapter, model, content, parts_json, created_at
        FROM messages
        WHERE user_id = ? AND session_id = ? AND seq > ?
        ORDER BY seq ASC
@@ -421,7 +524,7 @@ export class BridgeStore {
 
   public listAllMessagesBySession(userId: string, sessionId: string): ChatMessage[] {
     const rows = this.db.prepare(
-      `SELECT id, session_id, seq, role, adapter, model, content, created_at
+      `SELECT id, session_id, seq, role, adapter, model, content, parts_json, created_at
        FROM messages
        WHERE user_id = ? AND session_id = ?
        ORDER BY seq ASC`
@@ -435,21 +538,46 @@ export class BridgeStore {
     role: MessageRole,
     content: string,
     adapter?: BridgeAdapter,
-    model?: string
+    model?: string,
+    parts?: ChatMessagePart[]
   ): ChatMessage {
     const now = Date.now();
     const id = randomUUID();
+    const normalizedParts = normalizeMessageParts(parts);
 
     const nextSeq = this.getNextSeq(userId, sessionId);
-    this.db.prepare(
-      `INSERT INTO messages (
-        id, session_id, user_id, seq, role, adapter, model, content, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
-    ).run(id, sessionId, userId, nextSeq, role, adapter ?? null, model ?? null, content, now);
+    this.db.exec("BEGIN");
+    try {
+      this.db.prepare(
+        `INSERT INTO messages (
+          id, session_id, user_id, seq, role, adapter, model, content, parts_json, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      ).run(
+        id,
+        sessionId,
+        userId,
+        nextSeq,
+        role,
+        adapter ?? null,
+        model ?? null,
+        content,
+        normalizedParts ? stringifyJsonSafe(normalizedParts) : null,
+        now
+      );
 
-    this.db.prepare(
-      "UPDATE sessions SET updated_at = ?, last_active_at = ?, status = 'ACTIVE' WHERE id = ? AND user_id = ?"
-    ).run(now, now, sessionId, userId);
+      const attachmentIds = collectAttachmentIdsFromParts(normalizedParts);
+      if (attachmentIds.length > 0) {
+        this.linkMessageAttachments(userId, sessionId, id, attachmentIds, now);
+      }
+
+      this.db.prepare(
+        "UPDATE sessions SET updated_at = ?, last_active_at = ?, status = 'ACTIVE' WHERE id = ? AND user_id = ?"
+      ).run(now, now, sessionId, userId);
+      this.db.exec("COMMIT");
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
 
     return {
       id,
@@ -459,6 +587,7 @@ export class BridgeStore {
       ...(adapter ? { adapter } : {}),
       ...(model ? { model } : {}),
       content,
+      ...(normalizedParts ? { parts: normalizedParts } : {}),
       createdAt: now
     };
   }
@@ -1174,6 +1303,43 @@ export class BridgeStore {
     }
   }
 
+  private linkMessageAttachments(
+    userId: string,
+    sessionId: string,
+    messageId: string,
+    attachmentIds: string[],
+    now: number
+  ): void {
+    if (attachmentIds.length === 0) {
+      return;
+    }
+
+    const available = this.listAttachmentsByIds(userId, sessionId, attachmentIds);
+    if (available.length !== attachmentIds.length) {
+      throw new Error("attachment_not_found_or_not_owned");
+    }
+
+    const link = this.db.prepare(
+      `INSERT INTO message_attachments (
+        message_id, attachment_id, ord, created_at
+      ) VALUES (?, ?, ?, ?)
+      ON CONFLICT(message_id, attachment_id) DO NOTHING`
+    );
+
+    attachmentIds.forEach((attachmentId, ord) => {
+      link.run(messageId, attachmentId, ord, now);
+    });
+  }
+
+  private getAttachmentRow(userId: string, attachmentId: string): AttachmentRow | undefined {
+    return this.db.prepare(
+      `SELECT
+         id, user_id, session_id, storage_path, mime_type, file_name, byte_size, sha256, created_at, updated_at
+       FROM attachments
+       WHERE user_id = ? AND id = ?`
+    ).get(userId, attachmentId) as AttachmentRow | undefined;
+  }
+
   private getApprovalEventRowById(id: string): ApprovalEventRow | undefined {
     return this.db.prepare(
       `SELECT
@@ -1216,6 +1382,7 @@ export class BridgeStore {
         adapter TEXT,
         model TEXT,
         content TEXT NOT NULL,
+        parts_json TEXT,
         created_at INTEGER NOT NULL,
         FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE,
         FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE,
@@ -1267,6 +1434,41 @@ export class BridgeStore {
 
       CREATE INDEX IF NOT EXISTS idx_models_user_adapter
         ON models(user_id, adapter, is_default DESC, label ASC);
+
+      CREATE TABLE IF NOT EXISTS attachments (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        session_id TEXT NOT NULL,
+        storage_path TEXT NOT NULL,
+        mime_type TEXT NOT NULL,
+        file_name TEXT,
+        byte_size INTEGER NOT NULL,
+        sha256 TEXT,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE,
+        FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_attachments_user_session_created
+        ON attachments(user_id, session_id, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_attachments_sha256
+        ON attachments(sha256);
+
+      CREATE TABLE IF NOT EXISTS message_attachments (
+        message_id TEXT NOT NULL,
+        attachment_id TEXT NOT NULL,
+        ord INTEGER NOT NULL,
+        created_at INTEGER NOT NULL,
+        PRIMARY KEY(message_id, attachment_id),
+        FOREIGN KEY(message_id) REFERENCES messages(id) ON DELETE CASCADE,
+        FOREIGN KEY(attachment_id) REFERENCES attachments(id) ON DELETE CASCADE
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_message_attachments_message_ord
+        ON message_attachments(message_id, ord ASC);
+      CREATE INDEX IF NOT EXISTS idx_message_attachments_attachment
+        ON message_attachments(attachment_id);
 
       CREATE TABLE IF NOT EXISTS agent_session_links (
         session_id TEXT NOT NULL,
@@ -1370,6 +1572,7 @@ export class BridgeStore {
     this.ensureColumnExists("sessions", "last_adapter", "TEXT");
     this.ensureColumnExists("messages", "adapter", "TEXT");
     this.ensureColumnExists("messages", "model", "TEXT");
+    this.ensureColumnExists("messages", "parts_json", "TEXT");
     this.ensureColumnExists("session_runs", "model", "TEXT");
     this.ensureColumnExists("models", "reasoning_effort", "TEXT");
     this.db
@@ -1416,6 +1619,7 @@ function mapSessionRow(row: SessionRow): ChatSession {
 }
 
 function mapMessageRow(row: MessageRow): ChatMessage {
+  const parts = parseMessageParts(row.parts_json);
   return {
     id: row.id,
     sessionId: row.session_id,
@@ -1424,6 +1628,7 @@ function mapMessageRow(row: MessageRow): ChatMessage {
     ...(row.adapter ? { adapter: row.adapter } : {}),
     ...(row.model ? { model: row.model } : {}),
     content: row.content,
+    ...(parts ? { parts } : {}),
     createdAt: row.created_at
   };
 }
@@ -1456,6 +1661,122 @@ function mapModelRow(row: ModelRow): BridgeModel {
       ? { modelReasoningEffort: row.reasoning_effort }
       : {})
   };
+}
+
+function mapAttachmentRow(row: AttachmentRow): StoredAttachment {
+  return {
+    id: row.id,
+    userId: row.user_id,
+    sessionId: row.session_id,
+    storagePath: row.storage_path,
+    mimeType: row.mime_type,
+    ...(row.file_name ? { fileName: row.file_name } : {}),
+    sizeBytes: row.byte_size,
+    ...(row.sha256 ? { sha256: row.sha256 } : {}),
+    createdAt: row.created_at
+  };
+}
+
+function parseMessageParts(raw: string | null): ChatMessagePart[] | undefined {
+  if (!raw) {
+    return undefined;
+  }
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) {
+      return undefined;
+    }
+    const normalized: ChatMessagePart[] = [];
+    for (const item of parsed) {
+      if (!item || typeof item !== "object") {
+        continue;
+      }
+      const record = item as Record<string, unknown>;
+      if (record.type === "text" && typeof record.text === "string") {
+        normalized.push({
+          type: "text",
+          text: record.text
+        });
+        continue;
+      }
+
+      if (record.type === "image" && record.attachment && typeof record.attachment === "object") {
+        const attachmentRecord = record.attachment as Record<string, unknown>;
+        if (
+          typeof attachmentRecord.id === "string" &&
+          typeof attachmentRecord.mimeType === "string" &&
+          typeof attachmentRecord.sizeBytes === "number" &&
+          typeof attachmentRecord.createdAt === "number"
+        ) {
+          normalized.push({
+            type: "image",
+            attachment: {
+              id: attachmentRecord.id,
+              mimeType: attachmentRecord.mimeType,
+              sizeBytes: attachmentRecord.sizeBytes,
+              ...(typeof attachmentRecord.fileName === "string"
+                ? { fileName: attachmentRecord.fileName }
+                : {}),
+              ...(typeof attachmentRecord.url === "string"
+                ? { url: attachmentRecord.url }
+                : {}),
+              createdAt: attachmentRecord.createdAt
+            }
+          });
+        }
+      }
+    }
+
+    return normalized.length > 0 ? normalized : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function normalizeMessageParts(parts: ChatMessagePart[] | undefined): ChatMessagePart[] | undefined {
+  if (!parts || parts.length === 0) {
+    return undefined;
+  }
+  const normalized: ChatMessagePart[] = [];
+  for (const part of parts) {
+    if (part.type === "text") {
+      normalized.push({
+        type: "text",
+        text: part.text
+      });
+      continue;
+    }
+    normalized.push({
+      type: "image",
+      attachment: {
+        id: part.attachment.id,
+        mimeType: part.attachment.mimeType,
+        sizeBytes: part.attachment.sizeBytes,
+        ...(part.attachment.fileName ? { fileName: part.attachment.fileName } : {}),
+        ...(part.attachment.url ? { url: part.attachment.url } : {}),
+        createdAt: part.attachment.createdAt
+      }
+    });
+  }
+  return normalized.length > 0 ? normalized : undefined;
+}
+
+function collectAttachmentIdsFromParts(parts: ChatMessagePart[] | undefined): string[] {
+  if (!parts || parts.length === 0) {
+    return [];
+  }
+  const ids: string[] = [];
+  for (const part of parts) {
+    if (part.type !== "image") {
+      continue;
+    }
+    const id = part.attachment.id.trim();
+    if (!id) {
+      continue;
+    }
+    ids.push(id);
+  }
+  return [...new Set(ids)];
 }
 
 function normalizeModelsInput(models: BridgeModel[]): BridgeModel[] {

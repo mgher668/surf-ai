@@ -14,6 +14,7 @@ import type {
   RuntimeApprovalDecisionInput,
   RuntimeApprovalResult,
   RuntimeEventSink,
+  RuntimeInputAttachment,
   RuntimeRunResult,
   RuntimeStartRunInput
 } from "./types";
@@ -68,6 +69,7 @@ export class CodexAppServerRuntime implements AgentRuntime {
   private readonly activeRunsByTurnKey = new Map<string, ActiveRunContext>();
   private readonly activeRunsByThreadId = new Map<string, ActiveRunContext>();
   private readonly pendingApprovals = new Map<string, PendingApprovalContext>();
+  private readonly modelImageSupportCache = new Map<string, boolean>();
   private reconnecting = false;
   private started = false;
 
@@ -92,16 +94,15 @@ export class CodexAppServerRuntime implements AgentRuntime {
 
     const { threadId, isFreshThread } = await this.resolveThread(input);
     const turnInput = this.buildTurnInputText(input, isFreshThread);
+    const turnInputItems = await this.buildTurnInputItems(
+      turnInput,
+      input.model,
+      input.attachments
+    );
 
     const turnStart = (await this.client.call("turn/start", {
       threadId,
-      input: [
-        {
-          type: "text",
-          text: turnInput,
-          text_elements: []
-        }
-      ],
+      input: turnInputItems,
       approvalPolicy: "on-request",
       approvalsReviewer: "user",
       ...(normalizeModelOverride(input.model) ? { model: normalizeModelOverride(input.model) } : {}),
@@ -149,6 +150,63 @@ export class CodexAppServerRuntime implements AgentRuntime {
     });
 
     return output;
+  }
+
+  private async buildTurnInputItems(
+    textInput: string,
+    model: string | undefined,
+    attachments: RuntimeInputAttachment[] | undefined
+  ): Promise<Array<Record<string, unknown>>> {
+    const items: Array<Record<string, unknown>> = [
+      {
+        type: "text",
+        text: textInput,
+        text_elements: []
+      }
+    ];
+
+    if (!attachments || attachments.length === 0) {
+      return items;
+    }
+
+    const imageSupported = await this.modelSupportsImages(model);
+    if (!imageSupported) {
+      return items;
+    }
+
+    for (const attachment of attachments) {
+      items.push({
+        type: "localImage",
+        path: attachment.path
+      });
+    }
+    return items;
+  }
+
+  private async modelSupportsImages(model: string | undefined): Promise<boolean> {
+    const normalizedModel = normalizeModelOverride(model);
+    if (!normalizedModel) {
+      // Let server default model handle it.
+      return true;
+    }
+
+    const cached = this.modelImageSupportCache.get(normalizedModel);
+    if (typeof cached === "boolean") {
+      return cached;
+    }
+
+    try {
+      const raw = (await this.client.call("model/list", {
+        limit: 200,
+        includeHidden: true
+      })) as unknown;
+      const supportsImages = resolveModelImageSupport(raw, normalizedModel);
+      this.modelImageSupportCache.set(normalizedModel, supportsImages);
+      return supportsImages;
+    } catch {
+      // Do not block image input on model/list transient failures.
+      return true;
+    }
   }
 
   public async cancelRun(userId: string, runId: string): Promise<void> {
@@ -1005,6 +1063,59 @@ function normalizeModelOverride(model: string | undefined): string | undefined {
     return undefined;
   }
   return normalized;
+}
+
+function resolveModelImageSupport(raw: unknown, normalizedModel: string): boolean {
+  if (!raw || typeof raw !== "object") {
+    return true;
+  }
+
+  const record = raw as Record<string, unknown>;
+  const dataCandidate = record["data"];
+  const modelsCandidate = record["models"];
+  const entries = Array.isArray(dataCandidate)
+    ? dataCandidate
+    : Array.isArray(modelsCandidate)
+      ? modelsCandidate
+      : null;
+  if (!entries) {
+    return true;
+  }
+
+  const matched = entries.find((entry) => {
+    if (!entry || typeof entry !== "object") {
+      return false;
+    }
+    const modelRecord = entry as Record<string, unknown>;
+    const modelId =
+      typeof modelRecord["id"] === "string"
+        ? modelRecord["id"]
+        : typeof modelRecord["model"] === "string"
+          ? modelRecord["model"]
+          : undefined;
+    return modelId === normalizedModel;
+  });
+
+  if (!matched || typeof matched !== "object") {
+    return true;
+  }
+
+  const matchedRecord = matched as Record<string, unknown>;
+  const modalities =
+    matchedRecord["inputModalities"] ?? matchedRecord["input_modalities"];
+  if (!Array.isArray(modalities)) {
+    return true;
+  }
+
+  const normalizedModalities = modalities
+    .filter((item): item is string => typeof item === "string")
+    .map((item) => item.toLowerCase());
+
+  if (normalizedModalities.length === 0) {
+    return true;
+  }
+
+  return normalizedModalities.includes("image");
 }
 
 function sleep(ms: number): Promise<void> {

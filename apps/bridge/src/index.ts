@@ -1,7 +1,13 @@
 import Fastify from "fastify";
 import cors from "@fastify/cors";
 import { z } from "zod";
+import { createReadStream } from "node:fs";
+import { mkdir, rm, writeFile, stat } from "node:fs/promises";
+import { createHash, randomUUID } from "node:crypto";
+import { dirname, resolve, sep as pathSep } from "node:path";
 import type {
+  ChatAttachment,
+  ChatMessagePart,
   BridgeCapabilitiesResponse,
   BridgeChatRequest,
   BridgeChatResponse,
@@ -25,6 +31,7 @@ import type {
   BridgeSessionRunEventsResponse,
   BridgeRunStreamEvent,
   BridgeSessionSendMessageResponse,
+  BridgeUploadCreateResponse,
   BridgeSessionStarRequest,
   BridgeModelsResponse,
   BridgeModelsUpdateRequest,
@@ -33,7 +40,7 @@ import type {
 } from "@surf-ai/shared";
 import { readConfig } from "./core/config";
 import { AdapterRegistry } from "./core/registry";
-import { BridgeStore } from "./core/store";
+import { BridgeStore, type StoredAttachment } from "./core/store";
 import { SessionManager } from "./core/session-manager";
 import { FixedWindowRateLimiter } from "./core/rate-limit";
 import { synthesizeWithMiniMax, TtsError } from "./tts/minimax";
@@ -48,6 +55,9 @@ const rateLimiter = new FixedWindowRateLimiter(config.security.rateLimit);
 const runEventBus = new RunEventBus();
 const runtimeManager = new RuntimeManager(store, runEventBus);
 const activeRunControllers = new Map<string, AbortController>();
+const MAX_IMAGE_COUNT_PER_MESSAGE = 10;
+const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
+const UPLOAD_ROOT_DIR = resolve(dirname(resolve(config.dbPath)), "uploads");
 const recoveredInterruptedRuns = store.recoverInterruptedRuns("bridge_restarted_before_run_completed");
 const recoveredInterruptedApprovals = store.recoverPendingApprovals(
   "bridge_restarted_before_approval_decision"
@@ -55,7 +65,18 @@ const recoveredInterruptedApprovals = store.recoverPendingApprovals(
 
 const app = Fastify({
   logger: true,
-  trustProxy: config.security.trustProxy
+  trustProxy: config.security.trustProxy,
+  bodyLimit: MAX_IMAGE_BYTES + 1024 * 1024
+});
+
+await mkdir(UPLOAD_ROOT_DIR, { recursive: true });
+
+app.addContentTypeParser(/^image\/[\w.+-]+$/u, { parseAs: "buffer" }, (_request, payload, done) => {
+  done(null, payload);
+});
+
+app.addContentTypeParser("application/octet-stream", { parseAs: "buffer" }, (_request, payload, done) => {
+  done(null, payload);
 });
 
 if (recoveredInterruptedRuns > 0) {
@@ -221,6 +242,114 @@ app.get("/capabilities", async () => {
   return response;
 });
 
+app.post("/uploads", async (request, reply) => {
+  const userId = requireAuthedUserId(request, reply);
+  if (!userId) {
+    return;
+  }
+
+  const parsed = createUploadQuerySchema.safeParse(request.query);
+  if (!parsed.success) {
+    reply.code(400);
+    return { error: "invalid_request", details: parsed.error.flatten() };
+  }
+
+  const session = store.getSession(userId, parsed.data.sessionId);
+  if (!session) {
+    reply.code(404);
+    return { error: "session_not_found" };
+  }
+
+  const body = request.body;
+  if (!Buffer.isBuffer(body) || body.length === 0) {
+    reply.code(400);
+    return { error: "empty_upload_body" };
+  }
+  if (body.length > MAX_IMAGE_BYTES) {
+    reply.code(413);
+    return { error: "image_too_large", maxBytes: MAX_IMAGE_BYTES };
+  }
+
+  const detectedMime = detectImageMimeType(body);
+  if (!detectedMime) {
+    reply.code(415);
+    return { error: "image_type_not_allowed" };
+  }
+
+  const declaredMime = normalizeMimeType(request.headers["content-type"]);
+  if (declaredMime && declaredMime !== detectedMime) {
+    reply.code(415);
+    return { error: "image_type_not_allowed" };
+  }
+
+  const extension = extensionFromMimeType(detectedMime);
+  const fileNameFromHeader = decodeHeaderFileName(normalizeHeaderValue(request.headers["x-surf-file-name"]));
+  const requestedFileName = parsed.data.fileName || fileNameFromHeader;
+
+  const now = new Date();
+  const relPath = `${userId}/${String(now.getUTCFullYear())}/${String(
+    now.getUTCMonth() + 1
+  ).padStart(2, "0")}/${randomUUID()}.${extension}`;
+  const absPath = resolveUploadPath(relPath);
+  if (!absPath) {
+    reply.code(500);
+    return { error: "upload_path_invalid" };
+  }
+
+  await mkdir(dirname(absPath), { recursive: true });
+  await writeFile(absPath, body);
+
+  const attachment = store.createAttachment({
+    userId,
+    sessionId: parsed.data.sessionId,
+    storagePath: relPath,
+    mimeType: detectedMime,
+    byteSize: body.length,
+    ...(requestedFileName ? { fileName: requestedFileName } : {}),
+    sha256: createHash("sha256").update(body).digest("hex")
+  });
+
+  const response: BridgeUploadCreateResponse = {
+    attachment: toChatAttachment(attachment)
+  };
+  return response;
+});
+
+app.get("/uploads/:id", async (request, reply) => {
+  const userId = requireAuthedUserId(request, reply);
+  if (!userId) {
+    return;
+  }
+
+  const attachmentId = String((request.params as { id: string }).id);
+  const attachment = store.getAttachment(userId, attachmentId);
+  if (!attachment) {
+    reply.code(404);
+    return { error: "attachment_not_found" };
+  }
+
+  const absPath = resolveUploadPath(attachment.storagePath);
+  if (!absPath) {
+    reply.code(500);
+    return { error: "attachment_path_invalid" };
+  }
+
+  try {
+    const fileStat = await stat(absPath);
+    if (!fileStat.isFile()) {
+      reply.code(404);
+      return { error: "attachment_file_missing" };
+    }
+  } catch {
+    reply.code(404);
+    return { error: "attachment_file_missing" };
+  }
+
+  reply.header("cache-control", "private, max-age=31536000, immutable");
+  reply.type(attachment.mimeType);
+  return reply.send(createReadStream(absPath));
+});
+
 const chatContextSchema = z.object({
   pageTitle: z.string().optional(),
   pageUrl: z.string().optional(),
@@ -275,7 +404,8 @@ const sendSessionMessageSchema = z.object({
   adapter: z.enum(["codex", "claude", "openai-compatible", "anthropic", "gemini", "mock"]),
   model: z.string().optional(),
   modelReasoningEffort: codexReasoningEffortSchema.optional(),
-  content: z.string().trim().min(1),
+  content: z.string().max(40_000),
+  attachmentIds: z.array(z.string().uuid()).max(MAX_IMAGE_COUNT_PER_MESSAGE).optional(),
   context: chatContextSchema.optional()
 });
 
@@ -283,8 +413,14 @@ const createSessionRunSchema = z.object({
   adapter: z.enum(["codex", "claude", "openai-compatible", "anthropic", "gemini", "mock"]),
   model: z.string().optional(),
   modelReasoningEffort: codexReasoningEffortSchema.optional(),
-  content: z.string().trim().min(1),
+  content: z.string().max(40_000),
+  attachmentIds: z.array(z.string().uuid()).max(MAX_IMAGE_COUNT_PER_MESSAGE).optional(),
   context: chatContextSchema.optional()
+});
+
+const createUploadQuerySchema = z.object({
+  sessionId: z.string().min(1),
+  fileName: z.string().trim().max(240).optional()
 });
 
 const listSessionRunsQuerySchema = z.object({
@@ -461,11 +597,19 @@ app.delete("/sessions/:id", async (request, reply) => {
   }
 
   const sessionId = String((request.params as { id: string }).id);
+  const existingSession = store.getSession(userId, sessionId);
+  if (!existingSession) {
+    reply.code(404);
+    return { error: "session_not_found" };
+  }
+  const sessionAttachments = store.listAttachmentsBySession(userId, sessionId);
   const deleted = store.deleteSession(userId, sessionId);
   if (!deleted) {
     reply.code(404);
     return { error: "session_not_found" };
   }
+
+  await removeStoredFiles(sessionAttachments.map((item) => item.storagePath));
 
   return { ok: true, deletedSessionId: sessionId };
 });
@@ -562,14 +706,38 @@ app.post("/sessions/:id/runs", async (request, reply) => {
   const sessionWithAdapter =
     store.updateSessionLastAdapter(userId, sessionId, parsed.data.adapter) ?? existingSession;
   const requestedModel = normalizeRequestedModel(parsed.data.model);
+  const normalizedContent = normalizeComposerContent(parsed.data.content);
+  const attachmentIds = normalizeAttachmentIds(parsed.data.attachmentIds);
+  if (!normalizedContent && attachmentIds.length === 0) {
+    reply.code(400);
+    return {
+      error: "empty_message",
+      message: "Message content is empty and no attachments were provided."
+    };
+  }
+
+  const attachments = store.listAttachmentsByIds(userId, sessionId, attachmentIds);
+  if (attachments.length !== attachmentIds.length) {
+    reply.code(400);
+    return { error: "attachment_not_found_or_not_owned" };
+  }
+  const messageParts = buildMessageParts(normalizedContent, attachments);
+  const messageContent = buildMessageContent(normalizedContent, attachments.length);
+  const runtimeAttachments = toRuntimeAttachments(attachments);
+  if (runtimeAttachments.length !== attachments.length) {
+    reply.code(500);
+    return { error: "attachment_path_invalid" };
+  }
+
   store.updateSessionStatus(userId, sessionId, "RUNNING");
   const userMessage = store.appendMessage(
     userId,
     sessionId,
     "user",
-    parsed.data.content,
+    messageContent,
     parsed.data.adapter,
-    requestedModel
+    requestedModel,
+    messageParts
   );
   const session = store.updateSessionStatus(userId, sessionId, "RUNNING") ?? sessionWithAdapter;
   const run = store.createSessionRun({
@@ -592,8 +760,9 @@ app.post("/sessions/:id/runs", async (request, reply) => {
     sessionId,
     runId: run.id,
     adapter: parsed.data.adapter,
-    content: parsed.data.content,
+    content: normalizedContent,
     model: requestedModel,
+    ...(runtimeAttachments.length > 0 ? { attachments: runtimeAttachments } : {}),
     ...(modelReasoningEffort ? { modelReasoningEffort } : {}),
     ...(normalizedContext ? { context: normalizedContext } : {})
   });
@@ -1007,14 +1176,31 @@ app.post("/sessions/:id/messages", async (request, reply) => {
   const session =
     store.updateSessionLastAdapter(userId, sessionId, parsed.data.adapter) ?? existingSession;
   const requestedModel = normalizeRequestedModel(parsed.data.model);
+  const normalizedContent = normalizeComposerContent(parsed.data.content);
+  const attachmentIds = normalizeAttachmentIds(parsed.data.attachmentIds);
+  if (!normalizedContent && attachmentIds.length === 0) {
+    reply.code(400);
+    return {
+      error: "empty_message",
+      message: "Message content is empty and no attachments were provided."
+    };
+  }
+  const attachments = store.listAttachmentsByIds(userId, sessionId, attachmentIds);
+  if (attachments.length !== attachmentIds.length) {
+    reply.code(400);
+    return { error: "attachment_not_found_or_not_owned" };
+  }
+  const messageParts = buildMessageParts(normalizedContent, attachments);
+  const messageContent = buildMessageContent(normalizedContent, attachments.length);
 
   const userMessage = store.appendMessage(
     userId,
     sessionId,
     "user",
-    parsed.data.content,
+    messageContent,
     parsed.data.adapter,
-    requestedModel
+    requestedModel,
+    messageParts
   );
   const normalizedContext = normalizeChatContext(parsed.data.context);
   const modelOverride = toModelOverride(requestedModel);
@@ -1319,6 +1505,7 @@ async function executeSessionRun(input: {
   runId: string;
   adapter: BridgeSessionRunCreateRequest["adapter"];
   content: string;
+  attachments?: Array<ChatAttachment & { path: string }>;
   model?: string;
   modelReasoningEffort?: BridgeSessionRunCreateRequest["modelReasoningEffort"];
   context?: BridgeChatRequest["context"];
@@ -1351,6 +1538,9 @@ async function executeSessionRun(input: {
         runId: input.runId,
         adapter: input.adapter,
         content: input.content,
+        ...(input.attachments && input.attachments.length > 0
+          ? { attachments: input.attachments }
+          : {}),
         ...(input.model ? { model: input.model } : {}),
         ...(input.modelReasoningEffort
           ? { modelReasoningEffort: input.modelReasoningEffort }
@@ -1367,6 +1557,9 @@ async function executeSessionRun(input: {
         syncedSeq
       );
     } else {
+      if (!input.content.trim()) {
+        throw new Error("adapter_does_not_support_image_only_message");
+      }
       const modelOverride = toModelOverride(input.model);
       const sessionReply = await sessionManager.generateReply({
         userId: input.userId,
@@ -1532,6 +1725,179 @@ function normalizeChatContext(
   return Object.keys(normalized).length > 0 ? normalized : undefined;
 }
 
+function normalizeComposerContent(content: string): string {
+  return content.trim();
+}
+
+function normalizeAttachmentIds(attachmentIds: string[] | undefined): string[] {
+  if (!attachmentIds || attachmentIds.length === 0) {
+    return [];
+  }
+  const unique = new Set<string>();
+  for (const id of attachmentIds) {
+    const normalized = id.trim();
+    if (!normalized) {
+      continue;
+    }
+    unique.add(normalized);
+    if (unique.size >= MAX_IMAGE_COUNT_PER_MESSAGE) {
+      break;
+    }
+  }
+  return [...unique];
+}
+
+function buildMessageContent(text: string, attachmentCount: number): string {
+  if (text) {
+    return text;
+  }
+  if (attachmentCount > 0) {
+    return `[${attachmentCount} image${attachmentCount > 1 ? "s" : ""}]`;
+  }
+  return "";
+}
+
+function buildMessageParts(
+  text: string,
+  attachments: StoredAttachment[]
+): ChatMessagePart[] | undefined {
+  const parts: ChatMessagePart[] = [];
+  if (text) {
+    parts.push({
+      type: "text",
+      text
+    });
+  }
+  for (const attachment of attachments) {
+    parts.push({
+      type: "image",
+      attachment: toChatAttachment(attachment)
+    });
+  }
+  return parts.length > 0 ? parts : undefined;
+}
+
+function toChatAttachment(attachment: StoredAttachment): ChatAttachment {
+  return {
+    id: attachment.id,
+    mimeType: attachment.mimeType,
+    sizeBytes: attachment.sizeBytes,
+    ...(attachment.fileName ? { fileName: attachment.fileName } : {}),
+    url: `/uploads/${attachment.id}`,
+    createdAt: attachment.createdAt
+  };
+}
+
+function toRuntimeAttachments(attachments: StoredAttachment[]): Array<ChatAttachment & { path: string }> {
+  const mapped: Array<ChatAttachment & { path: string }> = [];
+  for (const attachment of attachments) {
+    const path = resolveUploadPath(attachment.storagePath);
+    if (!path) {
+      continue;
+    }
+    mapped.push({
+      ...toChatAttachment(attachment),
+      path
+    });
+  }
+  return mapped;
+}
+
+function normalizeMimeType(raw: unknown): string | undefined {
+  const value = normalizeHeaderValue(raw);
+  if (!value) {
+    return undefined;
+  }
+  const normalized = value.split(";")[0]?.trim().toLowerCase();
+  if (!normalized) {
+    return undefined;
+  }
+  if (normalized === "image/jpg") {
+    return "image/jpeg";
+  }
+  return normalized;
+}
+
+function detectImageMimeType(body: Buffer): "image/png" | "image/jpeg" | "image/webp" | "image/gif" | null {
+  if (body.length >= 8) {
+    const pngSignature = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
+    if (pngSignature.every((item, index) => body[index] === item)) {
+      return "image/png";
+    }
+  }
+
+  if (body.length >= 3 && body[0] === 0xff && body[1] === 0xd8 && body[2] === 0xff) {
+    return "image/jpeg";
+  }
+
+  if (
+    body.length >= 12 &&
+    body.toString("ascii", 0, 4) === "RIFF" &&
+    body.toString("ascii", 8, 12) === "WEBP"
+  ) {
+    return "image/webp";
+  }
+
+  if (body.length >= 6) {
+    const magic = body.toString("ascii", 0, 6);
+    if (magic === "GIF87a" || magic === "GIF89a") {
+      return "image/gif";
+    }
+  }
+
+  return null;
+}
+
+function extensionFromMimeType(mimeType: "image/png" | "image/jpeg" | "image/webp" | "image/gif"): string {
+  if (mimeType === "image/png") return "png";
+  if (mimeType === "image/jpeg") return "jpg";
+  if (mimeType === "image/webp") return "webp";
+  return "gif";
+}
+
+function decodeHeaderFileName(value: string | undefined): string | undefined {
+  if (!value) {
+    return undefined;
+  }
+  const decoded = decodeURIComponentSafe(value).trim();
+  if (!decoded) {
+    return undefined;
+  }
+  return decoded.replace(/[\\/:*?"<>|]+/g, "_").slice(0, 240);
+}
+
+function decodeURIComponentSafe(value: string): string {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+}
+
+function resolveUploadPath(storagePath: string): string | null {
+  const normalized = storagePath.trim().replace(/\\/g, "/");
+  if (!normalized) {
+    return null;
+  }
+  const absolute = resolve(UPLOAD_ROOT_DIR, normalized);
+  const uploadRootWithSlash = UPLOAD_ROOT_DIR.endsWith(pathSep) ? UPLOAD_ROOT_DIR : `${UPLOAD_ROOT_DIR}${pathSep}`;
+  if (absolute !== UPLOAD_ROOT_DIR && !absolute.startsWith(uploadRootWithSlash)) {
+    return null;
+  }
+  return absolute;
+}
+
+async function removeStoredFiles(storagePaths: string[]): Promise<void> {
+  const uniquePaths = [...new Set(storagePaths)];
+  for (const storagePath of uniquePaths) {
+    const absolute = resolveUploadPath(storagePath);
+    if (!absolute) {
+      continue;
+    }
+    await rm(absolute, { force: true }).catch(() => undefined);
+  }
+}
+
 app.setErrorHandler((error, _request, reply) => {
   const message = error instanceof Error ? error.message : "unknown error";
   reply.code(500).send({ error: "internal_error", message });
@@ -1596,6 +1962,9 @@ function getRateLimitBucket(method: string, rawUrl: string): string | null {
     return "session-message";
   }
   if (/^\/sessions\/[^/]+\/runs$/.test(path)) {
+    return "session-message";
+  }
+  if (path === "/uploads") {
     return "session-message";
   }
 

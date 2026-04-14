@@ -43,6 +43,25 @@ export interface ChatSession {
 export type MessageRole = "user" | "assistant" | "system";
 export type CodexReasoningEffort = "minimal" | "low" | "medium" | "high" | "xhigh";
 
+export interface ChatAttachment {
+  id: string;
+  mimeType: string;
+  sizeBytes: number;
+  fileName?: string;
+  url?: string;
+  createdAt: number;
+}
+
+export type ChatMessagePart =
+  | {
+      type: "text";
+      text: string;
+    }
+  | {
+      type: "image";
+      attachment: ChatAttachment;
+    };
+
 export interface ChatMessage {
   id: string;
   sessionId: string;
@@ -51,6 +70,7 @@ export interface ChatMessage {
   adapter?: BridgeAdapter;
   model?: string;
   content: string;
+  parts?: ChatMessagePart[];
   createdAt: number;
 }
 
@@ -209,6 +229,7 @@ export interface BridgeSessionMessagesResponse {
 export interface BridgeSessionSendMessageRequest {
   adapter: BridgeAdapter;
   content: string;
+  attachmentIds?: string[];
   model?: string;
   modelReasoningEffort?: CodexReasoningEffort;
   context?: BridgeChatRequest["context"];
@@ -238,6 +259,7 @@ export interface BridgeSessionRun {
 export interface BridgeSessionRunCreateRequest {
   adapter: BridgeAdapter;
   content: string;
+  attachmentIds?: string[];
   model?: string;
   modelReasoningEffort?: CodexReasoningEffort;
   context?: BridgeChatRequest["context"];
@@ -247,6 +269,10 @@ export interface BridgeSessionRunCreateResponse {
   session: ChatSession;
   run: BridgeSessionRun;
   userMessage: ChatMessage;
+}
+
+export interface BridgeUploadCreateResponse {
+  attachment: ChatAttachment;
 }
 
 export interface BridgeSessionRunResponse {

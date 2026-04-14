@@ -225,11 +225,66 @@ Response:
 {
   "session": { "id": "uuid", "title": "Manual QA", "starred": false },
   "messages": [
-    { "id": "m1", "sessionId": "uuid", "seq": 1, "role": "user", "content": "hello", "createdAt": 1 },
+    {
+      "id": "m1",
+      "sessionId": "uuid",
+      "seq": 1,
+      "role": "user",
+      "content": "hello",
+      "parts": [
+        { "type": "text", "text": "hello" },
+        {
+          "type": "image",
+          "attachment": {
+            "id": "att_1",
+            "mimeType": "image/png",
+            "sizeBytes": 125667,
+            "fileName": "screenshot.png",
+            "url": "/uploads/att_1",
+            "createdAt": 1777000000000
+          }
+        }
+      ],
+      "createdAt": 1
+    },
     { "id": "m2", "sessionId": "uuid", "seq": 2, "role": "assistant", "content": "world", "createdAt": 2 }
   ]
 }
 ```
+
+### POST /uploads?sessionId=:sessionId[&fileName=...]
+
+Upload one image attachment.
+
+Request:
+
+- Method: `POST`
+- Body: raw binary
+- `Content-Type`: `image/png` / `image/jpeg` / `image/webp` / `image/gif`
+- Optional header: `x-surf-file-name: <url-encoded-name>`
+
+Limits:
+
+- max file size: `10MB`
+
+Response:
+
+```json
+{
+  "attachment": {
+    "id": "att_1",
+    "mimeType": "image/png",
+    "sizeBytes": 125667,
+    "fileName": "screenshot.png",
+    "url": "/uploads/att_1",
+    "createdAt": 1777000000000
+  }
+}
+```
+
+### GET /uploads/:id
+
+Returns uploaded image bytes for the authenticated owner.
 
 ### POST /sessions/:id/messages
 
@@ -445,10 +500,33 @@ Codex run path is now app-server based for `/sessions/:id/runs`.
 
 Creates a queued run and appends the user message.
 
+Request:
+
+```json
+{
+  "adapter": "codex",
+  "model": "auto",
+  "content": "请解释这张图",
+  "attachmentIds": ["att_1", "att_2"],
+  "context": {
+    "pageTitle": "Example",
+    "pageUrl": "https://example.com"
+  }
+}
+```
+
+Rules:
+
+- `content` can be empty only when `attachmentIds` is non-empty.
+- per-message image max count: `10`.
+- `attachmentIds` must belong to current user + session.
+
 Behavior:
 
 - per-user concurrent active run cap is `10`.
 - over cap returns `429` with `error=too_many_concurrent_turns`.
+- non-codex adapters ignore image attachments and use text-only path.
+- codex app-server model without `image` modality will auto-ignore image inputs.
 
 ### GET /sessions/:id/runs/:runId/stream
 

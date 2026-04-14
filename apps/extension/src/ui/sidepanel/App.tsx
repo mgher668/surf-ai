@@ -1,5 +1,16 @@
-import { useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent } from "react";
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type ChangeEvent,
+  type ClipboardEvent as ReactClipboardEvent,
+  type DragEvent as ReactDragEvent,
+  type KeyboardEvent as ReactKeyboardEvent
+} from "react";
 import { Icon } from "@iconify/react/dist/offline";
+import { PhotoSlider } from "react-photo-view";
 import dotsVertical from "@iconify-icons/mdi/dots-vertical";
 import cogOutline from "@iconify-icons/mdi/cog-outline";
 import openInNew from "@iconify-icons/mdi/open-in-new";
@@ -37,11 +48,13 @@ import type {
   BridgeSessionRunEventsResponse,
   BridgeSessionRunsResponse,
   BridgeRunApproval,
+  BridgeUploadCreateResponse,
   BridgeRunStreamEvent,
   BridgeSessionRenameRequest,
   BridgeSessionRenameResponse,
   BridgeSessionStarRequest,
   ChatMessage,
+  ChatMessagePart,
   ChatSession,
   ExtensionToUiMessage,
   BridgeTtsResponse,
@@ -118,6 +131,8 @@ const FALLBACK_ADAPTER_OPTIONS: BridgeModel["adapter"][] = ["mock", "codex", "cl
 const BACKEND_DRAFT_SESSION_ID = "__backend_draft__";
 const AUTO_MODEL_ID = "auto";
 const AUTO_MODEL_LABEL = "Auto (CLI default)";
+const MAX_ATTACHMENTS_PER_MESSAGE = 10;
+const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;
 type SessionMode = "backend" | "local";
 type RuntimeAlertLevel = "warn" | "error";
 type RuntimeAlertCode =
@@ -172,6 +187,21 @@ interface ProcessTimelineItem {
   message?: string;
 }
 
+interface ComposerAttachment {
+  id: string;
+  file: File;
+  previewUrl: string;
+  mimeType: string;
+  sizeBytes: number;
+}
+
+interface SessionGalleryImage {
+  key: string;
+  src: string;
+  alt: string;
+  fileName?: string;
+}
+
 type ConversationTimelineItem =
   | {
       id: string;
@@ -201,6 +231,9 @@ export function App(): JSX.Element {
   const [sessionMode, setSessionMode] = useState<SessionMode>("local");
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
+  const [composerAttachments, setComposerAttachments] = useState<ComposerAttachment[]>([]);
+  const [composerAttachmentError, setComposerAttachmentError] = useState<string | undefined>();
+  const [isDragOverlayVisible, setIsDragOverlayVisible] = useState(false);
   const [adapter, setAdapter] = useState<BridgeChatRequest["adapter"]>("mock");
   const [capabilities, setCapabilities] = useState<BridgeCapabilitiesResponse | undefined>();
   const [capabilitiesError, setCapabilitiesError] = useState<string | undefined>();
@@ -243,9 +276,12 @@ export function App(): JSX.Element {
   const [focusedMessageId, setFocusedMessageId] = useState<string | undefined>();
   const [previewDialogOpen, setPreviewDialogOpen] = useState(false);
   const [previewMessageId, setPreviewMessageId] = useState<string | undefined>();
+  const [imagePreviewVisible, setImagePreviewVisible] = useState(false);
+  const [imagePreviewIndex, setImagePreviewIndex] = useState(0);
   const [loadedMessagesSessionId, setLoadedMessagesSessionId] = useState<string | undefined>();
   const conversationViewportRef = useRef<HTMLElement | null>(null);
   const composerTextareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const composerFileInputRef = useRef<HTMLInputElement | null>(null);
   const previewViewportRef = useRef<HTMLDivElement | null>(null);
   const runStreamRef = useRef<BridgeRunStreamHandle | null>(null);
   const messageItemRefs = useRef(new Map<string, HTMLElement>());
@@ -257,6 +293,8 @@ export function App(): JSX.Element {
   const previewScrollKeysRef = useRef({ j: false, k: false });
   const pendingAutoScrollSessionIdRef = useRef<string | undefined>(undefined);
   const preferredActiveSessionIdRef = useRef<string | undefined>(undefined);
+  const composerAttachmentsRef = useRef<ComposerAttachment[]>([]);
+  const dragDepthRef = useRef(0);
 
   const KEYBOARD_SCROLL_SPEED_PX_PER_SECOND = 780;
 
@@ -271,14 +309,38 @@ export function App(): JSX.Element {
   );
   const isKeyboardShortcutBlocked =
     renameDialogOpen || isAnyDropdownMenuOpen || isAdapterSelectOpen || sidebarOverlayOpen;
+  const activeConnection = useMemo(
+    () => connections.find((item) => item.id === activeConnectionId),
+    [connections, activeConnectionId]
+  );
   const previewMessage = useMemo(
     () => messages.find((item) => item.id === previewMessageId),
     [messages, previewMessageId]
   );
+  const sessionGalleryImages = useMemo(
+    () => buildSessionGalleryImages(messages, activeConnection, locale),
+    [messages, activeConnection, locale]
+  );
+  const sessionGalleryIndexByKey = useMemo(() => {
+    const indexByKey = new Map<string, number>();
+    sessionGalleryImages.forEach((image, index) => {
+      indexByKey.set(image.key, index);
+    });
+    return indexByKey;
+  }, [sessionGalleryImages]);
+  const photoSliderImages = useMemo(
+    () => sessionGalleryImages.map((item) => ({ key: item.key, src: item.src })),
+    [sessionGalleryImages]
+  );
+  const activeGalleryImage =
+    sessionGalleryImages.length > 0
+      ? sessionGalleryImages[Math.min(imagePreviewIndex, sessionGalleryImages.length - 1)]
+      : undefined;
   const streamAssistantDisplayText = useMemo(
     () => pickDisplayAssistantText(streamAssistantByPhase),
     [streamAssistantByPhase]
   );
+  const canSend = input.trim().length > 0 || composerAttachments.length > 0;
 
   const visibleMessages = useMemo(() => {
     if (
@@ -310,11 +372,6 @@ export function App(): JSX.Element {
   const conversationTimelineItems = useMemo(
     () => buildConversationTimelineItems(visibleMessages, processTimelineItems),
     [visibleMessages, processTimelineItems]
-  );
-
-  const activeConnection = useMemo(
-    () => connections.find((item) => item.id === activeConnectionId),
-    [connections, activeConnectionId]
   );
 
   const availableAdapters = useMemo(() => {
@@ -465,6 +522,16 @@ export function App(): JSX.Element {
   }, []);
 
   useEffect(() => {
+    composerAttachmentsRef.current = composerAttachments;
+  }, [composerAttachments]);
+
+  useEffect(() => {
+    return () => {
+      revokeComposerAttachmentPreviews(composerAttachmentsRef.current);
+    };
+  }, []);
+
+  useEffect(() => {
     applyTheme(themeMode);
   }, [themeMode]);
 
@@ -555,6 +622,8 @@ export function App(): JSX.Element {
       setFocusedMessageId(undefined);
       setPreviewDialogOpen(false);
       setPreviewMessageId(undefined);
+      setImagePreviewVisible(false);
+      setImagePreviewIndex(0);
       setRawViewByMessageId({});
       setSelectionContext(undefined);
       setPageContent(undefined);
@@ -568,6 +637,8 @@ export function App(): JSX.Element {
     setPageContent(undefined);
     setExtractError(undefined);
     setIncludePageContext(false);
+    setImagePreviewVisible(false);
+    setImagePreviewIndex(0);
     setRunApprovals([]);
     setRunEvents([]);
     setSessionRunProcesses({});
@@ -681,6 +752,20 @@ export function App(): JSX.Element {
     clearPreviewKeyboardScrollKeys();
   }, [previewDialogOpen]);
 
+  useEffect(() => {
+    if (!imagePreviewVisible) {
+      return;
+    }
+    if (sessionGalleryImages.length === 0) {
+      setImagePreviewVisible(false);
+      setImagePreviewIndex(0);
+      return;
+    }
+    if (imagePreviewIndex >= sessionGalleryImages.length) {
+      setImagePreviewIndex(sessionGalleryImages.length - 1);
+    }
+  }, [imagePreviewVisible, imagePreviewIndex, sessionGalleryImages]);
+
   function toggleRawView(messageId: string): void {
     setRawViewByMessageId((previous) => ({
       ...previous,
@@ -731,6 +816,15 @@ export function App(): JSX.Element {
   function openPreviewDialogForMessage(messageId: string): void {
     setPreviewMessageId(messageId);
     setPreviewDialogOpen(true);
+  }
+
+  function openImagePreview(imageKey: string): void {
+    const index = sessionGalleryIndexByKey.get(imageKey);
+    if (typeof index !== "number") {
+      return;
+    }
+    setImagePreviewIndex(index);
+    setImagePreviewVisible(true);
   }
 
   function stopConversationKeyboardScroll(): void {
@@ -941,6 +1035,137 @@ export function App(): JSX.Element {
     }
     event.preventDefault();
     updatePreviewKeyboardScrollKey(key as "j" | "k", false);
+  }
+
+  function appendComposerFiles(rawFiles: File[]): void {
+    if (rawFiles.length === 0) {
+      return;
+    }
+
+    const nextAttachments = [...composerAttachments];
+    let nextError: string | undefined;
+
+    for (const file of rawFiles) {
+      if (nextAttachments.length >= MAX_ATTACHMENTS_PER_MESSAGE) {
+        nextError ??= t(locale, "composerAttachmentLimitExceeded");
+        break;
+      }
+
+      if (!file.type.startsWith("image/")) {
+        nextError ??= t(locale, "composerAttachmentTypeNotAllowed");
+        continue;
+      }
+
+      if (file.size > MAX_ATTACHMENT_BYTES) {
+        nextError ??= t(locale, "composerAttachmentFileTooLarge");
+        continue;
+      }
+
+      nextAttachments.push({
+        id: crypto.randomUUID(),
+        file,
+        previewUrl: URL.createObjectURL(file),
+        mimeType: file.type || "application/octet-stream",
+        sizeBytes: file.size
+      });
+    }
+
+    setComposerAttachments(nextAttachments);
+    setComposerAttachmentError(nextError);
+  }
+
+  function clearComposerAttachments(): void {
+    setComposerAttachments((prev) => {
+      revokeComposerAttachmentPreviews(prev);
+      return [];
+    });
+  }
+
+  function removeComposerAttachment(attachmentId: string): void {
+    setComposerAttachments((prev) => {
+      const target = prev.find((item) => item.id === attachmentId);
+      if (!target) {
+        return prev;
+      }
+
+      URL.revokeObjectURL(target.previewUrl);
+      return prev.filter((item) => item.id !== attachmentId);
+    });
+  }
+
+  function handleComposerFileInputChange(event: ChangeEvent<HTMLInputElement>): void {
+    const files = event.target.files ? Array.from(event.target.files) : [];
+    if (files.length > 0) {
+      appendComposerFiles(files);
+    }
+    event.target.value = "";
+  }
+
+  function handleComposerPaste(event: ReactClipboardEvent<HTMLTextAreaElement>): void {
+    const files = Array.from(event.clipboardData.items)
+      .filter((item) => item.kind === "file")
+      .map((item) => item.getAsFile())
+      .filter((file): file is File => Boolean(file));
+
+    if (files.length === 0) {
+      return;
+    }
+
+    event.preventDefault();
+    appendComposerFiles(files);
+  }
+
+  function isFileDropEvent(event: ReactDragEvent<HTMLElement>): boolean {
+    const dataTransferTypes = event.dataTransfer?.types;
+    return Array.from(dataTransferTypes ?? []).includes("Files");
+  }
+
+  function resetDragOverlay(): void {
+    dragDepthRef.current = 0;
+    setIsDragOverlayVisible(false);
+  }
+
+  function handleConversationDragEnter(event: ReactDragEvent<HTMLElement>): void {
+    if (!isFileDropEvent(event)) {
+      return;
+    }
+
+    event.preventDefault();
+    dragDepthRef.current += 1;
+    setIsDragOverlayVisible(true);
+  }
+
+  function handleConversationDragOver(event: ReactDragEvent<HTMLElement>): void {
+    if (!isFileDropEvent(event)) {
+      return;
+    }
+
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "copy";
+    if (!isDragOverlayVisible) {
+      setIsDragOverlayVisible(true);
+    }
+  }
+
+  function handleConversationDragLeave(event: ReactDragEvent<HTMLElement>): void {
+    if (!isDragOverlayVisible) {
+      return;
+    }
+
+    event.preventDefault();
+    dragDepthRef.current = Math.max(0, dragDepthRef.current - 1);
+    if (dragDepthRef.current === 0) {
+      setIsDragOverlayVisible(false);
+    }
+  }
+
+  function handleConversationDrop(event: ReactDragEvent<HTMLElement>): void {
+    event.preventDefault();
+    resetDragOverlay();
+    const droppedFiles = Array.from(event.dataTransfer.files ?? []);
+    if (droppedFiles.length > 0) {
+      appendComposerFiles(droppedFiles);
+    }
   }
 
   useEffect(() => {
@@ -2178,7 +2403,8 @@ async function bootstrap(): Promise<void> {
 
   async function send(): Promise<void> {
     const content = input.trim();
-    if (!content) {
+    const hasAttachments = composerAttachments.length > 0;
+    if (!content && !hasAttachments) {
       return;
     }
     if (isActiveRunBusy) {
@@ -2225,7 +2451,12 @@ async function bootstrap(): Promise<void> {
         sessionId = created.id;
       }
 
-      await sendWithBackend(activeConnection, sessionId, content);
+      await sendWithBackend(activeConnection, sessionId, content, composerAttachments);
+      return;
+    }
+
+    if (hasAttachments) {
+      setComposerAttachmentError(t(locale, "composerAttachmentBackendOnly"));
       return;
     }
 
@@ -2235,7 +2466,7 @@ async function bootstrap(): Promise<void> {
       await setSessions(next);
       setSessionsState(next);
       setActiveSessionId(session.id);
-      await sendWithBackend(activeConnection, session.id, content);
+      await sendWithBackend(activeConnection, session.id, content, composerAttachments);
       return;
     }
 
@@ -2337,11 +2568,60 @@ async function bootstrap(): Promise<void> {
   async function sendWithBackend(
     connection: BridgeConnection,
     sessionId: string,
-    content: string
+    content: string,
+    attachments: ComposerAttachment[]
   ): Promise<void> {
     setPending(true);
+    setComposerAttachmentError(undefined);
 
     try {
+      const attachmentIds: string[] = [];
+      for (const attachment of attachments) {
+        const uploadUrl = new URL("/uploads", connection.baseUrl);
+        uploadUrl.searchParams.set("sessionId", sessionId);
+        if (attachment.file.name) {
+          uploadUrl.searchParams.set("fileName", attachment.file.name);
+        }
+
+        const uploadResponse = await fetch(uploadUrl.toString(), {
+          method: "POST",
+          headers: {
+            ...buildBridgeHeaders(connection),
+            ...(attachment.mimeType ? { "content-type": attachment.mimeType } : {})
+          },
+          body: attachment.file
+        });
+
+        if (!uploadResponse.ok) {
+          if (uploadResponse.status === 401 || uploadResponse.status === 403) {
+            reportRuntimeAlert("auth_failed", "error", t(locale, "alertAuthFailed"), uploadResponse.status);
+          } else if (uploadResponse.status === 429) {
+            reportRuntimeAlert("rate_limited", "warn", t(locale, "alertRateLimited"), uploadResponse.status);
+          } else {
+            reportRuntimeAlert(
+              "bridge_request_failed",
+              "warn",
+              `${t(locale, "alertBridgeRequestFailed")} (${uploadResponse.status})`,
+              uploadResponse.status
+            );
+          }
+
+          if (uploadResponse.status === 413) {
+            setComposerAttachmentError(t(locale, "composerAttachmentFileTooLarge"));
+          } else if (uploadResponse.status === 415) {
+            setComposerAttachmentError(t(locale, "composerAttachmentTypeNotAllowed"));
+          } else {
+            setComposerAttachmentError(t(locale, "composerAttachmentUploadFailed"));
+          }
+
+          const failedText = await uploadResponse.text();
+          throw new Error(`Bridge upload failed: ${uploadResponse.status} ${failedText}`);
+        }
+
+        const uploadPayload = (await uploadResponse.json()) as BridgeUploadCreateResponse;
+        attachmentIds.push(uploadPayload.attachment.id);
+      }
+
       const context = buildChatContext(selectionContext, pageContent, includePageContext);
       const response = await fetch(`${connection.baseUrl}/sessions/${sessionId}/runs`, {
         method: "POST",
@@ -2353,6 +2633,7 @@ async function bootstrap(): Promise<void> {
             ? { modelReasoningEffort: selectedModel.modelReasoningEffort }
             : {}),
           content,
+          ...(attachmentIds.length > 0 ? { attachmentIds } : {}),
           ...(Object.keys(context).length > 0 ? { context } : {})
         })
       });
@@ -2393,6 +2674,7 @@ async function bootstrap(): Promise<void> {
       const payload = (await response.json()) as BridgeSessionRunCreateResponse;
       clearRuntimeAlert();
       setInput("");
+      clearComposerAttachments();
       setRunApprovals([]);
       setRunEvents([]);
       setSessionRunProcesses((prev) => ({
@@ -2859,7 +3141,14 @@ async function bootstrap(): Promise<void> {
         ) : null}
 
         <SidebarInset>
-          <main style={{ display: "grid", gridTemplateRows: "auto 1fr auto", minHeight: 0, flex: 1 }}>
+          <main
+            onDragEnter={handleConversationDragEnter}
+            onDragOver={handleConversationDragOver}
+            onDragLeave={handleConversationDragLeave}
+            onDrop={handleConversationDrop}
+            onDragEnd={resetDragOverlay}
+            style={{ display: "grid", gridTemplateRows: "auto 1fr auto", minHeight: 0, flex: 1, position: "relative" }}
+          >
         <header
           style={{
             display: "flex",
@@ -2986,6 +3275,15 @@ async function bootstrap(): Promise<void> {
           </Button>
         </header>
 
+        {isDragOverlayVisible ? (
+          <div style={dragOverlayStyle}>
+            <div style={dragOverlayCardStyle}>
+              <strong style={{ fontSize: 14 }}>{t(locale, "composerDropOverlayTitle")}</strong>
+              <div style={{ fontSize: 12, opacity: 0.9 }}>{t(locale, "composerDropOverlayHint")}</div>
+            </div>
+          </div>
+        ) : null}
+
         <section
           ref={conversationViewportRef}
           tabIndex={0}
@@ -3058,6 +3356,8 @@ async function bootstrap(): Promise<void> {
                 const msg = item.message;
                 const showRaw = msg.role === "assistant" && Boolean(rawViewByMessageId[msg.id]);
                 const isHighlighted = isConversationFocused && focusedMessageId === msg.id;
+                const imageParts = extractImageParts(msg.parts);
+                const userMessageText = resolveUserMessageText(msg);
 
                 return (
                   <article
@@ -3112,9 +3412,81 @@ async function bootstrap(): Promise<void> {
                         ) : (
                           <MarkdownMessage content={msg.content} />
                         )}
+                        {imageParts.length > 0 ? (
+                          <div style={messageImageGridStyle}>
+                            {imageParts.map((part, index) => {
+                              const src = resolveMessageImageSrc(activeConnection, part);
+                              if (!src) {
+                                return null;
+                              }
+                              const alt =
+                                part.attachment.fileName ??
+                                `${t(locale, "composerImagePreviewAltPrefix")} ${index + 1}`;
+                              const imageKey = createSessionGalleryImageKey(
+                                msg.id,
+                                part.attachment.id,
+                                index
+                              );
+                              return (
+                                <button
+                                  key={`${msg.id}:image:${part.attachment.id}:${index}`}
+                                  type="button"
+                                  onClick={() => openImagePreview(imageKey)}
+                                  style={messageImageButtonStyle}
+                                  title={alt}
+                                >
+                                  <img
+                                    src={src}
+                                    alt={alt}
+                                    loading="lazy"
+                                    style={messageImageStyle}
+                                  />
+                                </button>
+                              );
+                            })}
+                          </div>
+                        ) : null}
                       </div>
                     ) : (
-                      <span style={{ whiteSpace: "pre-wrap" }}>{msg.content}</span>
+                      <div style={{ display: "grid", gap: 8 }}>
+                        {userMessageText ? (
+                          <span style={{ whiteSpace: "pre-wrap" }}>{userMessageText}</span>
+                        ) : null}
+                        {imageParts.length > 0 ? (
+                          <div style={messageImageGridStyle}>
+                            {imageParts.map((part, index) => {
+                              const src = resolveMessageImageSrc(activeConnection, part);
+                              if (!src) {
+                                return null;
+                              }
+                              const alt =
+                                part.attachment.fileName ??
+                                `${t(locale, "composerImagePreviewAltPrefix")} ${index + 1}`;
+                              const imageKey = createSessionGalleryImageKey(
+                                msg.id,
+                                part.attachment.id,
+                                index
+                              );
+                              return (
+                                <button
+                                  key={`${msg.id}:image:${part.attachment.id}:${index}`}
+                                  type="button"
+                                  onClick={() => openImagePreview(imageKey)}
+                                  style={messageImageButtonStyle}
+                                  title={alt}
+                                >
+                                  <img
+                                    src={src}
+                                    alt={alt}
+                                    loading="lazy"
+                                    style={messageImageStyle}
+                                  />
+                                </button>
+                              );
+                            })}
+                          </div>
+                        ) : null}
+                      </div>
                     )}
                   </article>
                 );
@@ -3357,22 +3729,70 @@ async function bootstrap(): Promise<void> {
                 </SelectContent>
               </Select>
             </div>
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              className="h-8"
-              onClick={() => void extractCurrentPage()}
-              disabled={extractingPage}
-            >
-              {extractingPage ? t(locale, "extractingPage") : t(locale, "extractPage")}
-            </Button>
+            <div className="flex items-center gap-2">
+              <input
+                ref={composerFileInputRef}
+                type="file"
+                accept="image/*"
+                multiple
+                className="hidden"
+                onChange={handleComposerFileInputChange}
+              />
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="h-8"
+                onClick={() => composerFileInputRef.current?.click()}
+                disabled={pending || isActiveRunBusy}
+              >
+                {t(locale, "composerAddImages")}
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="h-8"
+                onClick={() => void extractCurrentPage()}
+                disabled={extractingPage}
+              >
+                {extractingPage ? t(locale, "extractingPage") : t(locale, "extractPage")}
+              </Button>
+            </div>
           </div>
+          {composerAttachments.length > 0 ? (
+            <div style={composerAttachmentPreviewSectionStyle}>
+              <div className="text-xs text-muted-foreground">
+                {t(locale, "composerAttachmentsLabel")} ({composerAttachments.length}/{MAX_ATTACHMENTS_PER_MESSAGE})
+              </div>
+              <div style={composerAttachmentPreviewGridStyle}>
+                {composerAttachments.map((attachment, index) => (
+                  <div key={attachment.id} style={composerAttachmentPreviewItemStyle}>
+                    <img
+                      src={attachment.previewUrl}
+                      alt={`${t(locale, "composerImagePreviewAltPrefix")} ${index + 1}`}
+                      style={composerAttachmentPreviewImageStyle}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => removeComposerAttachment(attachment.id)}
+                      style={composerAttachmentRemoveButtonStyle}
+                      aria-label={t(locale, "composerRemoveImage")}
+                    >
+                      <Icon icon={deleteOutline} width={14} height={14} />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : null}
+          {composerAttachmentError ? <div style={hintErrorStyle}>{composerAttachmentError}</div> : null}
           <Textarea
             ref={composerTextareaRef}
             rows={4}
             value={input}
             onChange={(e) => setInput(e.target.value)}
+            onPaste={handleComposerPaste}
             onKeyDown={(event) => {
               if (event.key !== "Escape") {
                 return;
@@ -3386,9 +3806,9 @@ async function bootstrap(): Promise<void> {
           />
           <Button
             type="button"
-            disabled={pending || isActiveRunBusy}
+            disabled={pending || isActiveRunBusy || !canSend}
             onClick={() => void send()}
-            style={{ opacity: pending || isActiveRunBusy ? 0.6 : 1 }}
+            style={{ opacity: pending || isActiveRunBusy || !canSend ? 0.6 : 1 }}
           >
             {pending ? "..." : t(locale, "send")}
           </Button>
@@ -3450,17 +3870,95 @@ async function bootstrap(): Promise<void> {
                     lineHeight: 1.65
                   }}
                 >
-                  {previewMessage.role === "assistant" ? (
-                    rawViewByMessageId[previewMessage.id] ? (
-                      <pre style={{ ...rawMessageContentStyle, margin: 0 }}>
-                        <code>{previewMessage.content}</code>
-                      </pre>
+                  {(() => {
+                    const imageParts = extractImageParts(previewMessage.parts);
+                    const userMessageText = resolveUserMessageText(previewMessage);
+                    return previewMessage.role === "assistant" ? (
+                      <div style={{ display: "grid", gap: 12 }}>
+                        {rawViewByMessageId[previewMessage.id] ? (
+                          <pre style={{ ...rawMessageContentStyle, margin: 0 }}>
+                            <code>{previewMessage.content}</code>
+                          </pre>
+                        ) : (
+                          <MarkdownMessage content={previewMessage.content} />
+                        )}
+                        {imageParts.length > 0 ? (
+                          <div style={previewImageGridStyle}>
+                            {imageParts.map((part, index) => {
+                              const src = resolveMessageImageSrc(activeConnection, part);
+                              if (!src) {
+                                return null;
+                              }
+                              const alt =
+                                part.attachment.fileName ??
+                                `${t(locale, "composerImagePreviewAltPrefix")} ${index + 1}`;
+                              const imageKey = createSessionGalleryImageKey(
+                                previewMessage.id,
+                                part.attachment.id,
+                                index
+                              );
+                              return (
+                                <button
+                                  key={`${previewMessage.id}:preview-image:${part.attachment.id}:${index}`}
+                                  type="button"
+                                  onClick={() => openImagePreview(imageKey)}
+                                  style={previewImageButtonStyle}
+                                  title={alt}
+                                >
+                                  <img
+                                    src={src}
+                                    alt={alt}
+                                    loading="lazy"
+                                    style={previewImageStyle}
+                                  />
+                                </button>
+                              );
+                            })}
+                          </div>
+                        ) : null}
+                      </div>
                     ) : (
-                      <MarkdownMessage content={previewMessage.content} />
-                    )
-                  ) : (
-                    <span style={{ whiteSpace: "pre-wrap" }}>{previewMessage.content}</span>
-                  )}
+                      <div style={{ display: "grid", gap: 12 }}>
+                        {userMessageText ? (
+                          <span style={{ whiteSpace: "pre-wrap" }}>{userMessageText}</span>
+                        ) : null}
+                        {imageParts.length > 0 ? (
+                          <div style={previewImageGridStyle}>
+                            {imageParts.map((part, index) => {
+                              const src = resolveMessageImageSrc(activeConnection, part);
+                              if (!src) {
+                                return null;
+                              }
+                              const alt =
+                                part.attachment.fileName ??
+                                `${t(locale, "composerImagePreviewAltPrefix")} ${index + 1}`;
+                              const imageKey = createSessionGalleryImageKey(
+                                previewMessage.id,
+                                part.attachment.id,
+                                index
+                              );
+                              return (
+                                <button
+                                  key={`${previewMessage.id}:preview-image:${part.attachment.id}:${index}`}
+                                  type="button"
+                                  onClick={() => openImagePreview(imageKey)}
+                                  style={previewImageButtonStyle}
+                                  title={alt}
+                                >
+                                  <img
+                                    src={src}
+                                    alt={alt}
+                                    loading="lazy"
+                                    style={previewImageStyle}
+                                  />
+                                </button>
+                              );
+                            })}
+                          </div>
+                        ) : null}
+                      </div>
+                    );
+                  })()}
                 </div>
               ) : (
                 <div style={{ color: "var(--muted-text)", fontSize: 13 }}>{t(locale, "previewMessageMissing")}</div>
@@ -3521,10 +4019,150 @@ async function bootstrap(): Promise<void> {
           </form>
         </DialogContent>
       </Dialog>
+      <PhotoSlider
+        images={photoSliderImages}
+        visible={imagePreviewVisible}
+        index={imagePreviewIndex}
+        bannerVisible={false}
+        onClose={() => {
+          setImagePreviewVisible(false);
+        }}
+        onIndexChange={(index) => {
+          setImagePreviewIndex(index);
+        }}
+        overlayRender={() => (
+          <div style={photoSliderOverlayStyle}>
+            <span style={photoSliderCounterStyle}>
+              {sessionGalleryImages.length === 0
+                ? "0 / 0"
+                : `${Math.min(imagePreviewIndex + 1, sessionGalleryImages.length)} / ${sessionGalleryImages.length}`}
+            </span>
+            <span style={photoSliderNameStyle}>
+              {activeGalleryImage?.fileName?.trim() ||
+                activeGalleryImage?.alt ||
+                t(locale, "composerImagePreviewAltPrefix")}
+            </span>
+          </div>
+        )}
+      />
         </SidebarInset>
       </div>
     </SidebarProvider>
   );
+}
+
+function revokeComposerAttachmentPreviews(attachments: ComposerAttachment[]): void {
+  for (const attachment of attachments) {
+    URL.revokeObjectURL(attachment.previewUrl);
+  }
+}
+
+function createSessionGalleryImageKey(
+  messageId: string,
+  attachmentId: string,
+  imageIndexInMessage: number
+): string {
+  return `${messageId}:${attachmentId}:${imageIndexInMessage}`;
+}
+
+function buildSessionGalleryImages(
+  messages: ChatMessage[],
+  activeConnection: BridgeConnection | undefined,
+  locale: Locale
+): SessionGalleryImage[] {
+  const images: SessionGalleryImage[] = [];
+  for (const message of messages) {
+    const imageParts = extractImageParts(message.parts);
+    if (imageParts.length === 0) {
+      continue;
+    }
+    imageParts.forEach((part, index) => {
+      const src = resolveMessageImageSrc(activeConnection, part);
+      if (!src) {
+        return;
+      }
+      images.push({
+        key: createSessionGalleryImageKey(message.id, part.attachment.id, index),
+        src,
+        alt:
+          part.attachment.fileName ??
+          `${t(locale, "composerImagePreviewAltPrefix")} ${images.length + 1}`,
+        ...(part.attachment.fileName ? { fileName: part.attachment.fileName } : {})
+      });
+    });
+  }
+  return images;
+}
+
+function extractImageParts(
+  parts: ChatMessagePart[] | undefined
+): Array<Extract<ChatMessagePart, { type: "image" }>> {
+  if (!parts || parts.length === 0) {
+    return [];
+  }
+  return parts.filter(
+    (part): part is Extract<ChatMessagePart, { type: "image" }> => part.type === "image"
+  );
+}
+
+function resolveUserMessageText(message: ChatMessage): string | undefined {
+  if (message.parts && message.parts.length > 0) {
+    const text = message.parts
+      .filter((part): part is Extract<ChatMessagePart, { type: "text" }> => part.type === "text")
+      .map((part) => part.text.trim())
+      .filter(Boolean)
+      .join("\n\n");
+    if (text.length > 0) {
+      return text;
+    }
+
+    if (
+      extractImageParts(message.parts).length > 0 &&
+      /^\[\d+\simage(?:s)?\]$/iu.test(message.content.trim())
+    ) {
+      return undefined;
+    }
+  }
+
+  return message.content;
+}
+
+function resolveMessageImageSrc(
+  activeConnection: BridgeConnection | undefined,
+  part: Extract<ChatMessagePart, { type: "image" }>
+): string | undefined {
+  const { attachment } = part;
+  if (attachment.url) {
+    if (
+      attachment.url.startsWith("http://") ||
+      attachment.url.startsWith("https://") ||
+      attachment.url.startsWith("data:") ||
+      attachment.url.startsWith("blob:")
+    ) {
+      return attachment.url;
+    }
+
+    if (activeConnection) {
+      return joinBridgeUrl(activeConnection.baseUrl, attachment.url);
+    }
+    return attachment.url;
+  }
+
+  if (!activeConnection) {
+    return undefined;
+  }
+  return joinBridgeUrl(activeConnection.baseUrl, `/uploads/${attachment.id}`);
+}
+
+function joinBridgeUrl(baseUrl: string, path: string): string {
+  try {
+    const normalizedBase = baseUrl.endsWith("/") ? baseUrl : `${baseUrl}/`;
+    return new URL(path, normalizedBase).toString();
+  } catch {
+    const normalizedBase = baseUrl.endsWith("/") ? baseUrl.slice(0, -1) : baseUrl;
+    const normalizedPath = path.startsWith("/") ? path : `/${path}`;
+    return `${normalizedBase}${normalizedPath}`;
+  }
 }
 
 function normalizeSidebarMode(value: unknown): UiSidebarMode {
@@ -4075,10 +4713,53 @@ function areMessageListsEqual(left: ChatMessage[], right: ChatMessage[]): boolea
       a.adapter !== b.adapter ||
       a.model !== b.model ||
       a.content !== b.content ||
+      !areMessagePartsEqual(a.parts, b.parts) ||
       a.createdAt !== b.createdAt
     ) {
       return false;
     }
+  }
+
+  return true;
+}
+
+function areMessagePartsEqual(
+  left: ChatMessagePart[] | undefined,
+  right: ChatMessagePart[] | undefined
+): boolean {
+  if (!left || left.length === 0) {
+    return !right || right.length === 0;
+  }
+  if (!right || right.length === 0 || left.length !== right.length) {
+    return false;
+  }
+
+  for (let index = 0; index < left.length; index += 1) {
+    const a = left[index];
+    const b = right[index];
+    if (!a || !b || a.type !== b.type) {
+      return false;
+    }
+    if (a.type === "text" && b.type === "text") {
+      if (a.text !== b.text) {
+        return false;
+      }
+      continue;
+    }
+    if (a.type === "image" && b.type === "image") {
+      if (
+        a.attachment.id !== b.attachment.id ||
+        a.attachment.mimeType !== b.attachment.mimeType ||
+        a.attachment.sizeBytes !== b.attachment.sizeBytes ||
+        a.attachment.fileName !== b.attachment.fileName ||
+        a.attachment.url !== b.attachment.url ||
+        a.attachment.createdAt !== b.attachment.createdAt
+      ) {
+        return false;
+      }
+      continue;
+    }
+    return false;
   }
 
   return true;
@@ -4334,4 +5015,160 @@ const rawMessageContentStyle: CSSProperties = {
   wordBreak: "break-word",
   fontSize: 12,
   fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace"
+};
+
+const dragOverlayStyle: CSSProperties = {
+  position: "absolute",
+  inset: 0,
+  zIndex: 30,
+  display: "grid",
+  placeItems: "center",
+  padding: 24,
+  pointerEvents: "none",
+  background: "hsl(var(--background) / 0.74)",
+  backdropFilter: "blur(2px)"
+};
+
+const dragOverlayCardStyle: CSSProperties = {
+  width: "min(420px, 100%)",
+  border: "2px dashed hsl(var(--ring) / 0.7)",
+  borderRadius: 14,
+  padding: "18px 20px",
+  background: "hsl(var(--card) / 0.95)",
+  color: "hsl(var(--foreground))",
+  textAlign: "center",
+  display: "grid",
+  gap: 6
+};
+
+const composerAttachmentPreviewSectionStyle: CSSProperties = {
+  border: "1px solid var(--line)",
+  borderRadius: 10,
+  padding: "8px 10px",
+  background: "var(--panel)",
+  display: "grid",
+  gap: 8
+};
+
+const composerAttachmentPreviewGridStyle: CSSProperties = {
+  display: "flex",
+  flexWrap: "wrap",
+  gap: 8
+};
+
+const composerAttachmentPreviewItemStyle: CSSProperties = {
+  position: "relative",
+  width: 76,
+  height: 76,
+  borderRadius: 8,
+  overflow: "hidden",
+  border: "1px solid var(--line)",
+  background: "var(--code-block-bg)"
+};
+
+const composerAttachmentPreviewImageStyle: CSSProperties = {
+  width: "100%",
+  height: "100%",
+  objectFit: "cover",
+  display: "block"
+};
+
+const composerAttachmentRemoveButtonStyle: CSSProperties = {
+  position: "absolute",
+  top: 4,
+  right: 4,
+  width: 22,
+  height: 22,
+  borderRadius: 999,
+  border: "1px solid hsl(var(--border) / 0.9)",
+  background: "hsl(var(--background) / 0.9)",
+  color: "hsl(var(--foreground))",
+  display: "inline-flex",
+  alignItems: "center",
+  justifyContent: "center",
+  cursor: "pointer"
+};
+
+const messageImageGridStyle: CSSProperties = {
+  display: "flex",
+  flexWrap: "wrap",
+  gap: 8
+};
+
+const messageImageButtonStyle: CSSProperties = {
+  border: "none",
+  padding: 0,
+  margin: 0,
+  background: "transparent",
+  cursor: "zoom-in",
+  lineHeight: 0
+};
+
+const messageImageStyle: CSSProperties = {
+  width: 168,
+  maxWidth: "100%",
+  maxHeight: 220,
+  borderRadius: 8,
+  border: "1px solid var(--line)",
+  objectFit: "cover",
+  display: "block"
+};
+
+const previewImageGridStyle: CSSProperties = {
+  display: "grid",
+  gridTemplateColumns: "repeat(auto-fill, minmax(180px, 1fr))",
+  gap: 10
+};
+
+const previewImageButtonStyle: CSSProperties = {
+  border: "none",
+  padding: 0,
+  margin: 0,
+  background: "transparent",
+  cursor: "zoom-in",
+  lineHeight: 0,
+  textAlign: "left"
+};
+
+const previewImageStyle: CSSProperties = {
+  width: "100%",
+  maxHeight: 420,
+  borderRadius: 10,
+  border: "1px solid var(--line)",
+  objectFit: "contain",
+  background: "hsl(var(--muted) / 0.28)"
+};
+
+const photoSliderOverlayStyle: CSSProperties = {
+  position: "fixed",
+  top: 12,
+  left: "50%",
+  transform: "translateX(-50%)",
+  zIndex: 40,
+  display: "inline-flex",
+  alignItems: "center",
+  gap: 10,
+  padding: "7px 12px",
+  borderRadius: 999,
+  background: "hsl(var(--background) / 0.76)",
+  color: "hsl(var(--foreground))",
+  border: "1px solid hsl(var(--border) / 0.65)",
+  boxShadow: "0 10px 30px hsl(var(--background) / 0.35)",
+  backdropFilter: "blur(8px)",
+  maxWidth: "min(calc(100vw - 20px), 760px)",
+  pointerEvents: "none"
+};
+
+const photoSliderCounterStyle: CSSProperties = {
+  fontSize: 12,
+  fontWeight: 600,
+  whiteSpace: "nowrap",
+  opacity: 0.92
+};
+
+const photoSliderNameStyle: CSSProperties = {
+  fontSize: 12,
+  overflow: "hidden",
+  textOverflow: "ellipsis",
+  whiteSpace: "nowrap"
 };
