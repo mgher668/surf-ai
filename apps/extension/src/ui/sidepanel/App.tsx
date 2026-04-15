@@ -278,6 +278,8 @@ export function App(): JSX.Element {
   const [previewMessageId, setPreviewMessageId] = useState<string | undefined>();
   const [imagePreviewVisible, setImagePreviewVisible] = useState(false);
   const [imagePreviewIndex, setImagePreviewIndex] = useState(0);
+  const [composerImagePreviewVisible, setComposerImagePreviewVisible] = useState(false);
+  const [composerImagePreviewIndex, setComposerImagePreviewIndex] = useState(0);
   const [loadedMessagesSessionId, setLoadedMessagesSessionId] = useState<string | undefined>();
   const conversationViewportRef = useRef<HTMLElement | null>(null);
   const composerTextareaRef = useRef<HTMLTextAreaElement | null>(null);
@@ -335,6 +337,25 @@ export function App(): JSX.Element {
   const activeGalleryImage =
     sessionGalleryImages.length > 0
       ? sessionGalleryImages[Math.min(imagePreviewIndex, sessionGalleryImages.length - 1)]
+      : undefined;
+  const composerGalleryImages = useMemo(
+    () => buildComposerGalleryImages(composerAttachments, locale),
+    [composerAttachments, locale]
+  );
+  const composerGalleryIndexByKey = useMemo(() => {
+    const indexByKey = new Map<string, number>();
+    composerGalleryImages.forEach((image, index) => {
+      indexByKey.set(image.key, index);
+    });
+    return indexByKey;
+  }, [composerGalleryImages]);
+  const composerPhotoSliderImages = useMemo(
+    () => composerGalleryImages.map((item) => ({ key: item.key, src: item.src })),
+    [composerGalleryImages]
+  );
+  const activeComposerGalleryImage =
+    composerGalleryImages.length > 0
+      ? composerGalleryImages[Math.min(composerImagePreviewIndex, composerGalleryImages.length - 1)]
       : undefined;
   const streamAssistantDisplayText = useMemo(
     () => pickDisplayAssistantText(streamAssistantByPhase),
@@ -766,6 +787,20 @@ export function App(): JSX.Element {
     }
   }, [imagePreviewVisible, imagePreviewIndex, sessionGalleryImages]);
 
+  useEffect(() => {
+    if (!composerImagePreviewVisible) {
+      return;
+    }
+    if (composerGalleryImages.length === 0) {
+      setComposerImagePreviewVisible(false);
+      setComposerImagePreviewIndex(0);
+      return;
+    }
+    if (composerImagePreviewIndex >= composerGalleryImages.length) {
+      setComposerImagePreviewIndex(composerGalleryImages.length - 1);
+    }
+  }, [composerImagePreviewVisible, composerImagePreviewIndex, composerGalleryImages]);
+
   function toggleRawView(messageId: string): void {
     setRawViewByMessageId((previous) => ({
       ...previous,
@@ -823,8 +858,19 @@ export function App(): JSX.Element {
     if (typeof index !== "number") {
       return;
     }
+    setComposerImagePreviewVisible(false);
     setImagePreviewIndex(index);
     setImagePreviewVisible(true);
+  }
+
+  function openComposerImagePreview(imageKey: string): void {
+    const index = composerGalleryIndexByKey.get(imageKey);
+    if (typeof index !== "number") {
+      return;
+    }
+    setImagePreviewVisible(false);
+    setComposerImagePreviewIndex(index);
+    setComposerImagePreviewVisible(true);
   }
 
   function stopConversationKeyboardScroll(): void {
@@ -3768,14 +3814,28 @@ async function bootstrap(): Promise<void> {
               <div style={composerAttachmentPreviewGridStyle}>
                 {composerAttachments.map((attachment, index) => (
                   <div key={attachment.id} style={composerAttachmentPreviewItemStyle}>
-                    <img
-                      src={attachment.previewUrl}
-                      alt={`${t(locale, "composerImagePreviewAltPrefix")} ${index + 1}`}
-                      style={composerAttachmentPreviewImageStyle}
-                    />
                     <button
                       type="button"
-                      onClick={() => removeComposerAttachment(attachment.id)}
+                      onClick={() =>
+                        openComposerImagePreview(
+                          createComposerGalleryImageKey(attachment.id, index)
+                        )
+                      }
+                      style={composerAttachmentOpenButtonStyle}
+                      title={attachment.file.name || `${t(locale, "composerImagePreviewAltPrefix")} ${index + 1}`}
+                    >
+                      <img
+                        src={attachment.previewUrl}
+                        alt={`${t(locale, "composerImagePreviewAltPrefix")} ${index + 1}`}
+                        style={composerAttachmentPreviewImageStyle}
+                      />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        removeComposerAttachment(attachment.id);
+                      }}
                       style={composerAttachmentRemoveButtonStyle}
                       aria-label={t(locale, "composerRemoveImage")}
                     >
@@ -4045,6 +4105,32 @@ async function bootstrap(): Promise<void> {
           </div>
         )}
       />
+      <PhotoSlider
+        images={composerPhotoSliderImages}
+        visible={composerImagePreviewVisible}
+        index={composerImagePreviewIndex}
+        bannerVisible={false}
+        onClose={() => {
+          setComposerImagePreviewVisible(false);
+        }}
+        onIndexChange={(index) => {
+          setComposerImagePreviewIndex(index);
+        }}
+        overlayRender={() => (
+          <div style={photoSliderOverlayStyle}>
+            <span style={photoSliderCounterStyle}>
+              {composerGalleryImages.length === 0
+                ? "0 / 0"
+                : `${Math.min(composerImagePreviewIndex + 1, composerGalleryImages.length)} / ${composerGalleryImages.length}`}
+            </span>
+            <span style={photoSliderNameStyle}>
+              {activeComposerGalleryImage?.fileName?.trim() ||
+                activeComposerGalleryImage?.alt ||
+                t(locale, "composerImagePreviewAltPrefix")}
+            </span>
+          </div>
+        )}
+      />
         </SidebarInset>
       </div>
     </SidebarProvider>
@@ -4063,6 +4149,10 @@ function createSessionGalleryImageKey(
   imageIndexInMessage: number
 ): string {
   return `${messageId}:${attachmentId}:${imageIndexInMessage}`;
+}
+
+function createComposerGalleryImageKey(attachmentId: string, index: number): string {
+  return `${attachmentId}:${index}`;
 }
 
 function buildSessionGalleryImages(
@@ -4092,6 +4182,21 @@ function buildSessionGalleryImages(
     });
   }
   return images;
+}
+
+function buildComposerGalleryImages(
+  attachments: ComposerAttachment[],
+  locale: Locale
+): SessionGalleryImage[] {
+  return attachments.map((attachment, index) => {
+    const fileName = attachment.file.name?.trim();
+    return {
+      key: createComposerGalleryImageKey(attachment.id, index),
+      src: attachment.previewUrl,
+      alt: fileName || `${t(locale, "composerImagePreviewAltPrefix")} ${index + 1}`,
+      ...(fileName ? { fileName } : {})
+    };
+  });
 }
 
 function extractImageParts(
@@ -5064,6 +5169,16 @@ const composerAttachmentPreviewItemStyle: CSSProperties = {
   overflow: "hidden",
   border: "1px solid var(--line)",
   background: "var(--code-block-bg)"
+};
+
+const composerAttachmentOpenButtonStyle: CSSProperties = {
+  border: "none",
+  padding: 0,
+  margin: 0,
+  width: "100%",
+  height: "100%",
+  background: "transparent",
+  cursor: "zoom-in"
 };
 
 const composerAttachmentPreviewImageStyle: CSSProperties = {
