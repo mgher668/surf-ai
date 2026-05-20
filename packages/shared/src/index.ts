@@ -333,6 +333,47 @@ export interface BridgeSessionRunEventsResponse {
   events: BridgeRunStreamEvent[];
 }
 
+export type BridgeArtifactKind =
+  | "run_event_payload"
+  | "tool_output"
+  | "reasoning"
+  | "command_output"
+  | "generic";
+
+export interface BridgeArtifact {
+  id: string;
+  userId: string;
+  sessionId: string;
+  runId?: string;
+  kind: BridgeArtifactKind;
+  mimeType: string;
+  byteSize: number;
+  sha256: string;
+  metadata?: Record<string, unknown>;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface BridgeArtifactReference {
+  artifactId: string;
+  kind: BridgeArtifactKind;
+  mimeType: string;
+  byteSize: number;
+  sha256: string;
+}
+
+export interface BridgeArtifactContentResponse {
+  artifact: BridgeArtifact;
+  content: string;
+}
+
+export interface BridgeSessionRunTimelineResponse {
+  run: BridgeSessionRun;
+  events: BridgeRunStreamEvent[];
+  approvals: BridgeRunApproval[];
+  artifacts: BridgeArtifact[];
+}
+
 export interface BridgeSessionRunApprovalDecisionRequest {
   decision: unknown;
   reason?: string;

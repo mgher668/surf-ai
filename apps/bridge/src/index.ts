@@ -29,6 +29,8 @@ import type {
   BridgeSessionRunApprovalDecisionResponse,
   BridgeSessionRunApprovalsResponse,
   BridgeSessionRunEventsResponse,
+  BridgeSessionRunTimelineResponse,
+  BridgeArtifactContentResponse,
   BridgeRunStreamEvent,
   BridgeSessionSendMessageResponse,
   BridgeUploadCreateResponse,
@@ -895,6 +897,65 @@ app.get("/sessions/:id/runs/:runId/events", async (request, reply) => {
       runId,
       parsed.data.limit ?? 2000
     )
+  };
+  return response;
+});
+
+app.get("/sessions/:id/runs/:runId/timeline", async (request, reply) => {
+  const userId = requireAuthedUserId(request, reply);
+  if (!userId) {
+    return;
+  }
+
+  const params = request.params as { id: string; runId: string };
+  const sessionId = String(params.id);
+  const runId = String(params.runId);
+  const run = store.getSessionRun(userId, runId);
+  if (!run || run.sessionId !== sessionId) {
+    reply.code(404);
+    return { error: "run_not_found" };
+  }
+
+  const parsed = listRunEventsQuerySchema.safeParse(request.query);
+  if (!parsed.success) {
+    reply.code(400);
+    return { error: "invalid_request", details: parsed.error.flatten() };
+  }
+
+  const response: BridgeSessionRunTimelineResponse = {
+    run,
+    events: store.listRunEvents(userId, sessionId, runId, parsed.data.limit ?? 5000),
+    approvals: store.listRunApprovals(userId, sessionId, runId, "all"),
+    artifacts: store.listArtifactsByRun(userId, sessionId, runId)
+  };
+  return response;
+});
+
+app.get("/sessions/:id/runs/:runId/artifacts/:artifactId", async (request, reply) => {
+  const userId = requireAuthedUserId(request, reply);
+  if (!userId) {
+    return;
+  }
+
+  const params = request.params as { id: string; runId: string; artifactId: string };
+  const sessionId = String(params.id);
+  const runId = String(params.runId);
+  const artifactId = String(params.artifactId);
+  const run = store.getSessionRun(userId, runId);
+  if (!run || run.sessionId !== sessionId) {
+    reply.code(404);
+    return { error: "run_not_found" };
+  }
+
+  const stored = store.getArtifact(userId, artifactId);
+  if (!stored || stored.artifact.sessionId !== sessionId || stored.artifact.runId !== runId) {
+    reply.code(404);
+    return { error: "artifact_not_found" };
+  }
+
+  const response: BridgeArtifactContentResponse = {
+    artifact: stored.artifact,
+    content: stored.content
   };
   return response;
 });

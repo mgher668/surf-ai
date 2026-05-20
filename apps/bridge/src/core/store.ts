@@ -6,6 +6,9 @@ import type {
   BridgeApprovalKind,
   BridgeApprovalStatus,
   BridgeAdapter,
+  BridgeArtifact,
+  BridgeArtifactKind,
+  BridgeArtifactReference,
   ChatAttachment,
   BridgeModel,
   BridgeRunApproval,
@@ -138,6 +141,8 @@ const NATIVE_MODEL_ADAPTERS: Array<Extract<BridgeAdapter, "mock" | "codex" | "cl
   "mock"
 ];
 
+const RUN_EVENT_PAYLOAD_ARTIFACT_THRESHOLD_BYTES = 32 * 1024;
+
 export type AuditLevel = "INFO" | "WARN" | "ERROR";
 
 export interface AuditEvent {
@@ -202,6 +207,30 @@ interface RunEventRow {
   created_at: number;
 }
 
+interface ArtifactRow {
+  id: string;
+  user_id: string;
+  session_id: string;
+  run_id: string | null;
+  kind: BridgeArtifactKind;
+  mime_type: string;
+  byte_size: number;
+  sha256: string;
+  content: string;
+  metadata_json: string | null;
+  created_at: number;
+  updated_at: number;
+}
+
+export interface StoredArtifactWithContent {
+  artifact: BridgeArtifact;
+  content: string;
+}
+
+export interface RunEventListOptions {
+  hydrateArtifacts?: boolean;
+}
+
 export interface PurgeExpiredDataInput {
   sessionCutoffMs: number;
   auditCutoffMs: number;
@@ -222,6 +251,7 @@ export interface PurgeExpiredDataResult {
     agentSessionLinks: number;
     sessionMemories: number;
     auditEvents: number;
+    artifacts: number;
   };
   executedAt: number;
 }
@@ -847,6 +877,7 @@ export class BridgeStore {
     }
 
     const now = Date.now();
+    const data = this.normalizeRunEventDataForStorage(userId, event, now);
     this.db.prepare(
       `INSERT OR IGNORE INTO run_events (
         event_id, user_id, session_id, run_id, type, ts, data_json, created_at
@@ -858,7 +889,7 @@ export class BridgeStore {
       event.runId,
       event.type,
       event.ts,
-      stringifyJsonSafe(event.data),
+      stringifyJsonSafe(data),
       now
     );
   }
@@ -867,7 +898,8 @@ export class BridgeStore {
     userId: string,
     sessionId: string,
     runId: string,
-    limit = 2000
+    limit = 2000,
+    options: RunEventListOptions = {}
   ): BridgeRunStreamEvent[] {
     this.assertSessionOwnership(userId, sessionId);
     const rows = this.db.prepare(
@@ -879,7 +911,87 @@ export class BridgeStore {
        LIMIT ?`
     ).all(userId, sessionId, runId, limit) as unknown as RunEventRow[];
 
-    return rows.reverse().map(mapRunEventRow);
+    const events = rows.reverse().map(mapRunEventRow);
+    if (options.hydrateArtifacts === false) {
+      return events;
+    }
+    return events.map((event) => this.hydrateRunEventArtifactData(userId, event));
+  }
+
+  public createArtifact(input: {
+    userId: string;
+    sessionId: string;
+    runId?: string;
+    kind: BridgeArtifactKind;
+    mimeType: string;
+    content: string;
+    metadata?: Record<string, unknown>;
+  }): BridgeArtifact {
+    this.assertSessionOwnership(input.userId, input.sessionId);
+    if (input.runId) {
+      const run = this.getSessionRun(input.userId, input.runId);
+      if (!run || run.sessionId !== input.sessionId) {
+        throw new Error("run_not_found");
+      }
+    }
+
+    const now = Date.now();
+    const id = randomUUID();
+    const bytes = Buffer.byteLength(input.content, "utf8");
+    const sha256 = createHash("sha256").update(input.content).digest("hex");
+    this.db.prepare(
+      `INSERT INTO artifacts (
+        id, user_id, session_id, run_id, kind, mime_type, byte_size, sha256,
+        content, metadata_json, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(
+      id,
+      input.userId,
+      input.sessionId,
+      input.runId ?? null,
+      input.kind,
+      input.mimeType,
+      bytes,
+      sha256,
+      input.content,
+      input.metadata ? stringifyJsonSafe(input.metadata) : null,
+      now,
+      now
+    );
+
+    const stored = this.getArtifact(input.userId, id);
+    if (!stored) {
+      throw new Error("artifact_insert_failed");
+    }
+    return stored.artifact;
+  }
+
+  public getArtifact(userId: string, artifactId: string): StoredArtifactWithContent | null {
+    const row = this.db.prepare(
+      `SELECT
+         id, user_id, session_id, run_id, kind, mime_type, byte_size, sha256,
+         content, metadata_json, created_at, updated_at
+       FROM artifacts
+       WHERE user_id = ? AND id = ?`
+    ).get(userId, artifactId) as ArtifactRow | undefined;
+    return row ? mapArtifactRowWithContent(row) : null;
+  }
+
+  public listArtifactsByRun(userId: string, sessionId: string, runId: string): BridgeArtifact[] {
+    this.assertSessionOwnership(userId, sessionId);
+    const run = this.getSessionRun(userId, runId);
+    if (!run || run.sessionId !== sessionId) {
+      throw new Error("run_not_found");
+    }
+    const rows = this.db.prepare(
+      `SELECT
+         id, user_id, session_id, run_id, kind, mime_type, byte_size, sha256,
+         content, metadata_json, created_at, updated_at
+       FROM artifacts
+       WHERE user_id = ? AND session_id = ? AND run_id = ?
+       ORDER BY created_at ASC`
+    ).all(userId, sessionId, runId) as unknown as ArtifactRow[];
+    return rows.map(mapArtifactRow);
   }
 
   public updateApprovalEvent(input: {
@@ -1216,6 +1328,18 @@ export class BridgeStore {
         )
       : 0;
 
+    const artifactsCount = input.includeSessions
+      ? readCount(
+          this.db.prepare(
+            `SELECT COUNT(*) AS count
+             FROM artifacts
+             WHERE session_id IN (
+               SELECT id FROM sessions WHERE user_id = ? AND updated_at < ?
+             )`
+          ).get(userId, input.sessionCutoffMs) as { count: number }
+        )
+      : 0;
+
     const auditCount = input.includeAudit
       ? readCount(
           this.db.prepare(
@@ -1255,6 +1379,7 @@ export class BridgeStore {
         messages: messagesCount,
         agentSessionLinks: linksCount,
         sessionMemories: memoriesCount,
+        artifacts: artifactsCount,
         auditEvents: auditCount
       },
       executedAt: Date.now()
@@ -1371,6 +1496,88 @@ export class BridgeStore {
     attachmentIds.forEach((attachmentId, ord) => {
       link.run(messageId, attachmentId, ord, now);
     });
+  }
+
+  private normalizeRunEventDataForStorage(
+    userId: string,
+    event: BridgeRunStreamEvent,
+    now: number
+  ): BridgeRunStreamEvent["data"] {
+    const raw = stringifyJsonSafe(event.data);
+    const byteSize = Buffer.byteLength(raw, "utf8");
+    if (byteSize <= RUN_EVENT_PAYLOAD_ARTIFACT_THRESHOLD_BYTES) {
+      return event.data;
+    }
+
+    const existingEvent = this.db.prepare(
+      "SELECT event_id FROM run_events WHERE event_id = ?"
+    ).get(event.eventId) as { event_id: string } | undefined;
+    if (existingEvent) {
+      return event.data;
+    }
+
+    const id = randomUUID();
+    const sha256 = createHash("sha256").update(raw).digest("hex");
+    this.db.prepare(
+      `INSERT INTO artifacts (
+        id, user_id, session_id, run_id, kind, mime_type, byte_size, sha256,
+        content, metadata_json, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(
+      id,
+      userId,
+      event.sessionId,
+      event.runId,
+      "run_event_payload",
+      "application/json",
+      byteSize,
+      sha256,
+      raw,
+      stringifyJsonSafe({
+        eventId: event.eventId,
+        eventType: event.type,
+        offloaded: true
+      }),
+      now,
+      now
+    );
+
+    return {
+      artifactRef: {
+        artifactId: id,
+        kind: "run_event_payload",
+        mimeType: "application/json",
+        byteSize,
+        sha256
+      } satisfies BridgeArtifactReference,
+      originalEventType: event.type
+    } as BridgeRunStreamEvent["data"];
+  }
+
+  private hydrateRunEventArtifactData(
+    userId: string,
+    event: BridgeRunStreamEvent
+  ): BridgeRunStreamEvent {
+    const data = event.data as Record<string, unknown>;
+    const artifactRef = data.artifactRef as Record<string, unknown> | undefined;
+    const artifactId = typeof artifactRef?.artifactId === "string" ? artifactRef.artifactId : undefined;
+    if (!artifactId || data.originalEventType !== event.type) {
+      return event;
+    }
+
+    const stored = this.getArtifact(userId, artifactId);
+    if (!stored || stored.artifact.kind !== "run_event_payload") {
+      return event;
+    }
+
+    try {
+      return {
+        ...event,
+        data: JSON.parse(stored.content) as BridgeRunStreamEvent["data"]
+      } as BridgeRunStreamEvent;
+    } catch {
+      return event;
+    }
   }
 
   private getAttachmentRow(userId: string, attachmentId: string): AttachmentRow | undefined {
@@ -1511,6 +1718,31 @@ export class BridgeStore {
         ON message_attachments(message_id, ord ASC);
       CREATE INDEX IF NOT EXISTS idx_message_attachments_attachment
         ON message_attachments(attachment_id);
+
+      CREATE TABLE IF NOT EXISTS artifacts (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        session_id TEXT NOT NULL,
+        run_id TEXT,
+        kind TEXT NOT NULL,
+        mime_type TEXT NOT NULL,
+        byte_size INTEGER NOT NULL,
+        sha256 TEXT NOT NULL,
+        content TEXT NOT NULL,
+        metadata_json TEXT,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE,
+        FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE,
+        FOREIGN KEY(run_id) REFERENCES session_runs(id) ON DELETE CASCADE
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_artifacts_user_session_created
+        ON artifacts(user_id, session_id, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_artifacts_run_created
+        ON artifacts(run_id, created_at ASC);
+      CREATE INDEX IF NOT EXISTS idx_artifacts_sha256
+        ON artifacts(sha256);
 
       CREATE TABLE IF NOT EXISTS agent_session_links (
         session_id TEXT NOT NULL,
@@ -1970,6 +2202,30 @@ function mapRunEventRow(row: RunEventRow): BridgeRunStreamEvent {
     ts: row.ts,
     data: parseJsonUnknown(row.data_json) as BridgeRunStreamEvent["data"]
   } as BridgeRunStreamEvent;
+}
+
+function mapArtifactRow(row: ArtifactRow): BridgeArtifact {
+  const metadata = row.metadata_json ? parseJsonRecord(row.metadata_json) : undefined;
+  return {
+    id: row.id,
+    userId: row.user_id,
+    sessionId: row.session_id,
+    ...(row.run_id ? { runId: row.run_id } : {}),
+    kind: row.kind,
+    mimeType: row.mime_type,
+    byteSize: row.byte_size,
+    sha256: row.sha256,
+    ...(metadata ? { metadata } : {}),
+    createdAt: row.created_at,
+    updatedAt: row.updated_at
+  };
+}
+
+function mapArtifactRowWithContent(row: ArtifactRow): StoredArtifactWithContent {
+  return {
+    artifact: mapArtifactRow(row),
+    content: row.content
+  };
 }
 
 function parseAuditDetails(raw: string): Record<string, unknown> {

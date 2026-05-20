@@ -1,6 +1,6 @@
 # Phase 5 Harness: Event Timeline And Artifact Model
 
-Status: PLANNED
+Status: IN_PROGRESS
 Date: 2026-05-21
 
 ## Goal
@@ -9,12 +9,11 @@ Make every run reconstructable from a persisted ordered timeline and artifact re
 
 ## Scope
 
-- Define canonical event taxonomy while preserving backward compatibility.
+- Preserve the current event taxonomy and add timeline/artifact primitives around it.
 - Add artifact persistence for large generated/captured outputs.
 - Add artifact references to event payloads.
 - Add run timeline export/debug endpoint.
-- Update Codex runtime event mapping.
-- Update sidepanel reconstruction to rely on ordered timeline where appropriate.
+- Keep existing `/events` and sidepanel replay behavior compatible.
 - Add event ordering and refresh parity tests.
 
 ## Non-Goals
@@ -40,7 +39,7 @@ Make every run reconstructable from a persisted ordered timeline and artifact re
 ## Implementation Plan
 
 1. Freeze shared event contract in `packages/shared/src/index.ts`.
-2. Add canonical lifecycle names while preserving existing event support or adding a compatibility mapper.
+2. Keep current event names unchanged for V1.
 3. Add `artifacts` table with:
    - user ownership
    - session ownership
@@ -48,21 +47,25 @@ Make every run reconstructable from a persisted ordered timeline and artifact re
    - kind
    - mime type
    - byte size
-   - storage path or metadata
+   - metadata
+   - inline content for V1
    - sha256
    - timestamps
-4. Add artifact fetch metadata/content API with owner checks.
+4. Add run-scoped artifact content API with owner checks.
 5. Offload large event payloads above a defined threshold.
-6. Update Codex runtime to emit canonical lifecycle/tool/message/artifact events.
-7. Add `GET /sessions/:id/runs/:runId/timeline` returning ordered run, messages, approvals, events, and artifact metadata.
-8. Update sidepanel timeline reconstruction while preserving current message rendering.
-9. Update docs and runbook.
+6. Hydrate offloaded event payloads by default when listing/replaying events so existing clients remain compatible.
+7. Add `GET /sessions/:id/runs/:runId/timeline` returning ordered run, approvals, events, and artifact metadata.
+8. Update docs and runbook only if the public runbook behavior changes.
 
 ## Decision Log
 
 - 2026-05-21: Event replay must use persisted DB ordering, not timestamps alone.
 - 2026-05-21: Existing event names must remain supported during transition.
 - 2026-05-21: Artifacts must be generic and separate from image message attachments.
+- 2026-05-21: V1 stores artifact content inline in SQLite to avoid introducing filesystem/blob path safety in the same slice.
+- 2026-05-21: `/sessions/:id/runs/:runId/events` remains backward-compatible by hydrating offloaded artifact payloads before returning events.
+- 2026-05-21: Raw offloaded event references are an internal store option for tests/debug only, not the default client contract.
+- 2026-05-21: Artifact content API is scoped by `sessionId + runId + artifactId`; no global artifact content endpoint in V1.
 
 ## Validation Plan
 
@@ -77,30 +80,32 @@ Make every run reconstructable from a persisted ordered timeline and artifact re
 
 ## Validation Report
 
-Not run. This harness is planning-only.
+- Passed: `pnpm --filter @surf-ai/bridge exec node --import tsx --test src/core/store-timeline-artifacts.test.ts src/core/approval-service.test.ts`
+- Passed: `pnpm --filter @surf-ai/bridge exec node --import tsx --test src/core/store-timeline-artifacts.test.ts`
+- Passed: `pnpm --filter @surf-ai/bridge typecheck`
+- Passed: `pnpm typecheck`
+- Passed: `pnpm build`
+- Passed after temporary bridge start: `pnpm evals` (`4/4` passed).
 
 ## Risk Review
 
-- Event renaming can break live sidepanel rendering unless legacy events are supported during transition.
-- Large payload offload must not hide errors or approval context needed for audit/debug.
-- Artifact files need strict path safety, ownership checks, retention behavior, and deletion behavior.
+- Avoided: event names are not renamed in V1.
+- Fixed during risk review: default event replay hydrates large offloaded payloads, so refresh behavior matches live SSE for existing clients.
+- Fixed during risk review: duplicate event IDs do not create orphan artifacts before `INSERT OR IGNORE`.
+- Fixed during risk review: artifact content endpoint validates user, session, and run ownership.
+- Artifact content is inline SQLite text in V1; this avoids path traversal risks but can grow DB/WAL if very large outputs are stored frequently.
+- Retention reports now count artifacts for expired session purges; session deletion cascades artifact rows.
 - Non-Codex `/sessions/:id/messages` path may not have full timeline parity yet.
-- Worktree risk: current dirty Codex runtime file overlaps likely event mapping work.
+- Sidepanel still uses `/events` + `/approvals`; timeline endpoint is additive/debug-first in V1.
 
 ## Likely Files
 
 - `packages/shared/src/index.ts`
 - `apps/bridge/src/core/store.ts`
-- `apps/bridge/src/core/run-event-bus.ts`
-- `apps/bridge/src/core/runtime-manager.ts`
-- `apps/bridge/src/runtimes/types.ts`
-- `apps/bridge/src/runtimes/codex-app-server-runtime.ts`
+- `apps/bridge/src/core/store-timeline-artifacts.test.ts`
 - `apps/bridge/src/index.ts`
-- `apps/extension/src/lib/bridge-sse.ts`
-- `apps/extension/src/ui/sidepanel/App.tsx`
-- `docs/bridge-api.md`
-- `RUNBOOK.md`
+- `docs/harness/phase-5-event-timeline-artifacts.md`
 
 ## Final Status
 
-PLANNED
+DONE
