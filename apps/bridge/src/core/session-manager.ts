@@ -5,6 +5,7 @@ import { ClaudeAdapter } from "../agents/claude-adapter";
 import { AdapterRegistry } from "./registry";
 import { type AgentSessionLink, BridgeStore } from "./store";
 import { retrieveSessionMessages } from "./retrieval";
+import { MemoryService } from "./memory-service";
 
 const MAX_DELTA_MESSAGE_CHARS = 4_000;
 const MAX_DELTA_PAGE_TEXT_CHARS = 100_000;
@@ -94,10 +95,14 @@ export interface SessionContextPreview {
 }
 
 export class SessionManager {
+  private readonly memory: MemoryService;
+
   public constructor(
     private readonly store: BridgeStore,
     private readonly registry: AdapterRegistry
-  ) {}
+  ) {
+    this.memory = new MemoryService(store);
+  }
 
   public async generateReply(request: SessionReplyRequest): Promise<SessionReplyResult> {
     const history = this.store.listAllMessagesBySession(request.userId, request.sessionId);
@@ -350,8 +355,7 @@ export class SessionManager {
       ]
     );
 
-    const facts = this.store.getSessionMemory(input.userId, input.sessionId, "facts");
-    const todos = this.store.getSessionMemory(input.userId, input.sessionId, "todos");
+    const memories = this.memory.getHandoffSessionMemories(input.userId, input.sessionId);
 
     return {
       latest_user_request: clipText(latestUserRequest, MAX_DELTA_MESSAGE_CHARS),
@@ -361,8 +365,8 @@ export class SessionManager {
         role: item.role,
         content: clipText(item.content, RECENT_ITEM_MAX_CHARS)
       })),
-      ...(facts?.content ? { pinned_facts: facts.content } : {}),
-      ...(todos?.content ? { open_todos: todos.content } : {}),
+      ...(memories.facts ? { pinned_facts: memories.facts } : {}),
+      ...(memories.todos ? { open_todos: memories.todos } : {}),
       evidence_refs: evidenceRefs,
       ...(retrieval
         ? {
@@ -406,13 +410,13 @@ export class SessionManager {
       return undefined;
     }
 
-    const cached = this.store.getSessionMemory(input.userId, input.sessionId, "summary");
-    if (
-      cached &&
-      cached.sourceSeqStart <= firstSeq &&
-      cached.sourceSeqEnd >= lastSeq &&
-      cached.content.trim().length > 0
-    ) {
+    const cached = this.memory.getReusableSummary({
+      userId: input.userId,
+      sessionId: input.sessionId,
+      sourceSeqStart: firstSeq,
+      sourceSeqEnd: lastSeq
+    });
+    if (cached) {
       return {
         content: cached.content,
         source_seq_start: cached.sourceSeqStart,
@@ -465,9 +469,9 @@ export class SessionManager {
         return undefined;
       }
 
-      const persisted = this.store.upsertSessionMemory(input.userId, {
+      const persisted = this.memory.upsertSessionSummary({
+        userId: input.userId,
         sessionId: input.sessionId,
-        kind: "summary",
         content: normalized,
         sourceSeqStart: firstSeq,
         sourceSeqEnd: lastSeq
