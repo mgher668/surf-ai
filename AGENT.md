@@ -112,6 +112,7 @@ docs/harness/phase-x-short-name.md
 - subagent 输出只写摘要，不粘贴长原文。
 - 阶段结束必须写 `Final Status: DONE / DONE_WITH_CONCERNS / BLOCKED`。
 - 没有 final status，不得进入下一阶段。
+- 规划型 harness 可以先标记 `Status: PLANNED`，但开始实现前必须改为 `IN_PROGRESS`，完成后必须写 `Final Status: DONE / DONE_WITH_CONCERNS / BLOCKED`。
 - 核心代码提交前必须同步更新对应 harness 文档。
 - 每个 Phase 完成后必须创建独立 commit，commit message 应包含 phase 名称或目标。
 - 默认不 push；push 必须由用户明确确认。

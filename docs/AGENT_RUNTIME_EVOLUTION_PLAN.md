@@ -98,11 +98,13 @@ Required sections:
 
 Allowed final statuses:
 
+- `PLANNED` for planning-only harness records before implementation starts
+- `IN_PROGRESS` while implementation is active
 - `DONE`
 - `DONE_WITH_CONCERNS`
 - `BLOCKED`
 
-No major phase should proceed to the next phase without a final status.
+No implementation phase should proceed to the next implementation phase without `DONE`, `DONE_WITH_CONCERNS`, or `BLOCKED`. Planning-only harness records may stay `PLANNED` until their implementation starts.
 
 ### 5.2 Subagent Split
 
@@ -554,8 +556,14 @@ Reasoning:
 
 - Memory and context are closest to existing code and highest value.
 - Approval and event timeline stabilize runtime correctness.
-- Tool registry becomes more useful once approval/event primitives are stable.
+- Tool registry becomes safer and more useful once approval/event primitives are stable; do not expose write-capable tools before Phase 4 and Phase 5 are complete.
 - Multi-client and skills should come after the runtime core is coherent.
+
+Planning note:
+
+- Phase 2/3/4/5 may be planned together as `Status: PLANNED` harness records.
+- Implementation must still proceed one phase at a time.
+- Current implementation sequence after Phase 1 is: Phase 2, then Phase 4, then Phase 5, then Phase 3.
 
 ## 15. First Implementation Slice
 
