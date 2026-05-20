@@ -8,6 +8,10 @@ import type {
   ChatMessage
 } from "@surf-ai/shared";
 import { CodexAppServerClient } from "../core/codex-app-server-client";
+import {
+  ApprovalService,
+  fallbackTimeoutDecision
+} from "../core/approval-service";
 import { BridgeStore } from "../core/store";
 import type {
   AgentRuntime,
@@ -69,6 +73,7 @@ export class CodexAppServerRuntime implements AgentRuntime {
   private readonly activeRunsByTurnKey = new Map<string, ActiveRunContext>();
   private readonly activeRunsByThreadId = new Map<string, ActiveRunContext>();
   private readonly pendingApprovals = new Map<string, PendingApprovalContext>();
+  private readonly approvalService: ApprovalService;
   private readonly modelImageSupportCache = new Map<string, boolean>();
   private reconnecting = false;
   private started = false;
@@ -77,6 +82,9 @@ export class CodexAppServerRuntime implements AgentRuntime {
     private readonly store: BridgeStore,
     private readonly eventSink: RuntimeEventSink
   ) {
+    this.approvalService = new ApprovalService(store, eventSink, {
+      timeoutMs: APPROVAL_TIMEOUT_MS
+    });
     this.client.onNotification((message) => {
       this.handleNotification(message.method, message.params);
     });
@@ -215,7 +223,7 @@ export class CodexAppServerRuntime implements AgentRuntime {
       return;
     }
 
-    for (const approvalRequestId of context.pendingApprovals) {
+    for (const approvalRequestId of [...context.pendingApprovals]) {
       const pending = this.pendingApprovals.get(makeApprovalKey(runId, approvalRequestId));
       if (!pending) {
         continue;
@@ -225,16 +233,29 @@ export class CodexAppServerRuntime implements AgentRuntime {
         "cancel",
         "CANCELLED",
         "system",
-        "run_cancelled"
+        "run_cancelled",
+        { respondToProvider: true }
       );
     }
 
-    await this.client
+    // Ensure local run terminates immediately even if app-server interrupt is delayed or fails.
+    this.forceCancelContext(context, "codex_turn_interrupted");
+
+    void this.client
       .call("turn/interrupt", {
         threadId: context.threadId,
         turnId: context.turnId
       })
       .catch(() => undefined);
+  }
+
+  private forceCancelContext(context: ActiveRunContext, message: string): void {
+    if (context.completed) {
+      return;
+    }
+    context.completed = true;
+    this.cleanupRunContext(context);
+    context.reject(new Error(message));
   }
 
   public async submitApprovalDecision(
@@ -257,18 +278,10 @@ export class CodexAppServerRuntime implements AgentRuntime {
       throw new Error("approval_user_mismatch");
     }
 
-    if (
-      pending.availableDecisions.length > 0 &&
-      !pending.availableDecisions.some((candidate) => decisionsEqual(candidate, input.decision))
-    ) {
-      throw new Error("approval_decision_invalid");
-    }
-
-    const status = approvalStatusFromDecision(input.decision);
     const approval = await this.applyApprovalDecision(
       pending,
       input.decision,
-      status,
+      undefined,
       input.decidedBy,
       input.reason
     );
@@ -606,7 +619,7 @@ export class CodexAppServerRuntime implements AgentRuntime {
     const requestedAt = Date.now();
     const expiresAt = requestedAt + APPROVAL_TIMEOUT_MS;
 
-    const approval = this.store.createApprovalEvent({
+    const approvalResult = this.approvalService.createPendingApproval({
       userId: context.userId,
       sessionId: context.sessionId,
       runId: context.runId,
@@ -621,8 +634,15 @@ export class CodexAppServerRuntime implements AgentRuntime {
       requestedAt,
       expiresAt
     });
-
-    this.publish(context.sessionId, context.runId, "approval.requested", { approval });
+    const { approval } = approvalResult;
+    if (approval.status !== "PENDING") {
+      this.client.respondError(rpcRequestId, -32002, "approval_request_already_resolved");
+      return;
+    }
+    if (!approvalResult.created) {
+      this.client.respondError(rpcRequestId, -32003, "approval_request_already_pending");
+      return;
+    }
 
     const timer = setTimeout(() => {
       const pending = this.pendingApprovals.get(makeApprovalKey(context.runId, approvalRequestId));
@@ -634,7 +654,8 @@ export class CodexAppServerRuntime implements AgentRuntime {
         fallbackTimeoutDecision(pending.availableDecisions, pending.kind),
         "TIMEOUT",
         "system",
-        "approval_timeout"
+        "approval_timeout",
+        { respondToProvider: true }
       );
     }, APPROVAL_TIMEOUT_MS);
 
@@ -659,43 +680,55 @@ export class CodexAppServerRuntime implements AgentRuntime {
   private async applyApprovalDecision(
     pending: PendingApprovalContext,
     decision: unknown,
-    status: Exclude<BridgeApprovalStatus, "PENDING">,
+    status: Exclude<BridgeApprovalStatus, "PENDING"> | undefined,
     decidedBy: string,
-    reason?: string
+    reason?: string,
+    options: {
+      respondToProvider?: boolean;
+      validateDecision?: boolean;
+    } = {}
   ): Promise<BridgeRunApproval> {
-    clearTimeout(pending.timer);
-
-    const responsePayload = buildApprovalResponsePayload(
-      pending.kind,
-      pending.method,
-      decision,
-      pending.payload
-    );
-    this.client.respond(pending.rpcRequestId, responsePayload);
-
-    const updated = this.store.updateApprovalEvent({
+    const result = this.approvalService.completePendingApproval({
       userId: pending.userId,
       runId: pending.runId,
       approvalRequestId: pending.approvalRequestId,
-      status,
       decision,
+      ...(status ? { status } : {}),
+      availableDecisions: pending.availableDecisions,
       decidedBy,
-      ...(reason ? { decisionReason: reason } : {}),
-      decidedAt: Date.now()
+      ...(reason ? { reason } : {}),
+      ...(typeof options.validateDecision === "boolean"
+        ? { validateDecision: options.validateDecision }
+        : {}),
+      publish: false
     });
 
+    if (!result.transitioned) {
+      this.clearPendingApproval(pending);
+      return result.approval;
+    }
+
+    clearTimeout(pending.timer);
+
+    if (options.respondToProvider !== false) {
+      const responsePayload = buildApprovalResponsePayload(
+        pending.kind,
+        pending.method,
+        decision,
+        pending.payload
+      );
+      this.client.respond(pending.rpcRequestId, responsePayload);
+    }
+
+    this.clearPendingApproval(pending);
+    this.approvalService.publishApprovalUpdated(result.approval);
+    return result.approval;
+  }
+
+  private clearPendingApproval(pending: PendingApprovalContext): void {
     const context = this.activeRunsByRunId.get(pending.runId);
     context?.pendingApprovals.delete(pending.approvalRequestId);
     this.pendingApprovals.delete(makeApprovalKey(pending.runId, pending.approvalRequestId));
-
-    if (!updated) {
-      throw new Error("approval_event_update_failed");
-    }
-
-    this.publish(pending.sessionId, pending.runId, "approval.updated", {
-      approval: updated
-    });
-    return updated;
   }
 
   private async handleClientClosed(error?: Error): Promise<void> {
@@ -709,27 +742,40 @@ export class CodexAppServerRuntime implements AgentRuntime {
       this.publish(context.sessionId, context.runId, "error", {
         message: error?.message ?? "codex_app_server_disconnected"
       });
+      for (const approvalRequestId of [...context.pendingApprovals]) {
+        const pending = this.pendingApprovals.get(makeApprovalKey(context.runId, approvalRequestId));
+        if (!pending) {
+          continue;
+        }
+        await this.applyApprovalDecision(
+          pending,
+          "bridge_disconnected",
+          "FAILED",
+          "system",
+          "bridge_runtime_disconnected",
+          {
+            respondToProvider: false,
+            validateDecision: false
+          }
+        );
+      }
       this.cleanupRunContext(context);
       context.reject(new Error(error?.message ?? "codex_app_server_disconnected"));
     }
 
-    for (const pending of this.pendingApprovals.values()) {
+    for (const pending of [...this.pendingApprovals.values()]) {
       clearTimeout(pending.timer);
-      const updated = this.store.updateApprovalEvent({
-        userId: pending.userId,
-        runId: pending.runId,
-        approvalRequestId: pending.approvalRequestId,
-        status: "FAILED",
-        decision: "bridge_disconnected",
-        decidedBy: "system",
-        decisionReason: "bridge_runtime_disconnected",
-        decidedAt: Date.now()
-      });
-      if (updated) {
-        this.publish(pending.sessionId, pending.runId, "approval.updated", {
-          approval: updated
-        });
-      }
+      await this.applyApprovalDecision(
+        pending,
+        "bridge_disconnected",
+        "FAILED",
+        "system",
+        "bridge_runtime_disconnected",
+        {
+          respondToProvider: false,
+          validateDecision: false
+        }
+      );
     }
     this.pendingApprovals.clear();
 
@@ -880,52 +926,6 @@ function resolveAvailableDecisions(
   }
 
   return ["cancel"];
-}
-
-function fallbackTimeoutDecision(decisions: unknown[], kind: BridgeApprovalKind): unknown {
-  if (decisions.some((item) => decisionsEqual(item, "decline"))) {
-    return "decline";
-  }
-  if (decisions.some((item) => decisionsEqual(item, "cancel"))) {
-    return "cancel";
-  }
-  if (kind === "toolUserInput") {
-    return "cancel";
-  }
-  return "decline";
-}
-
-function approvalStatusFromDecision(decision: unknown): Exclude<BridgeApprovalStatus, "PENDING"> {
-  if (decision === "decline") {
-    return "DENIED";
-  }
-  if (decision === "cancel") {
-    return "CANCELLED";
-  }
-  return "APPROVED";
-}
-
-function decisionsEqual(left: unknown, right: unknown): boolean {
-  return stableJson(left) === stableJson(right);
-}
-
-function stableJson(value: unknown): string {
-  try {
-    return JSON.stringify(value, sortObjectKeys);
-  } catch {
-    return String(value);
-  }
-}
-
-function sortObjectKeys(_key: string, value: unknown): unknown {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    return value;
-  }
-  const input = value as Record<string, unknown>;
-  const sortedEntries = Object.keys(input)
-    .sort((a, b) => a.localeCompare(b))
-    .map((key) => [key, input[key]] as const);
-  return Object.fromEntries(sortedEntries);
 }
 
 function buildApprovalResponsePayload(

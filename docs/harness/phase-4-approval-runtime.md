@@ -1,6 +1,6 @@
 # Phase 4 Harness: Approval Runtime Hardening
 
-Status: PLANNED
+Status: IN_PROGRESS
 Date: 2026-05-21
 
 ## Goal
@@ -58,6 +58,10 @@ Move from Codex-specific approval support to a provider-neutral Approval Runtime
 - 2026-05-21: Approval Runtime should own durable lifecycle; runtime adapters should own protocol glue only.
 - 2026-05-21: Existing UI dynamic decisions should be preserved.
 - 2026-05-21: Duplicate decision race must be addressed during implementation.
+- 2026-05-21: Codex JSON-RPC method mapping and response payload shaping remain in `CodexAppServerRuntime`; `ApprovalService` owns durable lifecycle and event publication.
+- 2026-05-21: Terminal approval updates use a store-level `WHERE status = 'PENDING'` transition to prevent duplicate decisions from overwriting prior terminal state.
+- 2026-05-21: Existing dirty local cancel behavior is preserved: bridge rejects the local run immediately and sends `turn/interrupt` asynchronously.
+- 2026-05-21: Duplicate provider approval requests for the same `runId + approvalRequestId` are rejected with a JSON-RPC error instead of overwriting the original pending waiter.
 
 ## Validation Plan
 
@@ -78,28 +82,32 @@ Move from Codex-specific approval support to a provider-neutral Approval Runtime
 
 ## Validation Report
 
-Not run. This harness is planning-only.
+- Passed: `pnpm --filter @surf-ai/bridge exec node --import tsx --test src/core/approval-service.test.ts src/core/memory-service.test.ts src/core/context-engine.test.ts src/core/session-manager-boundary.test.ts`
+- Passed: `pnpm --filter @surf-ai/bridge exec node --import tsx --test src/core/approval-service.test.ts`
+- Passed: `pnpm --filter @surf-ai/bridge typecheck`
+- Passed: `pnpm typecheck`
+- Passed: `pnpm build`
+- Initial `pnpm evals` failed because bridge was not running.
+- Passed after temporary bridge start: `pnpm evals` (`4/4` passed).
 
 ## Risk Review
 
 - Current update path may not atomically require `PENDING`, allowing duplicate decision races.
-- Provider response and DB update can desync if ordering is wrong.
-- Timeout timers are runtime-local; restart recovery cannot resume active provider waiters.
-- `toolUserInput` approval payloads may need richer UI rendering later.
-- Worktree risk: `apps/bridge/src/runtimes/codex-app-server-runtime.ts` is already dirty and Phase 4 will likely need it.
+- Fixed: pending-to-terminal updates now use `transitionPendingApprovalEvent(...)` with `status = 'PENDING'`.
+- Fixed: disconnect handling now attempts to mark active pending approvals `FAILED` before removing in-memory waiters.
+- Reduced: provider response now happens after durable transition wins; duplicate decisions return the existing terminal approval without republishing.
+- Remaining: timeout timers are still runtime-local; bridge restart recovery remains store-level and does not republish per-run timeline events in this phase.
+- Remaining: `toolUserInput` approval payloads may need richer UI rendering later.
+- Remaining: the preserved fast local cancel behavior can still desync from a provider that ignores/delays `turn/interrupt`; this tradeoff existed before this phase's extraction and is documented.
 
 ## Likely Files
 
 - `apps/bridge/src/core/approval-service.ts`
-- `apps/bridge/src/core/runtime-manager.ts`
+- `apps/bridge/src/core/approval-service.test.ts`
 - `apps/bridge/src/runtimes/codex-app-server-runtime.ts`
-- `apps/bridge/src/runtimes/types.ts`
 - `apps/bridge/src/core/store.ts`
-- `apps/bridge/src/index.ts`
-- `packages/shared/src/index.ts`
-- `apps/extension/src/ui/sidepanel/App.tsx` only if UI gaps surface
-- `docs/bridge-api.md`
+- `docs/harness/phase-4-approval-runtime.md`
 
 ## Final Status
 
-PLANNED
+DONE

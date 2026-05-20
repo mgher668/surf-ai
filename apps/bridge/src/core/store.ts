@@ -918,6 +918,48 @@ export class BridgeStore {
     return this.getApprovalEvent(input.userId, input.runId, input.approvalRequestId);
   }
 
+  public transitionPendingApprovalEvent(input: {
+    userId: string;
+    runId: string;
+    approvalRequestId: string;
+    status: Exclude<BridgeApprovalStatus, "PENDING">;
+    decision?: unknown;
+    decidedBy?: string;
+    decisionReason?: string;
+    decidedAt?: number;
+  }): { approval: BridgeRunApproval | null; transitioned: boolean } {
+    const now = Date.now();
+    const decidedAt = input.decidedAt ?? now;
+    const result = this.db.prepare(
+      `UPDATE approval_events
+       SET status = ?,
+           decision_json = ?,
+           decided_by = ?,
+           decision_reason = ?,
+           decided_at = ?,
+           updated_at = ?
+       WHERE user_id = ?
+         AND run_id = ?
+         AND approval_request_id = ?
+         AND status = 'PENDING'`
+    ).run(
+      input.status,
+      input.decision === undefined ? null : stringifyJsonSafe(input.decision),
+      input.decidedBy ?? null,
+      input.decisionReason?.slice(0, 500) ?? null,
+      decidedAt,
+      now,
+      input.userId,
+      input.runId,
+      input.approvalRequestId
+    ) as { changes: number };
+
+    return {
+      approval: this.getApprovalEvent(input.userId, input.runId, input.approvalRequestId),
+      transitioned: result.changes > 0
+    };
+  }
+
   public recoverPendingApprovals(reason: string): number {
     const now = Date.now();
     const result = this.db.prepare(
