@@ -170,6 +170,36 @@ export interface BridgeAdapterCapability {
   routedTo?: LocalBridgeAdapter;
 }
 
+export type BridgeToolScope =
+  | "client"
+  | "session"
+  | "runtime"
+  | "media"
+  | "approval";
+
+export type BridgeToolRisk = "low" | "medium" | "high";
+
+export type BridgeToolAvailability = "available" | "configured" | "unconfigured";
+
+export interface BridgeToolDefinition {
+  id: string;
+  label: string;
+  description: string;
+  scope: BridgeToolScope;
+  risk: BridgeToolRisk;
+  availability: BridgeToolAvailability;
+  metadataOnly: boolean;
+  callable: boolean;
+  requiresApproval: boolean;
+  inputSource: "browser" | "bridge" | "runtime" | "user";
+  outputKind: "context" | "audio" | "approval" | "artifact" | "metadata";
+  tags: string[];
+}
+
+export interface BridgeToolsResponse {
+  tools: BridgeToolDefinition[];
+}
+
 export interface BridgeCapabilitiesResponse {
   version: string;
   now: string;
@@ -184,6 +214,7 @@ export interface BridgeCapabilitiesResponse {
       configured: boolean;
     };
   };
+  tools: BridgeToolDefinition[];
 }
 
 export interface BridgeChatRequest {

@@ -1,6 +1,6 @@
 # Phase 3 Harness: Tool Registry V1
 
-Status: PLANNED
+Status: IN_PROGRESS
 Date: 2026-05-21
 
 ## Goal
@@ -64,6 +64,9 @@ Introduce a provider-neutral Tool Registry without changing runtime behavior fir
 - 2026-05-21: Phase 3 is planned after Phase 4/5 for implementation, despite its numeric order.
 - 2026-05-21: First slice must be metadata/discovery-first, not agent-callable write tools.
 - 2026-05-21: Browser extraction is client-provided context/tool result; bridge does not directly browse the user's tab.
+- 2026-05-21: Phase 4 (`98a30c1`) and Phase 5 (`e1a0b2e`) are complete, so Phase 3 can safely expose metadata on top of approval/timeline primitives.
+- 2026-05-21: V1 tool definitions are explicitly `metadataOnly: true` and `callable: false`; no handler, route, provider method, or dispatch schema is exposed.
+- 2026-05-21: Tool discovery is additive through `/tools` and `/capabilities.tools`; legacy `/capabilities.chat` and `/capabilities.tts` shape is preserved.
 
 ## Validation Plan
 
@@ -79,28 +82,30 @@ Introduce a provider-neutral Tool Registry without changing runtime behavior fir
 
 ## Validation Report
 
-Not run. This harness is planning-only.
+- Passed: `pnpm --filter @surf-ai/bridge exec node --import tsx --test src/core/tool-registry.test.ts`
+- Passed: `pnpm --filter @surf-ai/bridge typecheck`
+- Passed: `pnpm typecheck`
+- Passed: `pnpm build`
+- Passed after temporary bridge start: `pnpm evals` (`4/4` passed).
 
 ## Risk Review
 
-- Phase order risk: Tool Registry becomes useful only after approval/event primitives are stable.
+- Resolved: Phase 4 Approval Runtime and Phase 5 Event Timeline/Artifacts completed before this implementation.
 - Browser page content is untrusted and must not become executable instruction text.
+- Enforced in metadata: current-tab extraction is `risk: "medium"`, `metadataOnly: true`, `callable: false`, and tagged `untrusted`.
 - Do not expose retention purge, filesystem actions, or external writes as callable tools in V1.
-- Runtime-native Codex approval payloads may stay provider-specific until Phase 4/5 normalize them.
-- Worktree risk: current dirty Codex runtime file overlaps likely Phase 3 metadata integration.
+- Runtime approvals are represented only as high-risk metadata and remain runtime-native; approval decisions are not exposed as generic tools.
+- UI compatibility risk reduced by additive `/capabilities.tools`; existing clients that ignore `tools` remain compatible.
+- Discovery intentionally avoids backend route names, handler names, storage paths, provider method names, purge internals, and approval payload schemas.
 
 ## Likely Files
 
 - `packages/shared/src/index.ts`
 - `apps/bridge/src/core/tool-registry.ts`
+- `apps/bridge/src/core/tool-registry.test.ts`
 - `apps/bridge/src/index.ts`
-- `apps/bridge/src/runtimes/types.ts`
-- `apps/bridge/src/runtimes/codex-app-server-runtime.ts` only for metadata attachment after Phase 4/5
-- `apps/extension/src/background/index.ts`
-- `apps/extension/src/content/index.ts`
-- `apps/extension/src/ui/sidepanel/App.tsx`
-- `docs/bridge-api.md`
+- `docs/harness/phase-3-tool-registry.md`
 
 ## Final Status
 
-PLANNED
+DONE

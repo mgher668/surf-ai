@@ -1979,7 +1979,8 @@ async function bootstrap(): Promise<void> {
             enabled: true,
             configured: true
           }
-        }
+        },
+        tools: []
       });
       setCapabilitiesError(undefined);
       clearRuntimeAlert();

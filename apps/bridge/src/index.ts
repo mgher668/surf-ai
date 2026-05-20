@@ -37,6 +37,7 @@ import type {
   BridgeSessionStarRequest,
   BridgeModelsResponse,
   BridgeModelsUpdateRequest,
+  BridgeToolsResponse,
   BridgeTtsRequest,
   BridgeTtsResponse
 } from "@surf-ai/shared";
@@ -48,6 +49,7 @@ import { FixedWindowRateLimiter } from "./core/rate-limit";
 import { synthesizeWithMiniMax, TtsError } from "./tts/minimax";
 import { RunEventBus } from "./core/run-event-bus";
 import { RuntimeManager } from "./core/runtime-manager";
+import { ToolRegistry } from "./core/tool-registry";
 
 const config = readConfig();
 const registry = new AdapterRegistry();
@@ -56,6 +58,9 @@ const sessionManager = new SessionManager(store, registry);
 const rateLimiter = new FixedWindowRateLimiter(config.security.rateLimit);
 const runEventBus = new RunEventBus();
 const runtimeManager = new RuntimeManager(store, runEventBus);
+const toolRegistry = new ToolRegistry({
+  minimaxTtsConfigured: Boolean(config.minimaxTts.apiKey)
+});
 const activeRunControllers = new Map<string, AbortController>();
 const MAX_IMAGE_COUNT_PER_MESSAGE = 10;
 const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
@@ -226,6 +231,7 @@ app.get("/models", async (request, reply) => {
 });
 
 app.get("/capabilities", async () => {
+  const tools = toolRegistry.listTools();
   const response: BridgeCapabilitiesResponse = {
     version: "0.1.0",
     now: new Date().toISOString(),
@@ -239,7 +245,15 @@ app.get("/capabilities", async () => {
         enabled: true,
         configured: Boolean(config.minimaxTts.apiKey)
       }
-    }
+    },
+    tools
+  };
+  return response;
+});
+
+app.get("/tools", async () => {
+  const response: BridgeToolsResponse = {
+    tools: toolRegistry.listTools()
   };
   return response;
 });
