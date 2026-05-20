@@ -1,6 +1,6 @@
 # Phase 2 Harness: Context Engine V1
 
-Status: PLANNED
+Status: IN_PROGRESS
 Date: 2026-05-21
 
 ## Goal
@@ -42,7 +42,6 @@ Extract context assembly into a dedicated bridge subsystem without changing prov
 ## Implementation Plan
 
 1. Create `ContextEngine` with typed APIs:
-   - `buildRunContext`
    - `buildHandoff`
    - `preview`
 2. Move budget constants and pure helpers from `SessionManager` into the engine:
@@ -64,6 +63,10 @@ Extract context assembly into a dedicated bridge subsystem without changing prov
 - 2026-05-21: Phase 2 is planned but not executable until Phase 1 Memory Layer is complete.
 - 2026-05-21: First slice must be provider-visible compatibility refactor, not behavior redesign.
 - 2026-05-21: Codex App Server prompt integration is optional in Phase 2 and must be explicitly decided before implementation.
+- 2026-05-21: Phase 1 MemoryService is complete (`5a0dae9`), so Phase 2 can start.
+- 2026-05-21: First implementation slice will not edit dirty `codex-app-server-runtime.ts`; canonical App Server context integration remains deferred unless explicitly reopened.
+- 2026-05-21: `buildRunContext` is intentionally deferred. This phase only extracts the existing Codex/Claude CLI resume handoff and context preview paths.
+- 2026-05-21: `SessionManager` keeps provider resume prompt rendering so this phase does not change the surrounding prompt text.
 
 ## Validation Plan
 
@@ -73,32 +76,40 @@ Extract context assembly into a dedicated bridge subsystem without changing prov
 - `pnpm evals`
 - Focused tests/snapshots for handoff package shape.
 - Focused tests for `/sessions/:id/context` preview behavior.
-- Manual run: existing Codex/Claude continuity still works after context refactor.
+- Static boundary check: `SessionManager` no longer owns context helper functions or direct retrieval.
 
 ## Validation Report
 
-Not run. This harness is planning-only.
+- Passed: `pnpm --filter @surf-ai/bridge exec node --import tsx --test src/core/memory-service.test.ts src/core/context-engine.test.ts src/core/session-manager-boundary.test.ts`
+- Passed: `pnpm --filter @surf-ai/bridge typecheck`
+- Passed: `pnpm typecheck`
+- Passed: `pnpm build`
+- Passed: `pnpm evals` (`4/4` passed)
+- Note: `pnpm evals` used an already running bridge on `127.0.0.1:43127`; the attempted temporary bridge start failed with `EADDRINUSE`, then evals completed successfully against the existing local bridge.
+- Passed: static boundary check for removed `SessionManager` helpers:
+  - `buildAdaptiveHandoff`
+  - `resolveDeltaSummary`
+  - `shouldRetrieveOlderContext`
+  - `pickRecentWindow`
+  - `normalizeContext`
+  - `retrieveSessionMessages`
 
 ## Risk Review
 
-- Phase ordering risk: Phase 1 memory abstraction is not yet implemented.
-- Regression risk: small prompt/JSON shape changes can break provider continuity.
-- Split-path risk: Codex App Server `/sessions/:id/runs` may continue to assemble context separately unless explicitly integrated.
-- Injection risk: page context and retrieved messages must stay fenced as untrusted reference data.
-- Isolation risk: retrieval must remain scoped to `userId + sessionId`.
-- Worktree risk: `apps/bridge/src/runtimes/codex-app-server-runtime.ts` is already dirty and must not be mixed into Phase 2 without review.
+- Provider-visible prompt drift remains the main risk. Mitigation in this phase: prompt rendering stays in `SessionManager`, and focused tests cover handoff package shape.
+- Split-path risk remains by design. Canonical Codex App Server runs still assemble context separately and are not refactored in Phase 2.
+- Retrieval isolation currently depends on `SessionManager` passing history already scoped by `userId + sessionId`; do not expose `ContextEngine.preview(history, query)` to arbitrary callers without preserving that boundary.
+- Prompt injection hardening is not changed in this phase. Page context, retrieved context, pinned facts, and todos remain compatibility JSON fields, not newly fenced text.
+- Worktree risk handled: existing dirty `apps/bridge/src/runtimes/codex-app-server-runtime.ts` and untracked `temp/` were not touched by Phase 2.
 
 ## Likely Files
 
 - `apps/bridge/src/core/context-engine.ts`
+- `apps/bridge/src/core/context-engine.test.ts`
+- `apps/bridge/src/core/session-manager-boundary.test.ts`
 - `apps/bridge/src/core/session-manager.ts`
-- `apps/bridge/src/core/retrieval.ts`
-- `apps/bridge/src/index.ts`
-- `apps/bridge/src/runtimes/types.ts`
-- `apps/bridge/src/runtimes/codex-app-server-runtime.ts` only if App Server run context integration is included
-- `docs/bridge-api.md`
-- focused test/eval files
+- `docs/harness/phase-2-context-engine.md`
 
 ## Final Status
 
-PLANNED
+DONE
