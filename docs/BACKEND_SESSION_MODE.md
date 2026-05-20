@@ -155,13 +155,18 @@
 
 1. 新建 `SessionManager`（含 `synced_seq`）。
 2. 首次消息创建 codex provider session 并落库。
-3. 后续消息使用 `codex exec resume <providerSessionId>`。
-4. session 失效自动重建并标记旧链接 `BROKEN`。
+3. 当前 Codex 运行路径已迁移到 App Server，以 `threadId` 维持连续性。
+4. session/thread 失效时自动重建并标记旧链接 `BROKEN`。
 
 当前状态（2026-04-05）：
 
-- `SessionManager` + codex `resume` + `BROKEN` 回退链路已落地。
+- `SessionManager` + codex provider link + `BROKEN` 回退链路已落地。
 - handoff 目前为“delta 原文窗口”版本（摘要/检索增强留在后续 Phase）。
+
+当前状态更新（2026-04-09）：
+
+- Codex 运行路径已迁移到 App Server：`POST /sessions/:id/runs` + SSE stream + inline approvals。
+- `codex exec resume` 不再作为 canonical runtime path。
 
 验收：
 - 同一会话连续 10+ 轮，切换窗口后仍可续聊。

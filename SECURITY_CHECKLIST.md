@@ -6,7 +6,7 @@
 - [ ] No remote hosted code is executed inside extension contexts.
 - [ ] Connection tokens are never logged.
 - [ ] Errors returned by bridge do not leak secrets.
-- [ ] Session data persistence location is documented (`storage.local` + IndexedDB).
+- [ ] Session data persistence location is documented (bridge SQLite source of truth; extension storage is cache/settings only).
 - [ ] TTS/API integration keeps credentials in bridge, not in content script.
 - [ ] In shared-backend mode, all session/message queries are user-scoped.
 - [ ] Backend auth is mandatory in shared-backend mode (no anonymous write APIs).

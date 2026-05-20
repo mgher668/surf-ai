@@ -1,14 +1,16 @@
 # surf-ai
 
-Chrome AI Web Assistant powered by a local bridge service.
+Local-first AI Agent Runtime with a Chrome extension as the first client.
+
+Surf AI is evolving from a browser-only assistant into a local-first runtime. Today, the Chrome extension is the shipped client and primary UX; the bridge is becoming the durable runtime core for sessions, runs, events, approvals, memory, and browser-aware workflows.
 
 ## Stack
 
 - Monorepo: `pnpm workspace`
 - Extension: `TypeScript + React + Vite + CRXJS (Manifest V3)`
-- Bridge: `Node.js + Fastify`
+- Bridge runtime: `Node.js + Fastify`
 - Shared contracts: `packages/shared`
-- Persistence: `chrome.storage.local` + `IndexedDB`
+- Persistence: bridge `SQLite` source of truth + extension local cache/settings
 
 ## Project Structure
 
@@ -22,6 +24,8 @@ docs/
   PLAN.md
   bridge-api.md
   BACKEND_SESSION_MODE.md
+  AGENT_RUNTIME_EVOLUTION_PLAN.md
+  harness/
 evals/
   cases/
 scripts/
@@ -59,27 +63,34 @@ pnpm dev:extension
 - Click `Load unpacked`
 - Select `apps/extension/dist`
 
-## Current MVP Skeleton
+## Current Runtime Capabilities
 
-- Selection handle in any webpage (`Summarize / Translate / Read`)
-- Context menu and keyboard command entrypoints
-- Side panel as main chat UI
-- Standalone tab mode reusing the same chat UI as side panel
-- Settings page for connection management, default adapter, and locale
-- Local bridge connection management (`baseURL`, optional token)
-- Session list + starred sessions + message persistence
-- Adapter routing skeleton (`mock`, `codex`, `claude`)
-- Bridge capability negotiation (`/capabilities`) for dynamic adapter/TTS availability
-- Unified bounded task payload normalization before local agent invocation
-- Backend session APIs (`/sessions/*`) with SQLite source-of-truth (Phase 1)
-- Codex/Claude continuity in backend session mode (`provider_session_id` + `synced_seq` + resume fallback)
-- Adaptive handoff memory layer (`session_memories`: summary/facts/todos) for cross-adapter continuity
-- On-demand history retrieval (keywords/BM25 + evidence refs) for old-context questions
-- Security baseline for production mode (CORS allowlist patterns + per-route rate limit + optional HTTPS-required gate)
-- Audit event persistence (`audit_events`) + query endpoint (`GET /audit/events`)
-- Retention maintenance endpoint (`POST /admin/maintenance/purge`) with dry-run support
-- `MiniMax TTS` integration via bridge `/tts` (API key only in bridge env)
-- Local-Agent-first backend strategy (`codex` / `claude`), provider-mode adapters are compatibility placeholders in current version
+- Browser extension first client:
+  - Selection handle in any webpage (`Summarize / Translate / Read`)
+  - Context menu and keyboard command entrypoints
+  - Side panel as main chat UI
+  - Standalone tab mode reusing the same chat UI as side panel
+  - Settings page for connection management, default adapter, and locale
+  - Local bridge connection management (`baseURL`, optional token)
+- Runtime-owned data:
+  - Backend session APIs (`/sessions/*`) with SQLite source-of-truth
+  - Session list + starred sessions + message persistence
+  - Audit event persistence (`audit_events`) + query endpoint (`GET /audit/events`)
+  - Retention maintenance endpoint (`POST /admin/maintenance/purge`) with dry-run support
+- Agent/runtime integration:
+  - Adapter routing skeleton (`mock`, `codex`, `claude`)
+  - Codex App Server run path with SSE stream and inline approval APIs
+  - Codex/Claude continuity in backend session mode (`provider_session_id` + `synced_seq` + resume fallback)
+  - Adaptive handoff memory layer (`session_memories`: summary/facts/todos) for cross-adapter continuity
+  - On-demand history retrieval (keywords/BM25 + evidence refs) for old-context questions
+- Safety and capability support:
+  - Bridge capability negotiation (`/capabilities`) for dynamic adapter/TTS availability
+  - Unified bounded task payload normalization before local agent invocation
+  - Security baseline for production mode (CORS allowlist patterns + per-route rate limit + optional HTTPS-required gate)
+  - `MiniMax TTS` integration via bridge `/tts` (API key only in bridge env)
+- Current strategy:
+  - Local-Agent-first backend strategy (`codex` / `claude`)
+  - Provider-mode adapters are compatibility placeholders in current version
 
 ## Development Commands
 
@@ -114,6 +125,8 @@ Defaults:
 - This repository is optimized for local self-hosted usage.
 - For production-grade security, enable token auth, configure strict CORS allowlist, and run HTTPS (reverse proxy recommended).
 - Planning baseline: `docs/PLAN.md`.
+- Agent Runtime evolution plan: `docs/AGENT_RUNTIME_EVOLUTION_PLAN.md`.
+- Large runtime phases must create a harness record under `docs/harness/` before core implementation starts.
 - Shared backend session roadmap (IDLE policy, handoff, retrieval): `docs/BACKEND_SESSION_MODE.md`.
 - MiniMax is currently used for TTS only, not as chat LLM provider.
 - gstack (Codex) repo-local install guide: `docs/gstack-codex.md`.

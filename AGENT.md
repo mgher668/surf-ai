@@ -27,6 +27,15 @@
 
 同一时刻必须只有一个角色对同一文件做写入。
 
+大型阶段必须优先使用 subagent，但必须按职责拆分，避免共享核心文件冲突：
+
+- `Read-only Analysis`：只读分析当前代码路径、数据流、耦合点、未知风险。
+- `Test Supplement`：只负责测试/eval，写入范围必须限定到测试或评估文件。
+- `UI QA`：默认只读，验证浏览器插件/sidepanel/独立页真实路径并报告问题。
+- `Risk Review`：只读，审查数据隔离、提示注入、工具审批、迁移、回滚风险。
+
+主 agent 必须负责架构决策、核心代码修改、结果整合与最终收口。不得让多个 agent 同时编辑 `SessionManager`、store/schema、runtime manager、shared event types 等核心共享模块。
+
 ## 4. 扩展开发硬约束
 
 - 使用 Manifest V3。
@@ -44,9 +53,11 @@
 
 ## 6. 数据与会话约束
 
-- `chrome.storage.local`：设置、连接配置、会话索引。
-- `IndexedDB`：会话消息正文与大字段。
-- 多窗口同步必须基于 `storage.onChanged` 或等价事件。
+- 后端 SQLite 是 sessions/messages/runs/approvals/audit 的真相源。
+- `chrome.storage.local`：设置、连接配置、客户端偏好、轻量缓存索引。
+- `IndexedDB`：仅作为浏览器端缓存或大字段临时缓存，不作为最终真相源。
+- 多窗口同步必须基于后端刷新、SSE/run timeline、`storage.onChanged` 或等价事件。
+- 任何会话/消息持久化策略变更都必须说明后端表、客户端缓存、同步/失效规则。
 
 ## 7. 交付输出规范
 
@@ -72,3 +83,38 @@
 - 失败不得跳过：任何 gate 失败必须先修复或显式标记 `BLOCKED`。
 - 未通过 `qa + review` 不允许进入提交阶段。
 - 如受环境限制无法执行（端口权限、网络等），必须记录阻塞原因与复现命令。
+
+## 9. Harness 阶段记录（大型改造必须遵守）
+
+涉及 Agent Runtime、memory、context engine、tool registry、approval runtime、event timeline、数据库结构、跨 adapter 行为的大型阶段，必须先创建阶段执行记录：
+
+```text
+docs/harness/phase-x-short-name.md
+```
+
+每份阶段记录必须包含：
+
+- `Goal`
+- `Scope`
+- `Non-Goals`
+- `Subagent Plan`
+- `Implementation Plan`
+- `Decision Log`
+- `Validation Plan`
+- `Validation Report`
+- `Risk Review`
+- `Final Status`
+
+阶段规则：
+
+- 没有阶段 harness 记录，不得开始核心实现。
+- 阶段记录必须持续更新，不是一次性计划。
+- subagent 输出只写摘要，不粘贴长原文。
+- 阶段结束必须写 `Final Status: DONE / DONE_WITH_CONCERNS / BLOCKED`。
+- 没有 final status，不得进入下一阶段。
+- 核心代码提交前必须同步更新对应 harness 文档。
+- 每个 Phase 完成后必须创建独立 commit，commit message 应包含 phase 名称或目标。
+- 默认不 push；push 必须由用户明确确认。
+- commit 前必须检查无关脏改、数据库、`temp/`、日志、密钥没有混入。
+
+总体路线图见 `docs/AGENT_RUNTIME_EVOLUTION_PLAN.md`。Hermes Agent 只作为架构思想输入，不复制其内部实现，不引入代码依赖。

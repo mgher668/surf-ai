@@ -2,10 +2,14 @@
 
 Base URL example: `http://127.0.0.1:43127`
 
-Auth header (optional but recommended):
+The bridge API is the local Agent Runtime API used by the browser extension and future clients. Today, the Chrome extension is the shipped client and primary UX; sessions, runs, messages, approvals, audit events, and runtime capability negotiation are owned by the bridge.
+
+Auth header:
 
 - `x-surf-token: <token>`
 - `x-surf-user-id: <user-id>` (required when multi-user mode is enabled)
+
+Default local self-use mode may be tokenless. Exposed or multi-user deployments must configure per-user tokens, strict CORS origins, HTTPS, and preferably keep the bridge behind `127.0.0.1` or a trusted reverse proxy.
 
 Security defaults:
 
@@ -21,7 +25,26 @@ Security defaults:
 Current positioning:
 
 - Chat path is local-Agent-first (`codex` / `claude` / `mock`).
+- `/sessions/:id/runs` is the canonical runtime execution path for Codex App Server-based runs.
+- `/chat` remains as a compatibility endpoint.
 - MiniMax is currently integrated for TTS (`/tts`) only.
+- Browser page extraction and selected text are client-provided context/tool results.
+- Provider-mode hosted LLM adapters are compatibility placeholders unless explicitly implemented and configured.
+
+Currently implemented runtime terminology:
+
+- `session`: durable user-visible conversation.
+- `run`: one runtime execution attempt that can stream events and request approvals.
+- `message`: persisted conversation content.
+- `event`: ordered timeline item emitted by a run.
+- `approval`: auditable user decision for a runtime/tool request.
+- `memory`: backend-owned recalled context with evidence and scope.
+
+Target runtime vocabulary:
+
+- `tool`: controlled browser/backend/external/runtime-native capability.
+- `artifact`: large output or captured data referenced by events/messages.
+- `client`: extension, future web console, future CLI, or future MCP/ACP bridge.
 
 ## GET /health
 
@@ -380,13 +403,15 @@ Note:
 - `openai-compatible` / `anthropic` / `gemini` adapter values are compatibility placeholders in current version and route to configured local fallback adapter.
 - For codex/claude in backend session mode, bridge keeps `agent_session_links` (`provider_session_id`, `synced_seq`).
 - Bridge also keeps `session_memories` (`summary` / `facts` / `todos`) for adaptive handoff packaging.
-- When codex link is healthy, bridge uses `codex exec resume <provider_session_id>` with delta handoff payload.
+- Codex runtime execution is App Server-based via `/sessions/:id/runs`; the stored provider link maps Surf sessions to Codex threads.
 - When claude link is healthy, bridge uses `claude -p --output-format json --resume <provider_session_id>` with delta handoff payload.
 - If resume fails, link is marked `BROKEN`, and bridge auto-falls back to a fresh provider session for that request.
 - Handoff payload now includes: `latest_user_request`, optional `delta_summary`, `recent_verbatim`, optional `pinned_facts/open_todos`, and `evidence_refs`.
 - Phase 5 retrieval is session-scoped keyword/BM25 based, with low-confidence neighbor expansion and `evidence_refs` binding.
 
 ## POST /chat
+
+Compatibility endpoint. Prefer `/sessions/:id/runs` for canonical runtime execution, streaming, approvals, and persisted run timeline.
 
 Request:
 
