@@ -470,147 +470,339 @@ Harness Record:
 
 - `docs/harness/phase-5-event-timeline-artifacts.md`
 
-## 12. Phase 6: Multi-Client Runtime API
+## 12. Phase 6A: Runtime And UI QA Baseline
 
 Goal:
 
-- Prepare the runtime for browser extension, web console, CLI, and MCP/ACP clients.
-
-Implementation steps:
-
-1. Formalize client identity: `clients` table with type, name, last seen, capabilities.
-2. Add `/clients/register` or equivalent pairing flow.
-3. Add client capabilities: can provide page context, can render approvals, can upload files, can show notifications.
-4. Decouple browser-only context fields from generic run creation.
-5. Add a minimal web console or CLI client as proof that runtime is not extension-only.
-
-Acceptance:
-
-- Browser extension remains fully working.
-- A non-extension client can list sessions, start a run, stream events, and submit approvals.
-
-Out of Scope:
-
-- Public SaaS account system.
-- Mobile app.
-
-Quality Gate:
-
-- API contract tests.
-- One non-extension smoke test.
-
-Harness Record:
-
-- `docs/harness/phase-6-multi-client-runtime-api.md`
-
-## 13. Phase 7: Skill And Workflow Layer
-
-Goal:
-
-- Add reusable task patterns above memory and tools.
-
-Borrowed idea:
-
-- Hermes treats repeated task behavior as something that can be captured and reused. Surf should do this carefully, with explicit user control.
-
-Implementation steps:
-
-1. Add `skills` table or file-backed skill registry.
-2. Define skill metadata: name, description, trigger hints, required tools, prompt template, safety notes.
-3. Add explicit user-managed skill creation/editing first.
-4. Later add post-run skill suggestion, not automatic write.
-5. Let clients show skill suggestions in UI.
-
-Acceptance:
-
-- User can create a simple reusable workflow like "summarize page into bilingual notes".
-- Skill use is visible in run events.
-- Skills can declare required tools and risk level.
-
-Out of Scope:
-
-- Automatic self-modifying skills in early versions.
-- Skill marketplace.
-
-Quality Gate:
-
-- Manual skill create/use/delete test.
-- Safety review for prompt injection and unintended tool use.
-
-Harness Record:
-
-- `docs/harness/phase-7-skill-workflow-layer.md`
-
-## 14. Recommended Execution Order
-
-1. Phase 0: Repositioning docs.
-2. Phase 1: Memory Layer V1.
-3. Phase 2: Context Engine V1.
-4. Phase 4: Approval Runtime Hardening.
-5. Phase 5: Event Timeline And Artifact Model.
-6. Phase 3: Tool Registry V1.
-7. Phase 6: Multi-Client Runtime API.
-8. Phase 7: Skill And Workflow Layer.
-
-Reasoning:
-
-- Memory and context are closest to existing code and highest value.
-- Approval and event timeline stabilize runtime correctness.
-- Tool registry becomes safer and more useful once approval/event primitives are stable; do not expose write-capable tools before Phase 4 and Phase 5 are complete.
-- Multi-client and skills should come after the runtime core is coherent.
-
-Planning note:
-
-- Phase 2/3/4/5 may be planned together as `Status: PLANNED` harness records.
-- Implementation must still proceed one phase at a time.
-- Current implementation sequence after Phase 1 is: Phase 2, then Phase 4, then Phase 5, then Phase 3.
-
-## 15. First Implementation Slice
-
-The first implementation slice should be small:
-
-Goal:
-
-- Add `MemoryService` around existing `session_memories` without changing user-visible behavior.
+- Establish a repeatable QA baseline for the existing runtime and browser-extension user paths before adding new capabilities.
 
 Scope:
 
-- `apps/bridge/src/core/memory-service.ts`
-- `apps/bridge/src/core/session-manager.ts`
-- focused tests/evals
+- Manual QA scripts for sidepanel and standalone extension page.
+- Runtime smoke checks for sessions, runs, SSE, approvals, timeline replay, page extraction, attachments, settings persistence, and bridge restart recovery.
+- QA result recording under `docs/harness/phase-6a-runtime-ui-qa-baseline.md`.
+- Bug filing or focused fixes only when they block the baseline.
+
+Implementation steps:
+
+1. Create a QA matrix covering current user-visible flows.
+2. Add deterministic local setup commands for bridge and extension standalone page.
+3. Exercise a normal run, a tool/approval run, a page-context run, and a refresh/reconnect run.
+4. Verify persisted sessions/messages/events/approvals after reload and bridge restart.
+5. Record issues with severity, reproduction steps, and owner phase.
+6. Add focused regression tests for any runtime bug found during QA.
 
 Acceptance:
 
-- All existing handoff behavior is preserved.
-- `SessionManager` no longer reads `session_memories` directly.
-- Memory output is fenced before injection.
-- Existing evals pass.
+- Existing core flows have a documented pass/fail baseline.
+- Refresh and replay behavior is verified from persisted backend data.
+- Known non-blocking UI issues are documented instead of hidden.
+- No new feature phase starts with unknown baseline stability.
 
-This creates a clean foothold for user/workspace/page memory later.
+Out of Scope:
 
-Harness requirement:
+- No large UI redesign.
+- No full Playwright suite yet.
+- No Chrome sidepanel deep automation in this phase.
+- No Tool Registry V2 or Memory V2 implementation.
 
-- Create `docs/harness/phase-1-memory-layer.md` before editing implementation files.
-- Use the default subagent split: read-only analysis, test supplement, UI QA, and risk review.
-- Main agent owns `MemoryService` and `SessionManager` integration.
+Quality Gate:
 
-## 16. Open Questions Before Implementation
+- `pnpm typecheck`
+- `pnpm build`
+- `pnpm evals`
+- Manual QA matrix completed and linked in the harness record
+- Risk review for persistence, approvals, and untrusted page context
 
-1. Should durable `user` memory require explicit confirmation every time, or only the first time per memory category?
-2. Should workspace memory be keyed by browser origin, local project path, or user-defined workspace id?
-3. Should memory extraction run synchronously after a response, or as a background job with eventual consistency?
-4. Should the first non-extension client be a web console or a CLI smoke client?
-5. Should MCP support start as tool client, server bridge, or both?
+Harness Record:
 
-## 17. Non-Goals
+- `docs/harness/phase-6a-runtime-ui-qa-baseline.md`
+
+## 13. Phase 6B: Standalone Extension Page E2E
+
+Goal:
+
+- Add automated E2E coverage for the standalone extension page first, because it shares the main sidepanel UI while being more stable to automate.
+
+Scope:
+
+- Playwright-based E2E test harness for the standalone extension page.
+- Mock or local bridge fixture for deterministic tests.
+- Coverage for conversation startup, message send, stream rendering, approval cards, timeline replay, settings persistence, and page-context attachment display where feasible.
+- CI-friendly commands documented in package scripts.
+
+Implementation steps:
+
+1. Choose the E2E runner and folder layout.
+2. Add bridge fixture mode or test server stubs for deterministic SSE and approval events.
+3. Add first tests for session list, new empty composer, send message, and final answer rendering.
+4. Add tests for commentary/tool/approval timeline rendering.
+5. Add refresh/reload replay test.
+6. Document how to run E2E locally.
+
+Acceptance:
+
+- A developer can run one command to test the standalone extension page.
+- The most fragile UI paths have automated regression coverage.
+- E2E tests do not require real Codex/OpenAI credentials.
+- Sidepanel implementation remains shared with standalone page.
+
+Out of Scope:
+
+- No real Chrome extension sidepanel automation.
+- No remote browser-cloud testing.
+- No visual snapshot approval system unless a specific regression requires it.
+
+Quality Gate:
+
+- `pnpm typecheck`
+- `pnpm build`
+- `pnpm evals`
+- E2E command passes locally
+- Manual smoke of standalone page after E2E wiring
+
+Harness Record:
+
+- `docs/harness/phase-6b-standalone-extension-e2e.md`
+
+## 14. Phase 7: Tool Registry V2 Dispatch
+
+Goal:
+
+- Upgrade Tool Registry from metadata discovery to a controlled backend tool dispatch boundary.
+
+Scope:
+
+- Add callable read-only Surf backend tools first.
+- Route every dispatch through registry metadata, user/session ownership checks, approval policy when required, execution, timeline event persistence, and audit logging.
+- Keep browser-provided context tools client-originated and untrusted.
+- Add write/high-risk tools only after read-only dispatch is stable.
+
+Implementation steps:
+
+1. Define `ToolDispatcher` interfaces and handler contracts.
+2. Add read-only tools such as session search, memory preview, artifact metadata read, and context preview.
+3. Persist tool start/output/error events into run timeline.
+4. Enforce risk levels and approval policy before non-read operations.
+5. Add tests for authorization, unknown tools, schema validation, approval-required tools, and timeline output.
+6. Expose tool dispatch only through authenticated bridge APIs; do not let provider adapters bypass registry for Surf-owned tools.
+
+Acceptance:
+
+- Read-only backend tools can be called through a single registry/dispatcher path.
+- Tool calls are reconstructable from timeline events.
+- Risky tools cannot execute without approval policy passing.
+- Provider-native tools remain clearly separated from Surf-owned tools.
+
+Out of Scope:
+
+- No external MCP client yet.
+- No tool marketplace.
+- No destructive filesystem/database mutation tools in the first dispatch slice.
+- No automatic browser tab control from backend.
+
+Quality Gate:
+
+- Unit tests for dispatcher routing and ownership checks
+- Approval policy tests for high-risk tool attempts
+- Timeline replay test for tool events
+- Manual QA with at least one read-only tool and one blocked/approval-required path
+
+Harness Record:
+
+- `docs/harness/phase-7-tool-registry-v2-dispatch.md`
+
+## 15. Phase 8: Memory V2 Durable Scopes
+
+Goal:
+
+- Expand memory beyond session summaries into explicit, inspectable, user-controlled durable memory scopes.
+
+Scope:
+
+- Add general `memories` table if not already present.
+- Support `user`, `workspace`, `page`, and `session` scopes.
+- Add candidate memory extraction after runs, but require user confirmation before durable user memory persistence.
+- Add memory inspect/delete APIs and UI surface.
+- Fence all injected memory with source, scope, confidence, and evidence refs.
+
+Implementation steps:
+
+1. Design and migrate general memory schema.
+2. Add MemoryService APIs for create/list/update/delete/recall by scope.
+3. Add candidate extraction pipeline using current available local agent or configured model.
+4. Store candidate memories separately from confirmed durable memories.
+5. Add UI to review, confirm, edit, and delete durable memory.
+6. Add recall integration through ContextEngine with attribution and injection fences.
+7. Add retention and privacy controls.
+
+Acceptance:
+
+- User can see and delete saved memories.
+- Long-term user memory is not silently written.
+- Context injection clearly marks recalled memory as context, not user instruction.
+- Recall improves continuity without requiring full raw history injection.
+
+Out of Scope:
+
+- No vector database in V2.
+- No cross-user shared memory.
+- No automatic sensitive memory persistence.
+- No self-modifying skill memory.
+
+Quality Gate:
+
+- Memory CRUD and scoping tests
+- Candidate/confirmed memory lifecycle tests
+- Prompt-injection and source-attribution risk review
+- Manual UI QA for inspect/confirm/delete
+
+Harness Record:
+
+- `docs/harness/phase-8-memory-v2-durable-scopes.md`
+
+## 16. Phase 9: Multi-Client CLI Smoke Client
+
+Goal:
+
+- Prove Surf is a backend Agent Runtime and not only a browser-extension backend by adding a minimal non-extension client.
+
+Scope:
+
+- Add a small CLI smoke client that can connect to the bridge, list sessions, start a run, stream events, and submit approvals when needed.
+- Add client identity/capability model only as much as needed for CLI smoke.
+- Keep browser extension behavior unchanged.
+
+Implementation steps:
+
+1. Define minimal client registration or client header contract.
+2. Add CLI package or script under the monorepo.
+3. Implement list sessions, create/send message, stream run events, and approval response.
+4. Add smoke tests using mock/local bridge behavior where possible.
+5. Document CLI usage in README/RUNBOOK.
+
+Acceptance:
+
+- A non-extension client can use the same runtime session/run APIs.
+- CLI can stream timeline events in order.
+- CLI can respond to approval requests.
+- Browser extension continues to work without client-specific branching.
+
+Out of Scope:
+
+- No full terminal UI.
+- No public SaaS account system.
+- No multi-device pairing UX beyond the minimal local contract.
+- No MCP/ACP bridge yet.
+
+Quality Gate:
+
+- API contract tests
+- CLI smoke test
+- Existing extension build and evals pass
+- Manual CLI run against local bridge
+
+Harness Record:
+
+- `docs/harness/phase-9-multi-client-cli-smoke.md`
+
+## 17. Phase 10: OpenAI API Runtime Adapter
+
+Goal:
+
+- Add a non-local-agent runtime adapter using OpenAI API to prove local agents and cloud model APIs can coexist behind the same Surf runtime boundary.
+
+Scope:
+
+- Add OpenAI API adapter/runtime configuration.
+- Support normal chat/run flow through existing sessions, messages, ContextEngine, timeline events, and UI adapter/model selection.
+- Do not require browser extension changes beyond configuration and display if existing UI can support it.
+- Preserve local Codex App Server behavior.
+
+Implementation steps:
+
+1. Define provider config storage for OpenAI API base URL/key/model list.
+2. Add OpenAI runtime adapter behind existing runtime/provider interfaces.
+3. Integrate ContextEngine output into OpenAI request format.
+4. Stream OpenAI responses into canonical run events.
+5. Record adapter/model metadata on messages/runs.
+6. Add tests using mocked OpenAI-compatible HTTP responses.
+7. Add docs for local/self-hosted compatible endpoints where applicable.
+
+Acceptance:
+
+- User can choose OpenAI API adapter and model.
+- A run through OpenAI API persists messages and timeline events like Codex runs.
+- Existing Codex App Server runs are unaffected.
+- Adapter-specific errors are structured and visible in UI.
+
+Out of Scope:
+
+- No Anthropic/Gemini direct API in this phase.
+- No tool calling through OpenAI API until Tool Registry dispatch policy is stable.
+- No automatic provider model discovery unless the configured endpoint supports it reliably.
+- No server-side shared billing/account management.
+
+Quality Gate:
+
+- Mocked adapter unit/integration tests
+- Typecheck/build/evals
+- Manual run with configured compatible endpoint if credentials are available
+- Risk review for API key storage and prompt/context boundaries
+
+Harness Record:
+
+- `docs/harness/phase-10-openai-api-runtime-adapter.md`
+
+## 18. Recommended Execution Order
+
+1. Phase 0: Repositioning docs. DONE.
+2. Phase 1: Memory Layer V1. DONE.
+3. Phase 2: Context Engine V1. DONE.
+4. Phase 4: Approval Runtime Hardening. DONE.
+5. Phase 5: Event Timeline And Artifact Model. DONE.
+6. Phase 3: Tool Registry V1. DONE.
+7. Phase 6A: Runtime And UI QA Baseline.
+8. Phase 6B: Standalone Extension Page E2E.
+9. Phase 7: Tool Registry V2 Dispatch.
+10. Phase 8: Memory V2 Durable Scopes.
+11. Phase 9: Multi-Client CLI Smoke Client.
+12. Phase 10: OpenAI API Runtime Adapter.
+
+Reasoning:
+
+- QA baseline and automated E2E should come before new capability expansion, so existing behavior is not accidentally destabilized.
+- Tool Registry V2 should precede Memory V2 UI/tool interactions because memory inspection and recall can become tool-like backend reads.
+- Memory V2 should precede multi-client and OpenAI adapter work so every client/runtime shares the same recall semantics.
+- CLI smoke proves the backend runtime boundary before adding a cloud API runtime.
+- OpenAI API adapter validates that Surf can support both local agents and non-local model APIs without changing the client model.
+
+Planning note:
+
+- Phase 6A/6B/7/8/9/10 may be planned together as `Status: PLANNED` harness records.
+- Implementation must still proceed one phase at a time.
+- Every implementation phase requires a current harness record, validation report, risk review, final status, and independent commit.
+- Default no push; push only after explicit user confirmation.
+
+## 19. Open Questions Before Implementation
+
+1. For Phase 6A, which real sites should be used as stable page-extraction QA fixtures if local fixtures are insufficient?
+2. For Phase 6B, should E2E run against a fake bridge fixture by default and real bridge only in smoke mode?
+3. For Phase 7, which read-only backend tool should be the first callable tool: context preview, session search, or artifact metadata read?
+4. For Phase 8, should durable user memories require confirmation every time, or allow category-level auto-save after explicit opt-in?
+5. For Phase 9, should the CLI live as `apps/cli` or `scripts/surf-cli.mjs` for the first smoke version?
+6. For Phase 10, should OpenAI-compatible endpoints be supported from day one, or only official OpenAI first?
+
+## 20. Non-Goals
 
 - Do not copy Hermes internals line by line.
 - Do not make Surf depend on Hermes Agent code.
 - Do not make browser extension state the source of truth.
 - Do not auto-save sensitive user memory silently.
 - Do not let provider-specific concepts leak into shared client APIs.
+- Do not add write-capable tools before approval, audit, and timeline behavior are verified.
 
-## 18. Review Gates
+## 21. Review Gates
 
 Every phase should pass these gates before commit:
 
