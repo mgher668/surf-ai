@@ -200,6 +200,30 @@ export interface BridgeToolsResponse {
   tools: BridgeToolDefinition[];
 }
 
+export interface BridgeToolCallRequest {
+  sessionId?: string;
+  runId?: string;
+  input?: Record<string, unknown>;
+}
+
+export interface BridgeToolCallResult {
+  ok: boolean;
+  toolId: string;
+  outputKind: BridgeToolDefinition["outputKind"];
+  content?: unknown;
+  error?: {
+    code: string;
+    message: string;
+  };
+  metadata?: Record<string, unknown>;
+}
+
+export interface BridgeToolCallResponse {
+  tool: BridgeToolDefinition;
+  result: BridgeToolCallResult;
+  events: BridgeRunStreamEvent[];
+}
+
 export interface BridgeCapabilitiesResponse {
   version: string;
   now: string;
@@ -417,6 +441,9 @@ export interface BridgeSessionRunApprovalDecisionResponse {
 export type BridgeRunStreamEventType =
   | "run.started"
   | "run.status"
+  | "tool.started"
+  | "tool.output"
+  | "tool.failed"
   | "assistant.delta"
   | "assistant.completed"
   | "reasoning.summary.delta"
@@ -454,6 +481,33 @@ export type BridgeRunStreamEvent =
       "run.status",
       {
         run: BridgeSessionRun;
+      }
+    >
+  | BridgeRunStreamEventEnvelope<
+      "tool.started",
+      {
+        toolCallId: string;
+        toolId: string;
+        input?: Record<string, unknown>;
+      }
+    >
+  | BridgeRunStreamEventEnvelope<
+      "tool.output",
+      {
+        toolCallId: string;
+        toolId: string;
+        outputKind: BridgeToolDefinition["outputKind"];
+        content?: unknown;
+        metadata?: Record<string, unknown>;
+      }
+    >
+  | BridgeRunStreamEventEnvelope<
+      "tool.failed",
+      {
+        toolCallId: string;
+        toolId: string;
+        code: string;
+        message: string;
       }
     >
   | BridgeRunStreamEventEnvelope<

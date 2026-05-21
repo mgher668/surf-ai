@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { ToolRegistry } from "./tool-registry";
 
-test("ToolRegistry exposes metadata-only tools with stable ids and risk levels", () => {
+test("ToolRegistry exposes metadata and callable tools with stable ids and risk levels", () => {
   const tools = new ToolRegistry({ minimaxTtsConfigured: true }).listTools();
   const byId = new Map(tools.map((tool) => [tool.id, tool]));
 
@@ -10,13 +10,19 @@ test("ToolRegistry exposes metadata-only tools with stable ids and risk levels",
   assert.ok(byId.has("browser.selection.read"));
   assert.equal(byId.get("browser.page.extract_text")?.risk, "medium");
   assert.equal(byId.get("browser.page.extract_text")?.inputSource, "browser");
+  assert.equal(byId.get("browser.page.extract_text")?.metadataOnly, true);
+  assert.equal(byId.get("browser.page.extract_text")?.callable, false);
+  assert.equal(byId.get("session.context_preview")?.metadataOnly, false);
+  assert.equal(byId.get("session.context_preview")?.callable, true);
+  assert.equal(byId.get("session.messages.search")?.callable, true);
+  assert.equal(byId.get("runtime.event_timeline")?.callable, true);
+  assert.equal(byId.get("runtime.artifact_metadata")?.callable, true);
   assert.equal(byId.get("runtime.approval_request")?.requiresApproval, true);
+  assert.equal(byId.get("runtime.approval_request")?.callable, false);
   assert.equal(byId.get("runtime.approval_request")?.risk, "high");
   assert.equal(byId.get("media.tts.minimax")?.availability, "configured");
 
   for (const tool of tools) {
-    assert.equal(tool.metadataOnly, true, `${tool.id} must not imply dispatch support in V1`);
-    assert.equal(tool.callable, false, `${tool.id} must not be callable in V1`);
     assert.ok(tool.tags.length > 0, `${tool.id} should have product-level tags`);
   }
 });

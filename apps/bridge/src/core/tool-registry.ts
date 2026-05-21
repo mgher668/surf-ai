@@ -40,12 +40,26 @@ const STATIC_TOOLS: BridgeToolDefinition[] = [
     scope: "session",
     risk: "low",
     availability: "available",
-    metadataOnly: true,
-    callable: false,
+    metadataOnly: false,
+    callable: true,
     requiresApproval: false,
     inputSource: "bridge",
     outputKind: "metadata",
     tags: ["session", "retrieval", "preview"]
+  },
+  {
+    id: "session.messages.search",
+    label: "Session message search",
+    description: "Read-only BM25-style search over messages in the current Surf session.",
+    scope: "session",
+    risk: "low",
+    availability: "available",
+    metadataOnly: false,
+    callable: true,
+    requiresApproval: false,
+    inputSource: "bridge",
+    outputKind: "metadata",
+    tags: ["session", "messages", "search", "retrieval"]
   },
   {
     id: "media.upload_attachment",
@@ -82,12 +96,26 @@ const STATIC_TOOLS: BridgeToolDefinition[] = [
     scope: "runtime",
     risk: "low",
     availability: "available",
-    metadataOnly: true,
-    callable: false,
+    metadataOnly: false,
+    callable: true,
     requiresApproval: false,
     inputSource: "bridge",
     outputKind: "metadata",
     tags: ["timeline", "events", "artifacts"]
+  },
+  {
+    id: "runtime.artifact_metadata",
+    label: "Run artifact metadata",
+    description: "Read-only artifact metadata for a session run without returning artifact content.",
+    scope: "runtime",
+    risk: "low",
+    availability: "available",
+    metadataOnly: false,
+    callable: true,
+    requiresApproval: false,
+    inputSource: "bridge",
+    outputKind: "metadata",
+    tags: ["timeline", "artifacts", "metadata"]
   }
 ];
 

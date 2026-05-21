@@ -39,7 +39,8 @@ import type {
   BridgeModelsUpdateRequest,
   BridgeToolsResponse,
   BridgeTtsRequest,
-  BridgeTtsResponse
+  BridgeTtsResponse,
+  BridgeToolCallResponse
 } from "@surf-ai/shared";
 import { readConfig } from "./core/config";
 import { AdapterRegistry } from "./core/registry";
@@ -50,6 +51,7 @@ import { synthesizeWithMiniMax, TtsError } from "./tts/minimax";
 import { RunEventBus } from "./core/run-event-bus";
 import { RuntimeManager } from "./core/runtime-manager";
 import { ToolRegistry } from "./core/tool-registry";
+import { ToolDispatcher, ToolDispatchError } from "./core/tool-dispatcher";
 
 const config = readConfig();
 const registry = new AdapterRegistry();
@@ -60,6 +62,12 @@ const runEventBus = new RunEventBus();
 const runtimeManager = new RuntimeManager(store, runEventBus);
 const toolRegistry = new ToolRegistry({
   minimaxTtsConfigured: Boolean(config.minimaxTts.apiKey)
+});
+const toolDispatcher = new ToolDispatcher({
+  registry: toolRegistry,
+  store,
+  sessionManager,
+  eventSink: runEventBus
 });
 const activeRunControllers = new Map<string, AbortController>();
 const MAX_IMAGE_COUNT_PER_MESSAGE = 10;
@@ -256,6 +264,89 @@ app.get("/tools", async () => {
     tools: toolRegistry.listTools()
   };
   return response;
+});
+
+app.post("/tools/:toolId/call", async (request, reply) => {
+  const userId = requireAuthedUserId(request, reply);
+  if (!userId) {
+    return;
+  }
+
+  const toolId = String((request.params as { toolId: string }).toolId);
+  const parsed = toolCallSchema.safeParse(request.body);
+  if (!parsed.success) {
+    recordAuditEvent({
+      userId,
+      eventType: "tool_dispatch_rejected",
+      level: "WARN",
+      route: getPathFromUrl(request.url),
+      method: request.method,
+      statusCode: 400,
+      ip: request.ip,
+      details: {
+        toolId,
+        reason: "invalid_request"
+      }
+    });
+    reply.code(400);
+    return { error: "invalid_request", details: parsed.error.flatten() };
+  }
+
+  try {
+    const response: BridgeToolCallResponse = toolDispatcher.dispatch({
+      userId,
+      toolId,
+      ...(parsed.data.sessionId ? { sessionId: parsed.data.sessionId } : {}),
+      ...(parsed.data.runId ? { runId: parsed.data.runId } : {}),
+      ...(parsed.data.input ? { input: parsed.data.input } : {})
+    });
+    recordAuditEvent({
+      userId,
+      eventType: "tool_dispatched",
+      level: "INFO",
+      route: getPathFromUrl(request.url),
+      method: request.method,
+      statusCode: 200,
+      ip: request.ip,
+      details: {
+        toolId,
+        sessionId: parsed.data.sessionId ?? null,
+        runId: parsed.data.runId ?? null,
+        toolCallId:
+          typeof response.result.metadata?.toolCallId === "string"
+            ? response.result.metadata.toolCallId
+            : null,
+        eventCount: response.events.length
+      }
+    });
+    return response;
+  } catch (error) {
+    const statusCode = error instanceof ToolDispatchError ? error.statusCode : 500;
+    const code = error instanceof ToolDispatchError ? error.code : "tool_dispatch_failed";
+    const message = error instanceof Error ? error.message : "Tool dispatch failed.";
+    recordAuditEvent({
+      userId,
+      eventType: "tool_dispatch_failed",
+      level: statusCode >= 500 ? "ERROR" : "WARN",
+      route: getPathFromUrl(request.url),
+      method: request.method,
+      statusCode,
+      ip: request.ip,
+      details: {
+        toolId,
+        sessionId: parsed.data.sessionId ?? null,
+        runId: parsed.data.runId ?? null,
+        code,
+        ...(error instanceof ToolDispatchError && error.details ? { details: error.details } : {})
+      }
+    });
+    reply.code(statusCode);
+    return {
+      error: code,
+      message,
+      ...(error instanceof ToolDispatchError && error.details ? { details: error.details } : {})
+    };
+  }
 });
 
 app.post("/uploads", async (request, reply) => {
@@ -480,6 +571,12 @@ const purgeMaintenanceSchema = z.object({
 
 const updateModelsSchema = z.object({
   models: z.array(bridgeModelSchema).max(500)
+});
+
+const toolCallSchema = z.object({
+  sessionId: z.string().min(1).optional(),
+  runId: z.string().min(1).optional(),
+  input: z.record(z.unknown()).optional()
 });
 
 app.get("/sessions", async (request, reply) => {

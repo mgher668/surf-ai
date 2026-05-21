@@ -1,6 +1,6 @@
 # Phase 7 Harness: Tool Registry V2 Dispatch
 
-Status: PLANNED
+Status: DONE
 Date: 2026-05-21
 
 ## Goal
@@ -44,6 +44,11 @@ Upgrade Tool Registry from metadata discovery to a controlled Surf-owned backend
 - 2026-05-21: V2 starts with read-only Surf backend tools, not external MCP or write-capable actions.
 - 2026-05-21: Provider-native Codex tools remain provider-native; Surf-owned tools use Surf's dispatcher.
 - 2026-05-21: Tool execution must be reconstructable from run timeline.
+- 2026-05-21: Callable V2 slice is limited to `session.context_preview`, `session.messages.search`, `runtime.event_timeline`, and `runtime.artifact_metadata`.
+- 2026-05-21: Browser/page tools and provider-native approval tools stay metadata-only.
+- 2026-05-21: Every persisted tool timeline event carries an immutable `toolCallId`.
+- 2026-05-21: Runtime timeline tool returns a redacted model-facing view; raw event payloads remain available only through existing authenticated timeline APIs.
+- 2026-05-21: `runtime.event_timeline` persists only output summary counts in `tool.output`, avoiding recursive large timeline snapshots.
 
 ## Validation Plan
 
@@ -56,7 +61,24 @@ Upgrade Tool Registry from metadata discovery to a controlled Surf-owned backend
 
 ## Validation Report
 
-Not executed yet. This is a planning-only harness record.
+- `pnpm --filter @surf-ai/shared typecheck`: PASS.
+- `pnpm --filter @surf-ai/bridge typecheck`: PASS.
+- `pnpm --filter @surf-ai/bridge exec node --import tsx --test src/core/tool-registry.test.ts src/core/tool-dispatcher.test.ts src/core/store-timeline-artifacts.test.ts src/core/approval-service.test.ts`: PASS.
+- `pnpm typecheck`: PASS.
+- `pnpm build`: PASS.
+- Temporary bridge eval command with `SURF_AI_EVAL_BASE_URL=http://127.0.0.1:43139`: PASS, 4/4 evals.
+- HTTP smoke with temporary bridge:
+  - `POST /sessions`: PASS.
+  - `POST /tools/session.context_preview/call`: PASS, returned callable tool metadata, structured result, and `toolCallId`.
+
+Implemented:
+
+- Added shared `BridgeToolCallRequest`, `BridgeToolCallResult`, and `BridgeToolCallResponse`.
+- Added `tool.started`, `tool.output`, and `tool.failed` timeline event types.
+- Added `ToolDispatcher` with schema validation, authenticated user/session/run ownership checks, read-only handlers, event publishing, and structured errors.
+- Added authenticated `POST /tools/:toolId/call`.
+- Made first Surf-owned tools callable while keeping client/browser/provider-native tools metadata-only.
+- Added focused dispatcher tests for unknown tool, metadata-only rejection, invalid input, wrong user, run-required behavior, successful dispatch, timeline events, strict empty input, and timeline replay.
 
 ## Risk Review
 
@@ -68,6 +90,20 @@ Planned review focus:
 - Approval policy must be enforced before side effects, not after.
 - Timeline/audit events must be written for both success and failure paths.
 
+Read-only review findings addressed:
+
+- Cross-session read risk: dispatcher re-resolves session and run through `BridgeStore` using authenticated `userId`; mismatches fail closed.
+- Ambiguous replay risk: all tool events include immutable `toolCallId`, and audit success records include it.
+- Sensitive timeline leakage risk: dispatcher runtime timeline output is redacted and omits raw approval payloads, reasoning text, command output, thread ids, and turn ids.
+- Arbitrary input persistence risk: no-input runtime tools use strict empty schemas.
+- Large timeline recursion risk: `runtime.event_timeline` persists only summary counts in its `tool.output` event while returning the redacted result in the HTTP response.
+
+Residual risks:
+
+- This phase does not yet expose a first-class UI for manual tool invocation.
+- Approval-required Surf-owned tools are intentionally blocked until a later write-capable tool phase.
+- Provider-native Codex/MCP tools remain controlled by the Codex App Server path, not this Surf-owned dispatcher.
+
 ## Final Status
 
-PLANNED
+DONE
