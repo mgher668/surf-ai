@@ -40,7 +40,11 @@ import type {
   BridgeToolsResponse,
   BridgeTtsRequest,
   BridgeTtsResponse,
-  BridgeToolCallResponse
+  BridgeToolCallResponse,
+  BridgeMemoryCreateRequest,
+  BridgeMemoryDeleteResponse,
+  BridgeMemoryListResponse,
+  BridgeMemoryResponse
 } from "@surf-ai/shared";
 import { readConfig } from "./core/config";
 import { AdapterRegistry } from "./core/registry";
@@ -52,11 +56,13 @@ import { RunEventBus } from "./core/run-event-bus";
 import { RuntimeManager } from "./core/runtime-manager";
 import { ToolRegistry } from "./core/tool-registry";
 import { ToolDispatcher, ToolDispatchError } from "./core/tool-dispatcher";
+import { MemoryService } from "./core/memory-service";
 
 const config = readConfig();
 const registry = new AdapterRegistry();
 const store = new BridgeStore(config.dbPath, config.users);
 const sessionManager = new SessionManager(store, registry);
+const memoryService = new MemoryService(store);
 const rateLimiter = new FixedWindowRateLimiter(config.security.rateLimit);
 const runEventBus = new RunEventBus();
 const runtimeManager = new RuntimeManager(store, runEventBus);
@@ -349,6 +355,192 @@ app.post("/tools/:toolId/call", async (request, reply) => {
   }
 });
 
+app.get("/memories", async (request, reply) => {
+  const userId = requireAuthedUserId(request, reply);
+  if (!userId) {
+    return;
+  }
+
+  const parsed = listMemoriesQuerySchema.safeParse(request.query);
+  if (!parsed.success) {
+    reply.code(400);
+    return { error: "invalid_request", details: parsed.error.flatten() };
+  }
+
+  const response: BridgeMemoryListResponse = {
+    memories: memoryService.listDurableMemories(userId, {
+      ...(parsed.data.scope ? { scope: parsed.data.scope } : {}),
+      ...(parsed.data.status ? { status: parsed.data.status } : {}),
+      ...(parsed.data.sessionId ? { sessionId: parsed.data.sessionId } : {}),
+      ...(parsed.data.scopeKey ? { scopeKey: parsed.data.scopeKey } : {}),
+      ...(parsed.data.limit ? { limit: parsed.data.limit } : {})
+    })
+  };
+  return response;
+});
+
+app.get("/memories/recall", async (request, reply) => {
+  const userId = requireAuthedUserId(request, reply);
+  if (!userId) {
+    return;
+  }
+
+  const parsed = recallMemoriesQuerySchema.safeParse(request.query);
+  if (!parsed.success) {
+    reply.code(400);
+    return { error: "invalid_request", details: parsed.error.flatten() };
+  }
+
+  const response: BridgeMemoryListResponse = {
+    memories: memoryService.recallDurableMemories({
+      userId,
+      ...(parsed.data.sessionId ? { sessionId: parsed.data.sessionId } : {}),
+      ...(parsed.data.pageUrl ? { pageUrl: parsed.data.pageUrl } : {}),
+      ...(parsed.data.workspaceId ? { workspaceId: parsed.data.workspaceId } : {}),
+      ...(parsed.data.limit ? { limit: parsed.data.limit } : {})
+    })
+  };
+  return response;
+});
+
+app.post("/memories", async (request, reply) => {
+  const userId = requireAuthedUserId(request, reply);
+  if (!userId) {
+    return;
+  }
+
+  const parsed = createMemorySchema.safeParse(request.body);
+  if (!parsed.success) {
+    reply.code(400);
+    return { error: "invalid_request", details: parsed.error.flatten() };
+  }
+
+  const input: BridgeMemoryCreateRequest = {
+    scope: parsed.data.scope,
+    kind: parsed.data.kind,
+    content: parsed.data.content,
+    ...(parsed.data.scopeKey ? { scopeKey: parsed.data.scopeKey } : {}),
+    ...(parsed.data.sessionId ? { sessionId: parsed.data.sessionId } : {}),
+    ...(typeof parsed.data.confidence === "number" ? { confidence: parsed.data.confidence } : {}),
+    ...(parsed.data.sourceType ? { sourceType: parsed.data.sourceType } : {}),
+    ...(parsed.data.sourceRef ? { sourceRef: parsed.data.sourceRef } : {}),
+    ...(typeof parsed.data.sourceSeqStart === "number" ? { sourceSeqStart: parsed.data.sourceSeqStart } : {}),
+    ...(typeof parsed.data.sourceSeqEnd === "number" ? { sourceSeqEnd: parsed.data.sourceSeqEnd } : {}),
+    ...(parsed.data.metadata ? { metadata: parsed.data.metadata } : {}),
+    ...(typeof parsed.data.expiresAt === "number" ? { expiresAt: parsed.data.expiresAt } : {})
+  };
+  const memory = memoryService.createCandidateMemory(userId, input);
+  recordAuditEvent({
+    userId,
+    eventType: "memory_candidate_created",
+    level: "INFO",
+    route: getPathFromUrl(request.url),
+    method: request.method,
+    statusCode: 200,
+    ip: request.ip,
+    details: {
+      memoryId: memory.id,
+      scope: memory.scope,
+      kind: memory.kind,
+      sourceType: memory.sourceType
+    }
+  });
+
+  const response: BridgeMemoryResponse = { memory };
+  return response;
+});
+
+app.post("/memories/:id/confirm", async (request, reply) => {
+  const userId = requireAuthedUserId(request, reply);
+  if (!userId) {
+    return;
+  }
+
+  const id = String((request.params as { id: string }).id);
+  const memory = memoryService.confirmMemory(userId, id);
+  if (!memory) {
+    reply.code(404);
+    return { error: "memory_not_found" };
+  }
+  recordAuditEvent({
+    userId,
+    eventType: "memory_confirmed",
+    level: "INFO",
+    route: getPathFromUrl(request.url),
+    method: request.method,
+    statusCode: 200,
+    ip: request.ip,
+    details: {
+      memoryId: memory.id,
+      scope: memory.scope,
+      kind: memory.kind
+    }
+  });
+
+  const response: BridgeMemoryResponse = { memory };
+  return response;
+});
+
+app.post("/memories/:id/reject", async (request, reply) => {
+  const userId = requireAuthedUserId(request, reply);
+  if (!userId) {
+    return;
+  }
+
+  const id = String((request.params as { id: string }).id);
+  const memory = memoryService.rejectMemory(userId, id);
+  if (!memory) {
+    reply.code(404);
+    return { error: "memory_not_found" };
+  }
+  recordAuditEvent({
+    userId,
+    eventType: "memory_rejected",
+    level: "INFO",
+    route: getPathFromUrl(request.url),
+    method: request.method,
+    statusCode: 200,
+    ip: request.ip,
+    details: {
+      memoryId: memory.id,
+      scope: memory.scope,
+      kind: memory.kind
+    }
+  });
+
+  const response: BridgeMemoryResponse = { memory };
+  return response;
+});
+
+app.delete("/memories/:id", async (request, reply) => {
+  const userId = requireAuthedUserId(request, reply);
+  if (!userId) {
+    return;
+  }
+
+  const id = String((request.params as { id: string }).id);
+  const deleted = memoryService.deleteMemory(userId, id);
+  if (!deleted) {
+    reply.code(404);
+    return { error: "memory_not_found" };
+  }
+  recordAuditEvent({
+    userId,
+    eventType: "memory_deleted",
+    level: "INFO",
+    route: getPathFromUrl(request.url),
+    method: request.method,
+    statusCode: 200,
+    ip: request.ip,
+    details: {
+      memoryId: id
+    }
+  });
+
+  const response: BridgeMemoryDeleteResponse = { ok: true, deletedMemoryId: id };
+  return response;
+});
+
 app.post("/uploads", async (request, reply) => {
   const userId = requireAuthedUserId(request, reply);
   if (!userId) {
@@ -571,6 +763,41 @@ const purgeMaintenanceSchema = z.object({
 
 const updateModelsSchema = z.object({
   models: z.array(bridgeModelSchema).max(500)
+});
+
+const memoryScopeSchema = z.enum(["user", "workspace", "page", "session"]);
+const memoryStatusSchema = z.enum(["candidate", "confirmed", "rejected"]);
+const memoryKindSchema = z.enum(["fact", "preference", "todo", "summary", "note"]);
+const memorySourceTypeSchema = z.enum(["manual", "agent", "import"]);
+
+const createMemorySchema = z.object({
+  scope: memoryScopeSchema,
+  scopeKey: z.string().trim().min(1).max(1_000).optional(),
+  sessionId: z.string().min(1).optional(),
+  kind: memoryKindSchema,
+  content: z.string().trim().min(1).max(12_000),
+  confidence: z.number().min(0).max(1).optional(),
+  sourceType: memorySourceTypeSchema.optional(),
+  sourceRef: z.string().trim().min(1).max(1_000).optional(),
+  sourceSeqStart: z.number().int().min(0).optional(),
+  sourceSeqEnd: z.number().int().min(0).optional(),
+  metadata: z.record(z.unknown()).optional(),
+  expiresAt: z.number().int().positive().optional()
+});
+
+const listMemoriesQuerySchema = z.object({
+  scope: memoryScopeSchema.optional(),
+  status: memoryStatusSchema.optional(),
+  sessionId: z.string().min(1).optional(),
+  scopeKey: z.string().trim().min(1).max(1_000).optional(),
+  limit: z.coerce.number().int().min(1).max(500).optional()
+});
+
+const recallMemoriesQuerySchema = z.object({
+  sessionId: z.string().min(1).optional(),
+  pageUrl: z.string().trim().min(1).max(2_000).optional(),
+  workspaceId: z.string().trim().min(1).max(1_000).optional(),
+  limit: z.coerce.number().int().min(1).max(50).optional()
 });
 
 const toolCallSchema = z.object({

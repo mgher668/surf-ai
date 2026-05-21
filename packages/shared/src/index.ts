@@ -224,6 +224,59 @@ export interface BridgeToolCallResponse {
   events: BridgeRunStreamEvent[];
 }
 
+export type BridgeMemoryScope = "user" | "workspace" | "page" | "session";
+export type BridgeMemoryStatus = "candidate" | "confirmed" | "rejected";
+export type BridgeMemoryKind = "fact" | "preference" | "todo" | "summary" | "note";
+
+export interface BridgeMemory {
+  id: string;
+  scope: BridgeMemoryScope;
+  scopeKey?: string;
+  sessionId?: string;
+  kind: BridgeMemoryKind;
+  content: string;
+  confidence: number;
+  status: BridgeMemoryStatus;
+  sourceType: "manual" | "agent" | "import";
+  sourceRef?: string;
+  sourceSeqStart?: number;
+  sourceSeqEnd?: number;
+  metadata?: Record<string, unknown>;
+  createdAt: number;
+  updatedAt: number;
+  confirmedAt?: number;
+  lastUsedAt?: number;
+  expiresAt?: number;
+}
+
+export interface BridgeMemoryCreateRequest {
+  scope: BridgeMemoryScope;
+  scopeKey?: string;
+  sessionId?: string;
+  kind: BridgeMemoryKind;
+  content: string;
+  confidence?: number;
+  sourceType?: BridgeMemory["sourceType"];
+  sourceRef?: string;
+  sourceSeqStart?: number;
+  sourceSeqEnd?: number;
+  metadata?: Record<string, unknown>;
+  expiresAt?: number;
+}
+
+export interface BridgeMemoryListResponse {
+  memories: BridgeMemory[];
+}
+
+export interface BridgeMemoryResponse {
+  memory: BridgeMemory;
+}
+
+export interface BridgeMemoryDeleteResponse {
+  ok: boolean;
+  deletedMemoryId: string;
+}
+
 export interface BridgeCapabilitiesResponse {
   version: string;
   now: string;

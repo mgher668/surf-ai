@@ -11,6 +11,10 @@ import type {
   BridgeArtifactReference,
   ChatAttachment,
   BridgeModel,
+  BridgeMemory,
+  BridgeMemoryKind,
+  BridgeMemoryScope,
+  BridgeMemoryStatus,
   BridgeRunApproval,
   BridgeRunStreamEvent,
   BridgeSessionRun,
@@ -121,6 +125,28 @@ interface SessionMemoryRow {
   source_seq_start: number;
   source_seq_end: number;
   updated_at: number;
+}
+
+interface DurableMemoryRow {
+  id: string;
+  user_id: string;
+  scope: BridgeMemoryScope;
+  scope_key: string | null;
+  session_id: string | null;
+  kind: BridgeMemoryKind;
+  content: string;
+  confidence: number;
+  status: BridgeMemoryStatus;
+  source_type: BridgeMemory["sourceType"];
+  source_ref: string | null;
+  source_seq_start: number | null;
+  source_seq_end: number | null;
+  metadata_json: string | null;
+  created_at: number;
+  updated_at: number;
+  confirmed_at: number | null;
+  last_used_at: number | null;
+  expires_at: number | null;
 }
 
 interface ModelRow {
@@ -250,6 +276,7 @@ export interface PurgeExpiredDataResult {
     messages: number;
     agentSessionLinks: number;
     sessionMemories: number;
+    durableMemories: number;
     auditEvents: number;
     artifacts: number;
   };
@@ -1217,6 +1244,210 @@ export class BridgeStore {
     return row;
   }
 
+  public createDurableMemory(
+    userId: string,
+    input: Omit<BridgeMemory, "id" | "createdAt" | "updatedAt" | "confirmedAt">
+  ): BridgeMemory {
+    if (input.sessionId) {
+      this.assertSessionOwnership(userId, input.sessionId);
+    }
+    if (input.scope === "session" && !input.sessionId && !input.scopeKey) {
+      throw new Error("memory_session_scope_requires_session");
+    }
+
+    const id = randomUUID();
+    const now = Date.now();
+    const confirmedAt = input.status === "confirmed" ? now : null;
+    this.db.prepare(
+      `INSERT INTO durable_memories (
+        id, user_id, scope, scope_key, session_id, kind, content, confidence, status,
+        source_type, source_ref, source_seq_start, source_seq_end, metadata_json,
+        created_at, updated_at, confirmed_at, last_used_at, expires_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)`
+    ).run(
+      id,
+      userId,
+      input.scope,
+      normalizeMemoryScopeKey(input.scopeKey, input.scope),
+      input.sessionId ?? null,
+      input.kind,
+      input.content,
+      input.confidence,
+      input.status,
+      input.sourceType,
+      input.sourceRef ?? null,
+      input.sourceSeqStart ?? null,
+      input.sourceSeqEnd ?? null,
+      input.metadata ? stringifyJsonSafe(input.metadata) : null,
+      now,
+      now,
+      confirmedAt,
+      input.expiresAt ?? null
+    );
+
+    const memory = this.getDurableMemory(userId, id);
+    if (!memory) {
+      throw new Error("durable_memory_insert_failed");
+    }
+    return memory;
+  }
+
+  public getDurableMemory(userId: string, id: string): BridgeMemory | null {
+    const row = this.db.prepare(
+      `SELECT
+         id, user_id, scope, scope_key, session_id, kind, content, confidence, status,
+         source_type, source_ref, source_seq_start, source_seq_end, metadata_json,
+         created_at, updated_at, confirmed_at, last_used_at, expires_at
+       FROM durable_memories
+       WHERE user_id = ? AND id = ?`
+    ).get(userId, id) as DurableMemoryRow | undefined;
+
+    return row ? mapDurableMemoryRow(row) : null;
+  }
+
+  public listDurableMemories(
+    userId: string,
+    input: {
+      scope?: BridgeMemoryScope;
+      status?: BridgeMemoryStatus;
+      sessionId?: string;
+      scopeKey?: string;
+      limit?: number;
+    } = {}
+  ): BridgeMemory[] {
+    if (input.sessionId) {
+      this.assertSessionOwnership(userId, input.sessionId);
+    }
+
+    const clauses = ["user_id = ?"];
+    const params: Array<string | number> = [userId];
+
+    if (input.scope) {
+      clauses.push("scope = ?");
+      params.push(input.scope);
+    }
+    if (input.status) {
+      clauses.push("status = ?");
+      params.push(input.status);
+    }
+    if (input.sessionId) {
+      clauses.push("(session_id = ? OR (scope = 'session' AND scope_key = ?))");
+      params.push(input.sessionId, input.sessionId);
+    }
+    if (input.scopeKey) {
+      const scopeKey = normalizeMemoryScopeKey(input.scopeKey, input.scope);
+      if (scopeKey) {
+        clauses.push("scope_key = ?");
+        params.push(scopeKey);
+      }
+    }
+
+    const limit = Math.min(Math.max(input.limit ?? 100, 1), 500);
+    params.push(limit);
+
+    const rows = this.db.prepare(
+      `SELECT
+         id, user_id, scope, scope_key, session_id, kind, content, confidence, status,
+         source_type, source_ref, source_seq_start, source_seq_end, metadata_json,
+         created_at, updated_at, confirmed_at, last_used_at, expires_at
+       FROM durable_memories
+       WHERE ${clauses.join(" AND ")}
+       ORDER BY updated_at DESC
+       LIMIT ?`
+    ).all(...params) as unknown as DurableMemoryRow[];
+
+    return rows.map(mapDurableMemoryRow);
+  }
+
+  public confirmDurableMemory(userId: string, id: string): BridgeMemory | null {
+    const now = Date.now();
+    this.db.prepare(
+      `UPDATE durable_memories
+       SET status = 'confirmed', confirmed_at = COALESCE(confirmed_at, ?), updated_at = ?
+       WHERE user_id = ? AND id = ? AND status = 'candidate'`
+    ).run(now, now, userId, id);
+    return this.getDurableMemory(userId, id);
+  }
+
+  public rejectDurableMemory(userId: string, id: string): BridgeMemory | null {
+    const now = Date.now();
+    this.db.prepare(
+      `UPDATE durable_memories
+       SET status = 'rejected', updated_at = ?
+       WHERE user_id = ? AND id = ? AND status = 'candidate'`
+    ).run(now, userId, id);
+    return this.getDurableMemory(userId, id);
+  }
+
+  public deleteDurableMemory(userId: string, id: string): boolean {
+    const result = this.db.prepare(
+      "DELETE FROM durable_memories WHERE user_id = ? AND id = ?"
+    ).run(userId, id);
+    return result.changes > 0;
+  }
+
+  public recallDurableMemories(
+    userId: string,
+    input: {
+      sessionId?: string;
+      pageUrl?: string;
+      workspaceId?: string;
+      limit?: number;
+    } = {}
+  ): BridgeMemory[] {
+    if (input.sessionId) {
+      this.assertSessionOwnership(userId, input.sessionId);
+    }
+
+    const now = Date.now();
+    const clauses = ["user_id = ?", "status = 'confirmed'", "(expires_at IS NULL OR expires_at > ?)"];
+    const params: Array<string | number> = [userId, now];
+    const scopeClauses = ["scope = 'user'"];
+
+    if (input.sessionId) {
+      scopeClauses.push("(scope = 'session' AND (session_id = ? OR scope_key = ?))");
+      params.push(input.sessionId, input.sessionId);
+    }
+    if (input.pageUrl) {
+      const pageScopeKey = normalizeMemoryScopeKey(input.pageUrl, "page");
+      if (pageScopeKey) {
+        scopeClauses.push("(scope = 'page' AND scope_key = ?)");
+        params.push(pageScopeKey);
+      }
+    }
+    if (input.workspaceId) {
+      const workspaceScopeKey = normalizeMemoryScopeKey(input.workspaceId, "workspace");
+      if (workspaceScopeKey) {
+        scopeClauses.push("(scope = 'workspace' AND scope_key = ?)");
+        params.push(workspaceScopeKey);
+      }
+    }
+
+    clauses.push(`(${scopeClauses.join(" OR ")})`);
+    const limit = Math.min(Math.max(input.limit ?? 12, 1), 50);
+    params.push(limit);
+
+    const rows = this.db.prepare(
+      `SELECT
+         id, user_id, scope, scope_key, session_id, kind, content, confidence, status,
+         source_type, source_ref, source_seq_start, source_seq_end, metadata_json,
+         created_at, updated_at, confirmed_at, last_used_at, expires_at
+       FROM durable_memories
+       WHERE ${clauses.join(" AND ")}
+       ORDER BY confidence DESC, confirmed_at DESC, updated_at DESC
+       LIMIT ?`
+    ).all(...params) as unknown as DurableMemoryRow[];
+
+    const memories = rows.map(mapDurableMemoryRow);
+    if (memories.length > 0) {
+      const placeholders = memories.map(() => "?").join(",");
+      this.db.prepare(
+        `UPDATE durable_memories SET last_used_at = ? WHERE user_id = ? AND id IN (${placeholders})`
+      ).run(now, userId, ...memories.map((memory) => memory.id));
+    }
+    return memories;
+  }
+
   public appendAuditEvent(input: {
     userId?: string | undefined;
     eventType: string;
@@ -1348,9 +1579,19 @@ export class BridgeStore {
         )
       : 0;
 
+    const now = Date.now();
+    const durableMemoriesCount = readCount(
+      this.db.prepare(
+        "SELECT COUNT(*) AS count FROM durable_memories WHERE user_id = ? AND expires_at IS NOT NULL AND expires_at <= ?"
+      ).get(userId, now) as { count: number }
+    );
+
     if (!input.dryRun) {
       this.db.exec("BEGIN");
       try {
+        this.db.prepare(
+          "DELETE FROM durable_memories WHERE user_id = ? AND expires_at IS NOT NULL AND expires_at <= ?"
+        ).run(userId, now);
         if (input.includeAudit) {
           this.db.prepare(
             "DELETE FROM audit_events WHERE user_id = ? AND created_at < ?"
@@ -1379,10 +1620,11 @@ export class BridgeStore {
         messages: messagesCount,
         agentSessionLinks: linksCount,
         sessionMemories: memoriesCount,
+        durableMemories: durableMemoriesCount,
         artifacts: artifactsCount,
         auditEvents: auditCount
       },
-      executedAt: Date.now()
+      executedAt: now
     };
   }
 
@@ -1767,6 +2009,37 @@ export class BridgeStore {
         FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE
       );
 
+      CREATE TABLE IF NOT EXISTS durable_memories (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        scope TEXT NOT NULL,
+        scope_key TEXT,
+        session_id TEXT,
+        kind TEXT NOT NULL,
+        content TEXT NOT NULL,
+        confidence REAL NOT NULL,
+        status TEXT NOT NULL,
+        source_type TEXT NOT NULL,
+        source_ref TEXT,
+        source_seq_start INTEGER,
+        source_seq_end INTEGER,
+        metadata_json TEXT,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        confirmed_at INTEGER,
+        last_used_at INTEGER,
+        expires_at INTEGER,
+        FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE,
+        FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_durable_memories_user_status_scope
+        ON durable_memories(user_id, status, scope, updated_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_durable_memories_user_scope_key
+        ON durable_memories(user_id, scope, scope_key, status);
+      CREATE INDEX IF NOT EXISTS idx_durable_memories_user_session
+        ON durable_memories(user_id, session_id, status, updated_at DESC);
+
       CREATE TABLE IF NOT EXISTS audit_events (
         id TEXT PRIMARY KEY,
         user_id TEXT,
@@ -1849,6 +2122,8 @@ export class BridgeStore {
     this.ensureColumnExists("messages", "parts_json", "TEXT");
     this.ensureColumnExists("session_runs", "model", "TEXT");
     this.ensureColumnExists("models", "reasoning_effort", "TEXT");
+    this.ensureColumnExists("durable_memories", "last_used_at", "INTEGER");
+    this.ensureColumnExists("durable_memories", "expires_at", "INTEGER");
     this.db
       .prepare(
         "UPDATE messages SET adapter = ? WHERE adapter IS NULL OR LENGTH(TRIM(adapter)) = 0"
@@ -2121,6 +2396,26 @@ function normalizeModelsInput(models: BridgeModel[]): BridgeModel[] {
   });
 }
 
+function normalizeMemoryScopeKey(
+  scopeKey: string | undefined,
+  scope?: BridgeMemoryScope
+): string | null {
+  const trimmed = scopeKey?.trim();
+  if (!trimmed) {
+    return null;
+  }
+  if (scope === "page") {
+    try {
+      const url = new URL(trimmed);
+      url.hash = "";
+      return url.toString();
+    } catch {
+      return trimmed.slice(0, 1_000);
+    }
+  }
+  return trimmed.slice(0, 1_000);
+}
+
 function hashToken(token: string): string {
   return createHash("sha256").update(token).digest("hex");
 }
@@ -2145,6 +2440,30 @@ function mapSessionMemoryRow(row: SessionMemoryRow): SessionMemory {
     sourceSeqStart: row.source_seq_start,
     sourceSeqEnd: row.source_seq_end,
     updatedAt: row.updated_at
+  };
+}
+
+function mapDurableMemoryRow(row: DurableMemoryRow): BridgeMemory {
+  const metadata = row.metadata_json ? parseJsonRecord(row.metadata_json) : undefined;
+  return {
+    id: row.id,
+    scope: row.scope,
+    ...(row.scope_key ? { scopeKey: row.scope_key } : {}),
+    ...(row.session_id ? { sessionId: row.session_id } : {}),
+    kind: row.kind,
+    content: row.content,
+    confidence: row.confidence,
+    status: row.status,
+    sourceType: row.source_type,
+    ...(row.source_ref ? { sourceRef: row.source_ref } : {}),
+    ...(typeof row.source_seq_start === "number" ? { sourceSeqStart: row.source_seq_start } : {}),
+    ...(typeof row.source_seq_end === "number" ? { sourceSeqEnd: row.source_seq_end } : {}),
+    ...(metadata ? { metadata } : {}),
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    ...(typeof row.confirmed_at === "number" ? { confirmedAt: row.confirmed_at } : {}),
+    ...(typeof row.last_used_at === "number" ? { lastUsedAt: row.last_used_at } : {}),
+    ...(typeof row.expires_at === "number" ? { expiresAt: row.expires_at } : {})
   };
 }
 

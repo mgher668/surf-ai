@@ -34,6 +34,17 @@ export interface HandoffPayload {
   }>;
   pinned_facts?: string;
   open_todos?: string;
+  recalled_memory?: {
+    fence: string;
+    items: Array<{
+      id: string;
+      scope: string;
+      kind: string;
+      confidence: number;
+      sourceSeqStart?: number;
+      sourceSeqEnd?: number;
+    }>;
+  };
   evidence_refs: number[];
   retrieved_context?: {
     query: string;
@@ -149,6 +160,13 @@ export class ContextEngine {
     );
 
     const memories = this.memory.getHandoffSessionMemories(input.userId, input.sessionId);
+    const durableMemories = this.memory.recallDurableMemories({
+      userId: input.userId,
+      sessionId: input.sessionId,
+      ...(input.context?.pageUrl ? { pageUrl: input.context.pageUrl } : {}),
+      limit: 12
+    });
+    const durableMemoryFence = this.memory.formatDurableMemoryFence(durableMemories);
 
     return {
       latest_user_request: clipText(latestUserRequest, MAX_DELTA_MESSAGE_CHARS),
@@ -158,8 +176,39 @@ export class ContextEngine {
         role: item.role,
         content: clipText(item.content, RECENT_ITEM_MAX_CHARS)
       })),
-      ...(memories.facts ? { pinned_facts: memories.facts } : {}),
-      ...(memories.todos ? { open_todos: memories.todos } : {}),
+      ...(memories.facts
+        ? {
+            pinned_facts: this.memory.formatMemoryFence({
+              scope: "session",
+              source: "session:facts",
+              content: memories.facts
+            })
+          }
+        : {}),
+      ...(memories.todos
+        ? {
+            open_todos: this.memory.formatMemoryFence({
+              scope: "session",
+              source: "session:todos",
+              content: memories.todos
+            })
+          }
+        : {}),
+      ...(durableMemoryFence
+        ? {
+            recalled_memory: {
+              fence: durableMemoryFence,
+              items: durableMemories.map((memory) => ({
+                id: memory.id,
+                scope: memory.scope,
+                kind: memory.kind,
+                confidence: memory.confidence,
+                ...(typeof memory.sourceSeqStart === "number" ? { sourceSeqStart: memory.sourceSeqStart } : {}),
+                ...(typeof memory.sourceSeqEnd === "number" ? { sourceSeqEnd: memory.sourceSeqEnd } : {})
+              }))
+            }
+          }
+        : {}),
       evidence_refs: evidenceRefs,
       ...(retrieval
         ? {

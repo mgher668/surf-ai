@@ -2,6 +2,9 @@ import { useEffect, useMemo, useState } from "react";
 import type {
   BridgeAdapter,
   BridgeConnection,
+  BridgeMemory,
+  BridgeMemoryListResponse,
+  BridgeMemoryResponse,
   BridgeModel,
   BridgeModelsResponse,
   BridgeModelsUpdateRequest,
@@ -50,7 +53,7 @@ const ADAPTER_OPTIONS: BridgeAdapter[] = [
 ];
 const MODEL_ADAPTER_OPTIONS: BridgeAdapter[] = ["codex", "claude", "mock"];
 const AUTO_MODEL_ID = "auto";
-const SETTINGS_SECTIONS = ["general", "connections", "models"] as const;
+const SETTINGS_SECTIONS = ["general", "connections", "models", "memories"] as const;
 type SettingsSection = (typeof SETTINGS_SECTIONS)[number];
 
 export function App(): JSX.Element {
@@ -71,6 +74,8 @@ export function App(): JSX.Element {
   const [models, setModelsState] = useState<BridgeModel[]>([]);
   const [modelsDirty, setModelsDirty] = useState(false);
   const [modelsFeedback, setModelsFeedback] = useState<string | undefined>();
+  const [memories, setMemoriesState] = useState<BridgeMemory[]>([]);
+  const [memoriesFeedback, setMemoriesFeedback] = useState<string | undefined>();
   const [draftModelIdByAdapter, setDraftModelIdByAdapter] = useState<
     Partial<Record<BridgeAdapter, string>>
   >({});
@@ -169,6 +174,10 @@ export function App(): JSX.Element {
 
   useEffect(() => {
     void loadModels(activeConnection);
+  }, [activeConnection?.id, activeConnection?.baseUrl, activeConnection?.userId, activeConnection?.token]);
+
+  useEffect(() => {
+    void loadMemories(activeConnection);
   }, [activeConnection?.id, activeConnection?.baseUrl, activeConnection?.userId, activeConnection?.token]);
 
   async function bootstrap(): Promise<void> {
@@ -278,6 +287,81 @@ export function App(): JSX.Element {
       setModelsFeedback(undefined);
     } catch {
       setModelsFeedback(t(locale, "modelsLoadFailed"));
+    }
+  }
+
+  async function loadMemories(connection: BridgeConnection | undefined): Promise<void> {
+    setMemoriesFeedback(undefined);
+    if (!connection) {
+      setMemoriesState([]);
+      return;
+    }
+
+    try {
+      const response = await fetch(`${connection.baseUrl}/memories?limit=100`, {
+        headers: buildBridgeHeaders(connection)
+      });
+      if (!response.ok) {
+        setMemoriesFeedback(`${t(locale, "memoriesLoadFailed")} (${response.status})`);
+        return;
+      }
+      const payload = (await response.json()) as BridgeMemoryListResponse;
+      setMemoriesState(payload.memories);
+    } catch {
+      setMemoriesFeedback(t(locale, "memoriesLoadFailed"));
+    }
+  }
+
+  async function confirmMemory(memoryId: string): Promise<void> {
+    await mutateMemory(memoryId, "confirm");
+  }
+
+  async function rejectMemory(memoryId: string): Promise<void> {
+    await mutateMemory(memoryId, "reject");
+  }
+
+  async function deleteMemory(memoryId: string): Promise<void> {
+    await mutateMemory(memoryId, "delete");
+  }
+
+  async function mutateMemory(
+    memoryId: string,
+    action: "confirm" | "reject" | "delete"
+  ): Promise<void> {
+    if (!activeConnection) {
+      return;
+    }
+
+    setMemoriesFeedback(undefined);
+    try {
+      const url =
+        action === "delete"
+          ? `${activeConnection.baseUrl}/memories/${memoryId}`
+          : `${activeConnection.baseUrl}/memories/${memoryId}/${action}`;
+      const response = await fetch(url, {
+        method: action === "delete" ? "DELETE" : "POST",
+        headers: buildBridgeHeaders(activeConnection, action !== "delete")
+      });
+      if (!response.ok) {
+        setMemoriesFeedback(`${t(locale, "memoriesActionFailed")} (${response.status})`);
+        return;
+      }
+
+      if (action === "delete") {
+        setMemoriesState((prev) => prev.filter((item) => item.id !== memoryId));
+        setMemoriesFeedback(t(locale, "memoriesDeleted"));
+        return;
+      }
+
+      const payload = (await response.json()) as BridgeMemoryResponse;
+      setMemoriesState((prev) =>
+        prev.map((item) => (item.id === payload.memory.id ? payload.memory : item))
+      );
+      setMemoriesFeedback(
+        action === "confirm" ? t(locale, "memoriesConfirmed") : t(locale, "memoriesRejected")
+      );
+    } catch {
+      setMemoriesFeedback(t(locale, "memoriesActionFailed"));
     }
   }
 
@@ -532,11 +616,16 @@ export function App(): JSX.Element {
 
   const sectionItems: Array<{
     key: SettingsSection;
-    labelKey: "settingsSectionGeneral" | "settingsSectionConnections" | "settingsSectionModels";
+    labelKey:
+      | "settingsSectionGeneral"
+      | "settingsSectionConnections"
+      | "settingsSectionModels"
+      | "settingsSectionMemories";
     descriptionKey:
       | "settingsSectionGeneralDescription"
       | "settingsSectionConnectionsDescription"
-      | "settingsSectionModelsDescription";
+      | "settingsSectionModelsDescription"
+      | "settingsSectionMemoriesDescription";
   }> = [
     {
       key: "general",
@@ -552,6 +641,11 @@ export function App(): JSX.Element {
       key: "models",
       labelKey: "settingsSectionModels",
       descriptionKey: "settingsSectionModelsDescription"
+    },
+    {
+      key: "memories",
+      labelKey: "settingsSectionMemories",
+      descriptionKey: "settingsSectionMemoriesDescription"
     }
   ];
 
@@ -764,6 +858,87 @@ export function App(): JSX.Element {
                   onSaveModels={() => void saveModelsToBackend()}
                 />
               )}
+            </section>
+          ) : null}
+
+          {activeSection === "memories" ? (
+            <section className="grid gap-3 rounded-xl border bg-card p-4">
+              <div className="flex flex-wrap items-start justify-between gap-2">
+                <div className="grid gap-1">
+                  <h2 className="text-sm font-semibold">{t(locale, "memoriesTitle")}</h2>
+                  <p className="text-xs text-muted-foreground">{t(locale, "memoriesDescription")}</p>
+                </div>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => void loadMemories(activeConnection)}
+                  disabled={!activeConnection}
+                >
+                  {t(locale, "refresh")}
+                </Button>
+              </div>
+
+              {!activeConnection ? (
+                <p className="text-xs text-muted-foreground">{t(locale, "noConnection")}</p>
+              ) : memories.length === 0 ? (
+                <p className="text-xs text-muted-foreground">{t(locale, "memoriesEmpty")}</p>
+              ) : (
+                <div className="grid gap-2">
+                  {memories.map((memory) => (
+                    <article key={memory.id} className="grid gap-2 rounded-lg border bg-background p-3">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <div className="flex flex-wrap items-center gap-2 text-xs">
+                          <span className="rounded-full bg-muted px-2 py-0.5">{memory.scope}</span>
+                          <span className="rounded-full bg-muted px-2 py-0.5">{memory.kind}</span>
+                          <span className="rounded-full bg-muted px-2 py-0.5">{memory.status}</span>
+                          <span className="text-muted-foreground">
+                            {Math.round(memory.confidence * 100)}%
+                          </span>
+                        </div>
+                        <span className="text-[11px] text-muted-foreground">
+                          {new Date(memory.updatedAt).toLocaleString()}
+                        </span>
+                      </div>
+                      <p className="whitespace-pre-wrap break-words text-sm leading-6">{memory.content}</p>
+                      {memory.scopeKey || memory.sessionId ? (
+                        <p className="truncate text-xs text-muted-foreground">
+                          {memory.scopeKey ?? memory.sessionId}
+                        </p>
+                      ) : null}
+                      <div className="flex flex-wrap gap-2">
+                        {memory.status === "candidate" ? (
+                          <>
+                            <Button type="button" size="sm" onClick={() => void confirmMemory(memory.id)}>
+                              {t(locale, "memoryConfirm")}
+                            </Button>
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="sm"
+                              onClick={() => void rejectMemory(memory.id)}
+                            >
+                              {t(locale, "memoryReject")}
+                            </Button>
+                          </>
+                        ) : null}
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          onClick={() => void deleteMemory(memory.id)}
+                        >
+                          {t(locale, "memoryDelete")}
+                        </Button>
+                      </div>
+                    </article>
+                  ))}
+                </div>
+              )}
+
+              {memoriesFeedback ? (
+                <p className="text-xs text-muted-foreground">{memoriesFeedback}</p>
+              ) : null}
             </section>
           ) : null}
         </section>
