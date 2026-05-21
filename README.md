@@ -30,6 +30,8 @@ evals/
   cases/
 scripts/
   run-evals.mjs
+  surf-cli.mjs
+  surf-cli-smoke.mjs
 AGENT.md
 TASK_TEMPLATE.md
 RUNBOOK.md
@@ -72,6 +74,9 @@ pnpm dev:extension
   - Standalone tab mode reusing the same chat UI as side panel
   - Settings page for connection management, default adapter, and locale
   - Local bridge connection management (`baseURL`, optional token)
+- CLI proof client:
+  - `scripts/surf-cli.mjs` can list sessions, create/send a run, stream SSE events, and submit approvals.
+  - This proves the bridge is a reusable Agent Runtime, not only an extension backend.
 - Runtime-owned data:
   - Backend session APIs (`/sessions/*`) with SQLite source-of-truth
   - Session list + starred sessions + message persistence
@@ -82,6 +87,7 @@ pnpm dev:extension
   - Codex App Server run path with SSE stream and inline approval APIs
   - Codex/Claude continuity in backend session mode (`provider_session_id` + `synced_seq` + resume fallback)
   - Adaptive handoff memory layer (`session_memories`: summary/facts/todos) for cross-adapter continuity
+  - Durable memory V2 (`durable_memories`) with candidate/confirmed/rejected lifecycle and user-confirmed recall
   - On-demand history retrieval (keywords/BM25 + evidence refs) for old-context questions
 - Safety and capability support:
   - Bridge capability negotiation (`/capabilities`) for dynamic adapter/TTS availability
@@ -101,9 +107,25 @@ pnpm dev:bridge
 pnpm build
 pnpm typecheck
 pnpm evals
+pnpm cli:smoke
 pnpm gstack:setup
 pnpm gstack:check
 ```
+
+## CLI Client
+
+```bash
+node scripts/surf-cli.mjs sessions --base-url http://127.0.0.1:43127 --user local
+node scripts/surf-cli.mjs send --message "hello" --adapter mock
+node scripts/surf-cli.mjs send --message "do it" --adapter codex --auto-approve accept
+```
+
+Environment variables:
+
+- `SURF_AI_BASE_URL`
+- `SURF_AI_USER_ID`
+- `SURF_AI_TOKEN`
+- `SURF_AI_ADAPTER`
 
 ## Bridge Config
 

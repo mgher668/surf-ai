@@ -1,6 +1,6 @@
 # Phase 9 Harness: Multi-Client CLI Smoke Client
 
-Status: PLANNED
+Status: DONE
 Date: 2026-05-21
 
 ## Goal
@@ -44,6 +44,8 @@ Prove Surf is a backend Agent Runtime and not only a browser-extension backend b
 - 2026-05-21: CLI is a proof of runtime boundary, not a product-grade client.
 - 2026-05-21: CLI must use the same backend truth source as the extension.
 - 2026-05-21: Extension-specific page context remains optional client capability, not a required run input.
+- 2026-05-21: Chose `scripts/surf-cli.mjs` instead of `apps/cli` to keep Phase 9 a smoke client, not a maintained product surface.
+- 2026-05-21: CLI uses existing bridge headers (`x-surf-user-id`, optional `x-surf-token`) and existing session/run/approval/SSE APIs without extension-specific fields.
 
 ## Validation Plan
 
@@ -56,17 +58,20 @@ Prove Surf is a backend Agent Runtime and not only a browser-extension backend b
 
 ## Validation Report
 
-Not executed yet. This is a planning-only harness record.
+- PASS `pnpm cli:smoke`
+- PASS `pnpm typecheck`
+- PASS `pnpm build`
+- PASS temp bridge evals: `4/4 passed`
+- PASS `pnpm e2e:extension`
 
 ## Risk Review
 
-Planned review focus:
-
-- CLI must not bypass auth or user isolation.
-- CLI must not require browser-only fields.
-- SSE handling must be robust enough for basic reconnect/error reporting.
-- Approval submission must be auditable and tied to the same user/session/run.
+- Auth/user isolation: CLI goes through the same bridge headers and does not introduce privileged routes.
+- Browser coupling: CLI send path only requires message, adapter, optional model, and session id.
+- SSE behavior: smoke fixture validates streamed assistant deltas and approval event handling.
+- Approval auditability: CLI submits decisions through the same run approval endpoint, preserving backend audit path.
+- Product boundary: CLI remains a proof client and intentionally avoids terminal UI/session management complexity.
 
 ## Final Status
 
-PLANNED
+DONE

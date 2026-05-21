@@ -11,6 +11,7 @@
     "typecheck": "pnpm -r typecheck",
     "lint": "pnpm -r lint",
     "e2e:extension": "pnpm --filter @surf-ai/extension e2e:standalone",
+    "cli:smoke": "node scripts/surf-cli-smoke.mjs",
     "evals": "pnpm --filter @surf-ai/bridge evals",
     "gstack:setup": "cd .agents/skills/gstack && ./setup --host codex",
     "gstack:check": "test -x .agents/skills/gstack/browse/dist/browse && echo 'browse binary: ok' && ls .agents/skills | rg '^gstack-' | wc -l | xargs -I{} echo 'linked gstack skills: {}'"
