@@ -10,6 +10,7 @@
     "build": "pnpm -r build",
     "typecheck": "pnpm -r typecheck",
     "lint": "pnpm -r lint",
+    "test:bridge": "pnpm --filter @surf-ai/bridge test",
     "e2e:extension": "pnpm --filter @surf-ai/extension e2e:standalone",
     "cli:smoke": "node scripts/surf-cli-smoke.mjs",
     "evals": "pnpm --filter @surf-ai/bridge evals",

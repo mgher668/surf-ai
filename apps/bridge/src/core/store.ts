@@ -161,9 +161,10 @@ interface ModelRow {
   updated_at: number;
 }
 
-const NATIVE_MODEL_ADAPTERS: Array<Extract<BridgeAdapter, "mock" | "codex" | "claude">> = [
+const DEFAULT_MODEL_ADAPTERS: BridgeAdapter[] = [
   "codex",
   "claude",
+  "openai-compatible",
   "mock"
 ];
 
@@ -1636,11 +1637,11 @@ export class BridgeStore {
       ) VALUES (?, ?, ?, ?, 1, 0, ?, ?)`
     );
 
-    for (const adapter of NATIVE_MODEL_ADAPTERS) {
-      insert.run("auto", userId, adapter, "Auto (CLI default)", now, now);
+    for (const adapter of DEFAULT_MODEL_ADAPTERS) {
+      insert.run("auto", userId, adapter, defaultModelLabel(adapter), now, now);
     }
 
-    for (const adapter of NATIVE_MODEL_ADAPTERS) {
+    for (const adapter of DEFAULT_MODEL_ADAPTERS) {
       const rows = this.db.prepare(
         `SELECT id, enabled, is_default
          FROM models
@@ -2210,6 +2211,10 @@ function mapModelRow(row: ModelRow): BridgeModel {
       ? { modelReasoningEffort: row.reasoning_effort }
       : {})
   };
+}
+
+function defaultModelLabel(adapter: BridgeAdapter): string {
+  return adapter === "openai-compatible" ? "Auto (OpenAI default)" : "Auto (CLI default)";
 }
 
 function mapAttachmentRow(row: AttachmentRow): StoredAttachment {

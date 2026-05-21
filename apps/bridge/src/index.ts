@@ -59,13 +59,13 @@ import { ToolDispatcher, ToolDispatchError } from "./core/tool-dispatcher";
 import { MemoryService } from "./core/memory-service";
 
 const config = readConfig();
-const registry = new AdapterRegistry();
+const registry = new AdapterRegistry(config.openai);
 const store = new BridgeStore(config.dbPath, config.users);
 const sessionManager = new SessionManager(store, registry);
 const memoryService = new MemoryService(store);
 const rateLimiter = new FixedWindowRateLimiter(config.security.rateLimit);
 const runEventBus = new RunEventBus();
-const runtimeManager = new RuntimeManager(store, runEventBus);
+const runtimeManager = new RuntimeManager(store, runEventBus, config.openai);
 const toolRegistry = new ToolRegistry({
   minimaxTtsConfigured: Boolean(config.minimaxTts.apiKey)
 });
@@ -1425,6 +1425,9 @@ app.post("/runs/:id/cancel", async (request, reply) => {
     if (run.adapter === "codex") {
       await runtimeManager.cancelCodexRun(userId, runId).catch(() => undefined);
     }
+    if (run.adapter === "openai-compatible") {
+      await runtimeManager.cancelOpenAICompatibleRun(userId, runId).catch(() => undefined);
+    }
   } else {
     store.updateSessionRunStatus(userId, runId, {
       status: "CANCELLED",
@@ -1955,6 +1958,18 @@ async function executeSessionRun(input: {
         runtimeResult.threadId,
         syncedSeq
       );
+    } else if (input.adapter === "openai-compatible") {
+      const runtimeResult = await runtimeManager.runWithOpenAICompatible({
+        userId: input.userId,
+        sessionId: input.sessionId,
+        runId: input.runId,
+        adapter: input.adapter,
+        content: input.content,
+        ...(input.model ? { model: input.model } : {}),
+        ...(input.context ? { context: input.context } : {}),
+        signal: controller.signal
+      });
+      output = runtimeResult.output;
     } else {
       if (!input.content.trim()) {
         throw new Error("adapter_does_not_support_image_only_message");

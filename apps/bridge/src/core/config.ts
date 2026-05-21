@@ -5,6 +5,7 @@ export interface BridgeConfig {
   token?: string;
   users: BridgeUserAccount[];
   defaultAdapter: "mock" | "codex" | "claude";
+  openai: OpenAICompatibleConfig;
   minimaxTts: MiniMaxTtsConfig;
   security: BridgeSecurityConfig;
 }
@@ -28,6 +29,13 @@ export interface MiniMaxTtsConfig {
   speed: number;
   volume: number;
   pitch: number;
+  timeoutMs: number;
+}
+
+export interface OpenAICompatibleConfig {
+  baseUrl: string;
+  apiKey?: string;
+  defaultModel: string;
   timeoutMs: number;
 }
 
@@ -56,6 +64,7 @@ export function readConfig(): BridgeConfig {
   const parsedPort = Number(portRaw);
   const token = process.env.SURF_AI_TOKEN;
   const apiKey = process.env.SURF_AI_MINIMAX_API_KEY ?? process.env.MINIMAX_API_KEY;
+  const openAiApiKey = process.env.SURF_AI_OPENAI_API_KEY ?? process.env.OPENAI_API_KEY;
   const users = readUsers(token);
   const security = readSecurityConfig();
 
@@ -66,6 +75,12 @@ export function readConfig(): BridgeConfig {
     users,
     defaultAdapter: normalizeAdapter(process.env.SURF_AI_DEFAULT_ADAPTER),
     security,
+    openai: {
+      baseUrl: normalizeBaseUrl(process.env.SURF_AI_OPENAI_BASE_URL, "https://api.openai.com/v1"),
+      defaultModel: process.env.SURF_AI_OPENAI_MODEL?.trim() || "gpt-4.1-mini",
+      timeoutMs: parseNumber(process.env.SURF_AI_OPENAI_TIMEOUT_MS, 600_000, 1_000, 3_600_000),
+      ...(openAiApiKey ? { apiKey: openAiApiKey } : {})
+    },
     minimaxTts: {
       endpoint: process.env.SURF_AI_MINIMAX_TTS_ENDPOINT ?? "https://api.minimax.io/v1/t2a_v2",
       model: process.env.SURF_AI_MINIMAX_TTS_MODEL ?? "speech-02-hd",
@@ -241,6 +256,14 @@ function parseCommaList(raw: string | undefined, fallback: string[]): string[] {
     .filter(Boolean);
 
   return parsed.length > 0 ? parsed : fallback;
+}
+
+function normalizeBaseUrl(raw: string | undefined, fallback: string): string {
+  const trimmed = raw?.trim();
+  if (!trimmed) {
+    return fallback;
+  }
+  return trimmed.replace(/\/+$/u, "");
 }
 
 function parseBoolean(raw: string | undefined, fallback: boolean): boolean {

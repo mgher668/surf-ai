@@ -21,6 +21,7 @@ export interface RuntimeStartRunInput {
   content: string;
   attachments?: RuntimeInputAttachment[];
   context?: BridgeChatRequest["context"];
+  signal?: AbortSignal;
 }
 
 export interface RuntimeRunResult {

@@ -168,7 +168,11 @@ function usingFixture(
       { id: "local", name: "Local" },
       { id: "other", name: "Other" }
     ]);
-    const registry = new AdapterRegistry();
+    const registry = new AdapterRegistry({
+      baseUrl: "https://example.test/v1",
+      defaultModel: "gpt-test",
+      timeoutMs: 10_000
+    });
     const sessionManager = new SessionManager(store, registry);
     const toolRegistry = new ToolRegistry({ minimaxTtsConfigured: true });
     const events: BridgeRunStreamEvent[] = [];

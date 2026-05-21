@@ -85,6 +85,7 @@ pnpm dev:extension
 - Agent/runtime integration:
   - Adapter routing skeleton (`mock`, `codex`, `claude`)
   - Codex App Server run path with SSE stream and inline approval APIs
+  - OpenAI-compatible API run path with SSE assistant streaming
   - Codex/Claude continuity in backend session mode (`provider_session_id` + `synced_seq` + resume fallback)
   - Adaptive handoff memory layer (`session_memories`: summary/facts/todos) for cross-adapter continuity
   - Durable memory V2 (`durable_memories`) with candidate/confirmed/rejected lifecycle and user-confirmed recall
@@ -106,6 +107,7 @@ pnpm dev:extension
 pnpm dev:bridge
 pnpm build
 pnpm typecheck
+pnpm test:bridge
 pnpm evals
 pnpm cli:smoke
 pnpm gstack:setup
@@ -130,6 +132,13 @@ Environment variables:
 ## Bridge Config
 
 See `apps/bridge/.env.example`.
+
+OpenAI-compatible API runtime:
+
+- `SURF_AI_OPENAI_API_KEY` or `OPENAI_API_KEY`
+- `SURF_AI_OPENAI_BASE_URL`, defaults to `https://api.openai.com/v1`
+- `SURF_AI_OPENAI_MODEL`, defaults to `gpt-4.1-mini`
+- `SURF_AI_OPENAI_TIMEOUT_MS`, defaults to `600000`
 
 Defaults:
 

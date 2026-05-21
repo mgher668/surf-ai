@@ -2,6 +2,8 @@ import type { BridgeRunStreamEvent } from "@surf-ai/shared";
 import { BridgeStore } from "./store";
 import { RunEventBus } from "./run-event-bus";
 import { CodexAppServerRuntime } from "../runtimes/codex-app-server-runtime";
+import { OpenAICompatibleRuntime } from "../runtimes/openai-compatible-runtime";
+import type { OpenAICompatibleConfig } from "./config";
 import type {
   RuntimeApprovalDecisionInput,
   RuntimeApprovalResult,
@@ -11,10 +13,12 @@ import type {
 
 export class RuntimeManager {
   private readonly codexRuntimes = new Map<string, CodexAppServerRuntime>();
+  private readonly openaiRuntimes = new Map<string, OpenAICompatibleRuntime>();
 
   public constructor(
     private readonly store: BridgeStore,
-    private readonly runEventBus: RunEventBus
+    private readonly runEventBus: RunEventBus,
+    private readonly openai: OpenAICompatibleConfig
   ) {}
 
   public subscribeRunEvents(
@@ -56,6 +60,16 @@ export class RuntimeManager {
     return runtime.cancelRun(userId, runId);
   }
 
+  public runWithOpenAICompatible(input: RuntimeStartRunInput): Promise<RuntimeRunResult> {
+    const runtime = this.getOrCreateOpenAICompatibleRuntime(input.userId);
+    return runtime.run(input);
+  }
+
+  public cancelOpenAICompatibleRun(userId: string, runId: string): Promise<void> {
+    const runtime = this.getOrCreateOpenAICompatibleRuntime(userId);
+    return runtime.cancelRun(userId, runId);
+  }
+
   public submitCodexApprovalDecision(
     input: RuntimeApprovalDecisionInput
   ): Promise<RuntimeApprovalResult> {
@@ -76,6 +90,26 @@ export class RuntimeManager {
       }
     });
     this.codexRuntimes.set(userId, runtime);
+    return runtime;
+  }
+
+  private getOrCreateOpenAICompatibleRuntime(userId: string): OpenAICompatibleRuntime {
+    const existing = this.openaiRuntimes.get(userId);
+    if (existing) {
+      return existing;
+    }
+
+    const runtime = new OpenAICompatibleRuntime(
+      this.store,
+      {
+        publish: (event) => {
+          this.store.appendRunEvent(userId, event);
+          this.runEventBus.publish(event);
+        }
+      },
+      this.openai
+    );
+    this.openaiRuntimes.set(userId, runtime);
     return runtime;
   }
 }

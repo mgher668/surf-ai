@@ -51,7 +51,7 @@ const ADAPTER_OPTIONS: BridgeAdapter[] = [
   "anthropic",
   "gemini"
 ];
-const MODEL_ADAPTER_OPTIONS: BridgeAdapter[] = ["codex", "claude", "mock"];
+const MODEL_ADAPTER_OPTIONS: BridgeAdapter[] = ["codex", "claude", "openai-compatible", "mock"];
 const AUTO_MODEL_ID = "auto";
 const SETTINGS_SECTIONS = ["general", "connections", "models", "memories"] as const;
 type SettingsSection = (typeof SETTINGS_SECTIONS)[number];

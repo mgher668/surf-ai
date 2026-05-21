@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { BridgeChatRequest, ChatMessage, LocalBridgeAdapter } from "@surf-ai/shared";
+import type { BridgeAdapter, BridgeChatRequest, ChatMessage, LocalBridgeAdapter } from "@surf-ai/shared";
 import { CodexAdapter } from "../agents/codex-adapter";
 import { ClaudeAdapter } from "../agents/claude-adapter";
 import { AdapterRegistry } from "./registry";
@@ -20,7 +20,7 @@ export interface SessionReplyRequest {
 
 export interface SessionReplyResult {
   output: string;
-  resolvedAdapter: LocalBridgeAdapter;
+  resolvedAdapter: BridgeAdapter;
   agentLink?: {
     provider: "codex" | "claude";
     providerSessionId: string;

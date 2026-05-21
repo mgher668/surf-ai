@@ -1,6 +1,6 @@
 # Phase 10 Harness: OpenAI API Runtime Adapter
 
-Status: PLANNED
+Status: DONE_WITH_CONCERNS
 Date: 2026-05-21
 
 ## Goal
@@ -44,6 +44,10 @@ Add a non-local-agent runtime adapter using OpenAI API so Surf can support both 
 - 2026-05-21: OpenAI API is chosen as the first non-local-agent runtime validation target.
 - 2026-05-21: OpenAI-compatible endpoints should be considered, but official OpenAI correctness comes first.
 - 2026-05-21: Tool calling through OpenAI API is intentionally deferred.
+- 2026-05-21: Use Chat Completions shape for Phase 10 because it is the common OpenAI-compatible denominator.
+- 2026-05-21: `openai-compatible` becomes a real adapter/runtime; `anthropic` and `gemini` remain fallback aliases.
+- 2026-05-21: OpenAI API keys are read only from bridge environment variables, not from extension storage.
+- 2026-05-21: OpenAI-compatible context is injected as fenced JSON reference data before history, not as executable instructions.
 
 ## Validation Plan
 
@@ -56,18 +60,23 @@ Add a non-local-agent runtime adapter using OpenAI API so Surf can support both 
 
 ## Validation Report
 
-Not executed yet. This is a planning-only harness record.
+- PASS `pnpm typecheck`
+- PASS `pnpm build`
+- PASS `pnpm test:bridge`
+- PASS temp bridge evals: `4/4 passed`
+- PASS `pnpm cli:smoke`
+- PASS `pnpm e2e:extension`
 
 ## Risk Review
 
-Planned review focus:
-
-- API keys must not be logged, committed, or exposed to extension UI beyond configured secret handling.
-- Provider errors must be structured and visible without leaking secrets.
-- ContextEngine output must be fenced so page/memory context is not confused with user instruction.
-- OpenAI adapter must not require Codex App Server concepts like thread/approval methods.
-- Streaming disconnects must produce failed run events and not corrupt session history.
+- API keys: kept server-side in env (`SURF_AI_OPENAI_API_KEY` / `OPENAI_API_KEY`), not persisted in SQLite or extension storage.
+- Error leakage: provider error messages are capped and redact configured key/Bearer tokens before surf error propagation.
+- Context boundary: page/selection context is injected as fenced JSON reference data with explicit non-instructional wording.
+- Runtime separation: OpenAI-compatible runtime does not use Codex thread/approval concepts and does not alter Codex App Server approval flow.
+- Stream failures: non-OK provider responses and malformed stream chunks fail the run through existing `session_run_failed` handling.
+- Remaining concern: no real OpenAI credential smoke was run in this phase; validation uses mocked API streams only.
+- Remaining concern: OpenAI tool calling is deliberately not enabled, so provider-native tool approval semantics remain out of scope.
 
 ## Final Status
 
-PLANNED
+DONE_WITH_CONCERNS

@@ -8,6 +8,7 @@
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "tsc -p tsconfig.json --noEmit",
+    "test": "node --test --import tsx src/core/*.test.ts src/runtimes/*.test.ts",
     "evals": "node ../../scripts/run-evals.mjs"
   },
   "dependencies": {

@@ -1,4 +1,5 @@
 import type {
+  BridgeAdapter,
   BridgeAdapterCapability,
   BridgeChatRequest,
   LocalBridgeAdapter
@@ -7,6 +8,8 @@ import type { AgentAdapter } from "../agents/types";
 import { MockAdapter } from "../agents/mock-adapter";
 import { CodexAdapter } from "../agents/codex-adapter";
 import { ClaudeAdapter } from "../agents/claude-adapter";
+import { OpenAICompatibleAdapter } from "../agents/openai-compatible-adapter";
+import type { OpenAICompatibleConfig } from "./config";
 
 const NATIVE_ADAPTERS: Array<{
   adapter: LocalBridgeAdapter;
@@ -20,8 +23,13 @@ const NATIVE_ADAPTERS: Array<{
 export class AdapterRegistry {
   private readonly adapters: Record<string, AgentAdapter>;
 
-  public constructor() {
-    const available = [new MockAdapter(), new CodexAdapter(), new ClaudeAdapter()];
+  public constructor(private readonly openai: OpenAICompatibleConfig) {
+    const available = [
+      new MockAdapter(),
+      new CodexAdapter(),
+      new ClaudeAdapter(),
+      new OpenAICompatibleAdapter(openai)
+    ];
     this.adapters = Object.fromEntries(available.map((adapter) => [adapter.name, adapter]));
   }
 
@@ -37,14 +45,16 @@ export class AdapterRegistry {
       enabled: Boolean(this.adapters[item.adapter])
     }));
 
-    const compatibility: BridgeAdapterCapability[] = [
+    const api: BridgeAdapterCapability[] = [
       {
         adapter: "openai-compatible",
-        label: "OpenAI Compatible (fallback)",
-        kind: "compatibility",
-        enabled: true,
-        routedTo: defaultAdapter
-      },
+        label: "OpenAI Compatible API",
+        kind: "native",
+        enabled: Boolean(this.openai.apiKey)
+      }
+    ];
+
+    const compatibility: BridgeAdapterCapability[] = [
       {
         adapter: "anthropic",
         label: "Anthropic (fallback)",
@@ -61,20 +71,20 @@ export class AdapterRegistry {
       }
     ];
 
-    return [...native, ...compatibility];
+    return [...native, ...api, ...compatibility];
   }
 
   public resolveAdapterName(
     adapter: BridgeChatRequest["adapter"],
     fallback: LocalBridgeAdapter
-  ): LocalBridgeAdapter {
-    if (adapter === "openai-compatible" || adapter === "anthropic" || adapter === "gemini") {
+  ): BridgeAdapter {
+    if (adapter === "anthropic" || adapter === "gemini") {
       return fallback;
     }
     return adapter;
   }
 
-  public getAdapter(name: LocalBridgeAdapter): AgentAdapter | undefined {
+  public getAdapter(name: BridgeAdapter): AgentAdapter | undefined {
     return this.adapters[name];
   }
 
