@@ -423,7 +423,7 @@
   }
 
   .surf-popup-shell {
-    @apply grid w-[320px] gap-3 bg-background p-3;
+    @apply grid min-h-[296px] w-[320px] items-start gap-3 bg-background p-3;
   }
 
   .surf-popup-card {
