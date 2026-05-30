@@ -96,7 +96,7 @@ function Sidebar({
       data-state={state}
       data-collapsible={collapsed ? collapsible : ""}
       className={cn(
-        "relative h-full shrink-0 overflow-hidden border-r border-border bg-card text-card-foreground transition-[width,border-color,box-shadow] duration-[220ms] ease-[cubic-bezier(0.22,1,0.36,1)]",
+        "relative h-full shrink-0 overflow-hidden border-r border-border/80 bg-card text-card-foreground shadow-[var(--surface-glow)] transition-[width,border-color,box-shadow] duration-[220ms] ease-[var(--ease-surf)]",
         collapsible === "none"
           ? "w-[var(--sidebar-width)]"
           : collapsed

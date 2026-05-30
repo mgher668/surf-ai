@@ -2987,24 +2987,14 @@ async function bootstrap(): Promise<void> {
     sidebarMode === "overlay" ? sidebarOverlayOpen : !sidebarCollapsed;
 
   const sessionSidebarContent = (
-    <div className="flex h-full min-h-0 flex-col bg-[var(--panel)] p-3">
-      <h2 style={{ margin: "0 0 10px", fontSize: 16 }}>{t(locale, "sessions")}</h2>
-      <Button type="button" onClick={() => void createSessionFromSidebar()} className="w-full">
+    <div className="surf-session-sidebar">
+      <h2 className="surf-session-title">{t(locale, "sessions")}</h2>
+      <Button type="button" onClick={() => void createSessionFromSidebar()} className="w-full justify-between">
         {t(locale, "newSession")}
       </Button>
 
       <TooltipProvider delayDuration={240}>
-        <div
-          style={{
-            marginTop: 8,
-            display: "grid",
-            gap: 3,
-            overflowY: "auto",
-            minHeight: 0,
-            flex: 1,
-            alignContent: "start"
-          }}
-        >
+        <div className="surf-session-list">
           {sessions.map((session) => (
             <Tooltip
               key={session.id}
@@ -3013,21 +3003,8 @@ async function bootstrap(): Promise<void> {
               <TooltipTrigger asChild>
                 <div
                   onClick={() => selectSessionFromSidebar(session.id)}
-                  style={{
-                    position: "relative",
-                    ...rowButtonStyle,
-                    background:
-                      activeSessionId === session.id
-                        ? "var(--session-active-bg)"
-                        : hoverSessionId === session.id
-                          ? "var(--session-hover-bg)"
-                          : "transparent",
-                    transition: "background-color 150ms ease",
-                    cursor: "pointer",
-                    padding: "2px 4px 2px 8px",
-                    gap: 4,
-                    overflow: "hidden"
-                  }}
+                  className="surf-session-row"
+                  data-active={activeSessionId === session.id ? "true" : "false"}
                   onMouseEnter={(event) => {
                     setHoverSessionId(session.id);
                     const titleElement = event.currentTarget.querySelector(
@@ -3060,26 +3037,14 @@ async function bootstrap(): Promise<void> {
                     {session.status === "RUNNING" ? (
                       <span
                         aria-hidden="true"
-                        style={{
-                          width: 6,
-                          height: 6,
-                          borderRadius: "50%",
-                          background: "var(--hint-info-text)",
-                          marginRight: 6,
-                          flexShrink: 0
-                        }}
+                        className="surf-session-status-dot"
+                        data-status="RUNNING"
                       />
                     ) : session.status === "ERROR" ? (
                       <span
                         aria-hidden="true"
-                        style={{
-                          width: 6,
-                          height: 6,
-                          borderRadius: "50%",
-                          background: "var(--hint-error-text)",
-                          marginRight: 6,
-                          flexShrink: 0
-                        }}
+                        className="surf-session-status-dot"
+                        data-status="ERROR"
                       />
                     ) : null}
                     <span
@@ -3105,7 +3070,7 @@ async function bootstrap(): Promise<void> {
                         aria-label={t(locale, "moreActions")}
                         variant="ghost"
                         size="icon"
-                        className="h-7 w-7 rounded-md p-0 text-[hsl(var(--muted-foreground))] hover:bg-accent"
+                        className="h-7 w-7 shrink-0 rounded-lg p-0 text-[hsl(var(--muted-foreground))] hover:bg-accent"
                         onClick={(event) => event.stopPropagation()}
                         onPointerDown={(event) => event.stopPropagation()}
                       >
@@ -3153,9 +3118,9 @@ async function bootstrap(): Promise<void> {
       </TooltipProvider>
 
       <Separator className="my-3" />
-      <div className="grid gap-2 rounded-md border border-border bg-card p-2">
-        <span className="text-xs text-muted-foreground">{t(locale, "currentConnection")}</span>
-        <span className="truncate text-xs font-medium">
+      <div className="surf-connection-card">
+        <span className="surf-field-label">{t(locale, "currentConnection")}</span>
+        <span className="truncate text-sm font-semibold">
           {activeConnection?.name ?? t(locale, "noConnection")}
         </span>
         <Button type="button" variant="outline" size="sm" onClick={() => void openSettingsFromSidebar()}>
@@ -3171,9 +3136,9 @@ async function bootstrap(): Promise<void> {
       onOpenChange={(open) => {
         void updateSidebarCollapsedValue(!open);
       }}
-      className="h-screen w-full"
+      className="h-[100dvh] w-full"
     >
-      <div className="relative flex h-screen w-full overflow-hidden">
+      <div className="surf-app-shell">
         {sidebarMode === "docked" ? (
           <Sidebar collapsible="offcanvas" className="bg-transparent">
             {sessionSidebarContent}
@@ -3194,24 +3159,14 @@ async function bootstrap(): Promise<void> {
             onDragLeave={handleConversationDragLeave}
             onDrop={handleConversationDrop}
             onDragEnd={resetDragOverlay}
-            style={{ display: "grid", gridTemplateRows: "auto 1fr auto", minHeight: 0, flex: 1, position: "relative" }}
+            className="surf-main-grid"
           >
-        <header
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: 8,
-            padding: "10px 12px",
-            borderBottom: "1px solid var(--line)",
-            background: "var(--header-glass-bg)",
-            backdropFilter: "blur(4px)"
-          }}
-        >
+        <header className="surf-topbar">
           <Button
             type="button"
             variant="ghost"
             size="icon"
-            className={`h-8 w-8 rounded-md p-0 text-[hsl(var(--muted-foreground))] hover:bg-accent ${
+            className={`h-8 w-8 rounded-lg p-0 text-[hsl(var(--muted-foreground))] hover:bg-accent ${
               isSidebarVisible ? "bg-accent text-accent-foreground" : ""
             }`}
             title={t(locale, "toggleSidebar")}
@@ -3226,7 +3181,7 @@ async function bootstrap(): Promise<void> {
                 type="button"
                 variant="ghost"
                 size="icon"
-                className="h-8 w-8 rounded-md p-0 text-[hsl(var(--muted-foreground))] hover:bg-accent"
+                className="h-8 w-8 rounded-lg p-0 text-[hsl(var(--muted-foreground))] hover:bg-accent"
                 title={t(locale, "sidebarMode")}
                 aria-label={t(locale, "sidebarMode")}
               >
@@ -3254,14 +3209,14 @@ async function bootstrap(): Promise<void> {
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
-          <strong style={{ flex: 1 }}>{t(locale, "appTitle")}</strong>
+          <strong className="surf-topbar-title">{t(locale, "appTitle")}</strong>
           <DropdownMenu onOpenChange={setIsAnyDropdownMenuOpen}>
             <DropdownMenuTrigger asChild>
               <Button
                 type="button"
                 variant="ghost"
                 size="icon"
-                className="h-8 w-8 rounded-md p-0 text-[hsl(var(--muted-foreground))] hover:bg-accent"
+                className="h-8 w-8 rounded-lg p-0 text-[hsl(var(--muted-foreground))] hover:bg-accent"
                 title={t(locale, "theme")}
                 aria-label={t(locale, "theme")}
               >
@@ -3362,14 +3317,7 @@ async function bootstrap(): Promise<void> {
             }
             focusConversationViewport();
           }}
-          style={{
-            padding: 14,
-            overflow: "auto",
-            display: "grid",
-            gap: 12,
-            alignContent: "start",
-            outline: "none"
-          }}
+          className="surf-conversation-viewport"
         >
           {!activeConnection ? (
             <div style={hintErrorStyle}>{t(locale, "noActiveConnectionHint")}</div>
@@ -3396,7 +3344,15 @@ async function bootstrap(): Promise<void> {
           ) : null}
           {extractError ? <div style={hintErrorStyle}>{extractError}</div> : null}
           {conversationTimelineItems.length === 0 ? (
-            <div style={{ color: "var(--muted-text)", fontSize: 13 }}>{t(locale, "empty")}</div>
+            <div className="surf-empty-state">
+              <span className="surf-empty-kicker">Surf AI</span>
+              <strong className="surf-empty-title">{t(locale, "empty")}</strong>
+              <span className="text-sm leading-relaxed text-muted-foreground">
+                {activeConnection
+                  ? t(locale, "placeholder")
+                  : t(locale, "noActiveConnectionHint")}
+              </span>
+            </div>
           ) : (
             conversationTimelineItems.map((item) => {
               if (item.kind === "message") {
@@ -3418,24 +3374,13 @@ async function bootstrap(): Promise<void> {
                     onFocus={() => {
                       setFocusedMessageId(msg.id);
                     }}
-                    style={{
-                      maxWidth: "85%",
-                      padding: "10px 12px",
-                      borderRadius: 12,
-                      lineHeight: 1.45,
-                      border: "1px solid var(--line)",
-                      outline: "none",
-                      background:
-                        msg.role === "user" ? "var(--message-user-bg)" : "var(--message-assistant-bg)",
-                      marginLeft: msg.role === "user" ? "auto" : 0,
-                      boxShadow: isHighlighted
-                        ? "0 0 0 2px hsl(var(--ring) / 0.35)"
-                        : undefined
-                    }}
+                    className={`surf-message ${
+                      msg.role === "user" ? "surf-message-user" : "surf-message-assistant"
+                    }`}
                   >
                     {msg.role === "assistant" ? (
                       <div style={{ display: "grid", gap: 8 }}>
-                        <div className="flex items-center justify-between gap-2">
+                        <div className="surf-message-toolbar">
                           <button
                             type="button"
                             onClick={() => toggleRawView(msg.id)}
@@ -3545,18 +3490,18 @@ async function bootstrap(): Promise<void> {
                 const approval = process.approval;
                 const pendingApproval = approval.status === "PENDING";
                 return (
-                  <div key={item.id} style={approvalCardStyle}>
-                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
-                      <strong style={{ fontSize: 12 }}>{approval.title ?? approval.kind}</strong>
-                      <span style={{ fontSize: 11, opacity: 0.9 }}>
+                  <div key={item.id} className="surf-process-card" data-kind="approval">
+                    <div className="surf-process-header">
+                      <strong className="surf-process-title">{approval.title ?? approval.kind}</strong>
+                      <span className="surf-process-meta">
                         {renderApprovalStatus(locale, approval.status, approval.decision)}
                       </span>
                     </div>
-                    <div style={{ marginTop: 4, fontSize: 11, whiteSpace: "pre-wrap" }}>
+                    <div className="surf-process-body whitespace-pre-wrap">
                       {approval.kind}
                     </div>
                     {pendingApproval ? (
-                      <div style={{ marginTop: 8, display: "flex", flexWrap: "wrap", gap: 6 }}>
+                      <div className="surf-process-actions">
                         {approval.availableDecisions.map((decision) => (
                           <Button
                             key={stableDecisionKey(decision)}
@@ -3581,21 +3526,15 @@ async function bootstrap(): Promise<void> {
                     ? process.segments
                     : [process.content];
                 return (
-                  <details key={item.id} style={collapsibleBlockStyle}>
-                    <summary style={collapsibleSummaryStyle}>
+                  <details key={item.id} className="surf-process-details">
+                    <summary className="surf-process-summary">
                       {t(locale, "assistantCommentaryTitle")}
                     </summary>
-                    <div style={collapsibleMarkdownBodyStyle}>
+                    <div className="surf-process-markdown">
                       {commentarySegments.map((segment, index) => (
                         <p
                           key={`${item.id}:commentary:${index}`}
-                          style={{
-                            margin: index === 0 ? "0 0 8px" : "8px 0",
-                            whiteSpace: "pre-wrap",
-                            wordBreak: "break-word",
-                            fontSize: 13,
-                            lineHeight: 1.5
-                          }}
+                          className="surf-process-paragraph"
                         >
                           {segment}
                         </p>
@@ -3607,35 +3546,38 @@ async function bootstrap(): Promise<void> {
 
               if (process.kind === "reasoning_summary" && process.content) {
                 return (
-                  <details key={item.id} style={collapsibleBlockStyle}>
-                    <summary style={collapsibleSummaryStyle}>Reasoning Summary</summary>
-                    <pre style={collapsibleContentStyle}>{process.content}</pre>
+                  <details key={item.id} className="surf-process-details">
+                    <summary className="surf-process-summary">Reasoning Summary</summary>
+                    <pre className="surf-process-content">{process.content}</pre>
                   </details>
                 );
               }
 
               if (process.kind === "reasoning_text" && process.content) {
                 return (
-                  <details key={item.id} style={collapsibleBlockStyle}>
-                    <summary style={collapsibleSummaryStyle}>Reasoning (Raw)</summary>
-                    <pre style={collapsibleContentStyle}>{process.content}</pre>
+                  <details key={item.id} className="surf-process-details">
+                    <summary className="surf-process-summary">Reasoning (Raw)</summary>
+                    <pre className="surf-process-content">{process.content}</pre>
                   </details>
                 );
               }
 
               if (process.kind === "command_output" && process.content) {
                 return (
-                  <details key={item.id} style={collapsibleBlockStyle}>
-                    <summary style={collapsibleSummaryStyle}>Tool / Command Output</summary>
-                    <pre style={collapsibleContentStyle}>{process.content}</pre>
+                  <details key={item.id} className="surf-process-details">
+                    <summary className="surf-process-summary">Tool / Command Output</summary>
+                    <pre className="surf-process-content">{process.content}</pre>
                   </details>
                 );
               }
 
               if (process.kind === "runtime_error" && process.message) {
                 return (
-                  <div key={item.id} style={hintErrorStyle}>
-                    {process.message}
+                  <div key={item.id} className="surf-process-card" data-kind="runtime_error">
+                    <div className="surf-process-header">
+                      <strong className="surf-process-title">Runtime error</strong>
+                    </div>
+                    <div className="surf-process-body whitespace-pre-wrap">{process.message}</div>
                   </div>
                 );
               }
@@ -3645,7 +3587,7 @@ async function bootstrap(): Promise<void> {
           )}
         </section>
 
-        <footer style={{ padding: 12, borderTop: "1px solid var(--line)", display: "grid", gap: 8 }}>
+        <footer className="surf-composer">
           {pageContent ? (
             <div style={hintInfoStyle}>
               {t(locale, "pageContextReady")} · {pageContent.source} · {pageContent.charCount} chars
@@ -3704,9 +3646,9 @@ async function bootstrap(): Promise<void> {
               ) : null}
             </div>
           ) : null}
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <div className="flex flex-wrap items-center gap-2">
-              <span className="text-xs text-muted-foreground">{t(locale, "adapter")}</span>
+          <div className="surf-composer-bar">
+            <div className="surf-composer-controls">
+              <span className="surf-field-label">{t(locale, "adapter")}</span>
               <Select
                 value={adapter}
                 onOpenChange={setIsAdapterSelectOpen}
@@ -3753,7 +3695,7 @@ async function bootstrap(): Promise<void> {
                 </SelectContent>
               </Select>
 
-              <span className="text-xs text-muted-foreground">{t(locale, "model")}</span>
+              <span className="surf-field-label">{t(locale, "model")}</span>
               <Select
                 value={model}
                 onValueChange={(value) => {
@@ -3776,7 +3718,7 @@ async function bootstrap(): Promise<void> {
                 </SelectContent>
               </Select>
             </div>
-            <div className="flex items-center gap-2">
+            <div className="surf-composer-controls">
               <input
                 ref={composerFileInputRef}
                 type="file"
@@ -3863,12 +3805,13 @@ async function bootstrap(): Promise<void> {
               focusConversationViewport();
             }}
             placeholder={t(locale, "placeholder")}
-            className="min-h-[76px] resize-y"
+            className="min-h-[84px] resize-y rounded-2xl bg-background text-[13px]"
           />
           <Button
             type="button"
             disabled={pending || isActiveRunBusy || !canSend}
             onClick={() => void send()}
+            className="min-h-10"
             style={{ opacity: pending || isActiveRunBusy || !canSend ? 0.6 : 1 }}
           >
             {pending ? "..." : t(locale, "send")}

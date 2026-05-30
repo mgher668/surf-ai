@@ -650,10 +650,10 @@ export function App(): JSX.Element {
   ];
 
   return (
-    <main className="mx-auto grid min-h-screen w-full max-w-6xl content-start gap-4 px-4 py-4 sm:px-6">
-      <header className="flex flex-wrap items-center justify-between gap-3 rounded-xl border bg-card px-4 py-3">
+    <main className="surf-settings-shell">
+      <header className="surf-settings-header">
         <div className="grid gap-0.5">
-          <h1 className="text-base font-semibold">{t(locale, "settingsTitle")}</h1>
+          <h1 className="surf-settings-title">{t(locale, "settingsTitle")}</h1>
           <p className="text-xs text-muted-foreground">{t(locale, "settingsDescription")}</p>
         </div>
         <Button type="button" variant="outline" onClick={() => void openChatPage()}>
@@ -662,7 +662,7 @@ export function App(): JSX.Element {
       </header>
 
       <div className="grid items-start gap-4 lg:grid-cols-[240px_minmax(0,1fr)]">
-        <aside className="h-fit rounded-xl border bg-card p-2 lg:sticky lg:top-4">
+        <aside className="surf-settings-nav">
           <nav className="flex gap-1 overflow-x-auto lg:flex-col">
             {sectionItems.map((item) => {
               const active = activeSection === item.key;
@@ -671,11 +671,8 @@ export function App(): JSX.Element {
                   key={item.key}
                   type="button"
                   onClick={() => setActiveSection(item.key)}
-                  className={`min-w-[120px] rounded-md px-3 py-2 text-left transition-colors lg:min-w-0 ${
-                    active
-                      ? "bg-primary text-primary-foreground"
-                      : "text-foreground hover:bg-accent hover:text-accent-foreground"
-                  }`}
+                  className="surf-settings-nav-item"
+                  data-active={active ? "true" : "false"}
                 >
                   <div className="text-sm font-medium">{t(locale, item.labelKey)}</div>
                   <div className={`text-[11px] ${active ? "text-primary-foreground/80" : "text-muted-foreground"}`}>
@@ -689,16 +686,16 @@ export function App(): JSX.Element {
 
         <section className="grid content-start gap-4">
           {activeSection === "general" ? (
-            <section className="grid gap-3 rounded-xl border bg-card p-4">
+            <section className="surf-settings-card">
               <div className="grid gap-1">
-                <h2 className="text-sm font-semibold">{t(locale, "settingsSectionGeneral")}</h2>
+                <h2 className="surf-settings-section-title">{t(locale, "settingsSectionGeneral")}</h2>
                 <p className="text-xs text-muted-foreground">
                   {t(locale, "settingsSectionGeneralDescription")}
                 </p>
               </div>
 
               <div className="grid gap-2">
-                <span className="text-xs text-muted-foreground">{t(locale, "defaultAdapter")}</span>
+                <span className="surf-field-label">{t(locale, "defaultAdapter")}</span>
                 <Select
                   value={defaultAdapter}
                   onValueChange={(value) => void updateDefaultAdapter(value as BridgeAdapter)}
@@ -717,7 +714,7 @@ export function App(): JSX.Element {
               </div>
 
               <div className="grid gap-2">
-                <span className="text-xs text-muted-foreground">{t(locale, "language")}</span>
+                <span className="surf-field-label">{t(locale, "language")}</span>
                 <Select
                   value={locale}
                   onValueChange={(value) => void updateLocale(value as Locale)}
@@ -733,7 +730,7 @@ export function App(): JSX.Element {
               </div>
 
               <div className="grid gap-2">
-                <span className="text-xs text-muted-foreground">{t(locale, "sidebarMode")}</span>
+                <span className="surf-field-label">{t(locale, "sidebarMode")}</span>
                 <Select
                   value={sidebarMode}
                   onValueChange={(value) => void updateSidebarMode(value as UiSidebarMode)}
@@ -749,7 +746,7 @@ export function App(): JSX.Element {
               </div>
 
               <div className="grid gap-2">
-                <span className="text-xs text-muted-foreground">{t(locale, "theme")}</span>
+                <span className="surf-field-label">{t(locale, "theme")}</span>
                 <Select
                   value={themeMode}
                   onValueChange={(value) => void updateThemeMode(value as UiThemeMode)}
@@ -769,16 +766,16 @@ export function App(): JSX.Element {
 
           {activeSection === "connections" ? (
             <>
-              <section className="grid gap-3 rounded-xl border bg-card p-4">
+              <section className="surf-settings-card">
                 <div className="grid gap-1">
-                  <h2 className="text-sm font-semibold">{t(locale, "settingsSectionConnections")}</h2>
+                  <h2 className="surf-settings-section-title">{t(locale, "settingsSectionConnections")}</h2>
                   <p className="text-xs text-muted-foreground">
                     {t(locale, "settingsSectionConnectionsDescription")}
                   </p>
                 </div>
 
                 <div className="grid gap-1">
-                  <span className="text-xs text-muted-foreground">{t(locale, "currentConnection")}</span>
+                  <span className="surf-field-label">{t(locale, "currentConnection")}</span>
                   <Select
                     {...(activeConnectionId ? { value: activeConnectionId } : {})}
                     onValueChange={(value) => void updateActiveConnection(value)}
@@ -802,22 +799,22 @@ export function App(): JSX.Element {
                 </div>
               </section>
 
-              <section className="grid gap-3 rounded-xl border bg-card p-4">
-                <h3 className="text-sm font-semibold">{t(locale, "addConnection")}</h3>
+              <section className="surf-settings-card">
+                <h3 className="surf-settings-section-title">{t(locale, "addConnection")}</h3>
                 <div className="grid gap-2">
-                  <span className="text-xs text-muted-foreground">{t(locale, "connectionName")}</span>
+                  <span className="surf-field-label">{t(locale, "connectionName")}</span>
                   <Input value={newConnName} onChange={(event) => setNewConnName(event.target.value)} />
                 </div>
                 <div className="grid gap-2">
-                  <span className="text-xs text-muted-foreground">{t(locale, "baseUrl")}</span>
+                  <span className="surf-field-label">{t(locale, "baseUrl")}</span>
                   <Input value={newConnUrl} onChange={(event) => setNewConnUrl(event.target.value)} />
                 </div>
                 <div className="grid gap-2">
-                  <span className="text-xs text-muted-foreground">{t(locale, "connectionUserId")}</span>
+                  <span className="surf-field-label">{t(locale, "connectionUserId")}</span>
                   <Input value={newConnUserId} onChange={(event) => setNewConnUserId(event.target.value)} />
                 </div>
                 <div className="grid gap-2">
-                  <span className="text-xs text-muted-foreground">{t(locale, "token")}</span>
+                  <span className="surf-field-label">{t(locale, "token")}</span>
                   <Input value={newConnToken} onChange={(event) => setNewConnToken(event.target.value)} />
                 </div>
                 <div>
@@ -830,9 +827,9 @@ export function App(): JSX.Element {
           ) : null}
 
           {activeSection === "models" ? (
-            <section className="grid gap-3 rounded-xl border bg-card p-4">
+            <section className="surf-settings-card">
               <div className="grid gap-1">
-                <h2 className="text-sm font-semibold">{t(locale, "modelsTitle")}</h2>
+                <h2 className="surf-settings-section-title">{t(locale, "modelsTitle")}</h2>
                 <p className="text-xs text-muted-foreground">{t(locale, "modelsDescription")}</p>
               </div>
 
@@ -862,10 +859,10 @@ export function App(): JSX.Element {
           ) : null}
 
           {activeSection === "memories" ? (
-            <section className="grid gap-3 rounded-xl border bg-card p-4">
+            <section className="surf-settings-card">
               <div className="flex flex-wrap items-start justify-between gap-2">
                 <div className="grid gap-1">
-                  <h2 className="text-sm font-semibold">{t(locale, "memoriesTitle")}</h2>
+                  <h2 className="surf-settings-section-title">{t(locale, "memoriesTitle")}</h2>
                   <p className="text-xs text-muted-foreground">{t(locale, "memoriesDescription")}</p>
                 </div>
                 <Button
@@ -886,7 +883,7 @@ export function App(): JSX.Element {
               ) : (
                 <div className="grid gap-2">
                   {memories.map((memory) => (
-                    <article key={memory.id} className="grid gap-2 rounded-lg border bg-background p-3">
+                    <article key={memory.id} className="surf-memory-card">
                       <div className="flex flex-wrap items-center justify-between gap-2">
                         <div className="flex flex-wrap items-center gap-2 text-xs">
                           <span className="rounded-full bg-muted px-2 py-0.5">{memory.scope}</span>

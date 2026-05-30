@@ -1,5 +1,5 @@
 import { createServer } from "node:http";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -9,11 +9,15 @@ const repoRoot = resolve(new URL("../../..", import.meta.url).pathname);
 const extensionDir = resolve(repoRoot, "apps/extension");
 const distDir = resolve(extensionDir, "dist");
 const manifestPath = resolve(distDir, "manifest.json");
+const defaultArtifactDir = join(tmpdir(), "surf-ai-extension-e2e-artifacts");
 
 async function main() {
   const chromeBinary = process.env.SURF_AI_E2E_CHROME ?? findChromeBinary();
   const cdpPort = Number(process.env.SURF_AI_E2E_CDP_PORT ?? 0) || await getFreePort();
   const headless = process.env.SURF_AI_E2E_HEADLESS !== "0";
+  const stepDelayMs = parseNonNegativeInt(process.env.SURF_AI_E2E_STEP_DELAY_MS, 0);
+  const artifactDir = resolve(process.env.SURF_AI_E2E_ARTIFACT_DIR ?? defaultArtifactDir);
+  const steps = createStepRunner(stepDelayMs);
 
   if (!existsSync(manifestPath)) {
     throw new Error("Extension dist is missing. Run `pnpm --filter @surf-ai/extension build` first.");
@@ -26,47 +30,54 @@ async function main() {
   const fixtureBaseUrl = await fixture.start();
   const userDataDir = await mkdtemp(join(tmpdir(), "surf-ai-extension-e2e-"));
   let chrome;
+  let page;
 
   try {
-    chrome = launchChrome({ chromeBinary, cdpPort, userDataDir, headless, extensionDir: distDir });
-    await waitForCdp(cdpPort);
-    const extensionId = await waitForExtensionId(cdpPort, userDataDir, distDir);
-    const page = await openTarget(cdpPort, `chrome-extension://${extensionId}/src/ui/sidepanel/index.html`);
-    await page.ready;
-    await configureExtensionStorage(page.client, fixtureBaseUrl);
-    await page.client.send("Page.reload", { ignoreCache: true });
+    chrome = await steps.run("launch Chromium with Surf extension", () =>
+      launchChrome({ chromeBinary, cdpPort, userDataDir, headless, extensionDir: distDir })
+    );
+    await steps.run("wait for Chrome DevTools Protocol", () => waitForCdp(cdpPort));
+    const extensionId = await steps.run("discover loaded extension id", () =>
+      waitForExtensionId(cdpPort, userDataDir, distDir)
+    );
+    page = await steps.run("open standalone extension page", () =>
+      openTarget(cdpPort, `chrome-extension://${extensionId}/src/ui/sidepanel/index.html`)
+    );
+    await steps.run("wait for standalone page load", () => page.ready);
+    await steps.run("configure extension storage", () => configureExtensionStorage(page.client, fixtureBaseUrl));
+    await steps.run("reload with bridge fixture config", () => page.client.send("Page.reload", { ignoreCache: true }));
 
-    await waitFor(page.client, () => document.body.innerText.includes("Surf AI"), "standalone page title");
-    await waitFor(page.client, () => document.body.innerText.includes("Sessions"), "session sidebar");
-    await waitFor(page.client, () => document.body.innerText.includes("No messages yet"), "empty state");
+    await steps.run("verify standalone page title", () => waitFor(page.client, () => document.body.innerText.includes("Surf AI"), "standalone page title"));
+    await steps.run("verify session sidebar", () => waitFor(page.client, () => document.body.innerText.includes("Sessions"), "session sidebar"));
+    await steps.run("verify empty state", () => waitFor(page.client, () => document.body.innerText.includes("No messages yet"), "empty state"));
 
-    await typeComposer(page.client, "Phase 6B fixture smoke");
-    await clickButtonByText(page.client, "Send");
-    await waitFor(page.client, () => document.body.innerText.includes("Fixture answer"), "streamed assistant answer");
-    await waitFor(page.client, () => document.querySelectorAll("[data-message-id]").length >= 2, "persisted user and assistant messages");
+    await steps.run("type first message", () => typeComposer(page.client, "Phase 6B fixture smoke"));
+    await steps.run("send first message", () => clickButtonByText(page.client, "Send"));
+    await steps.run("verify streamed assistant answer", () => waitFor(page.client, () => document.body.innerText.includes("Fixture answer"), "streamed assistant answer"));
+    await steps.run("verify persisted user and assistant messages", () => waitFor(page.client, () => document.querySelectorAll("[data-message-id]").length >= 2, "persisted user and assistant messages"));
 
-    await page.client.send("Page.reload", { ignoreCache: true });
-    await waitFor(page.client, () => document.body.innerText.includes("Fixture answer"), "refresh replay answer");
-    await waitFor(page.client, () => document.body.innerText.includes("Intermediate Commentary"), "refresh replay process timeline");
-    await waitFor(page.client, () => document.querySelectorAll("[data-message-id]").length >= 2, "refresh replay messages");
+    await steps.run("reload after first answer", () => page.client.send("Page.reload", { ignoreCache: true }));
+    await steps.run("verify refresh replay answer", () => waitFor(page.client, () => document.body.innerText.includes("Fixture answer"), "refresh replay answer"));
+    await steps.run("verify refresh replay process timeline", () => waitFor(page.client, () => document.body.innerText.includes("Intermediate Commentary"), "refresh replay process timeline"));
+    await steps.run("verify refresh replay messages", () => waitFor(page.client, () => document.querySelectorAll("[data-message-id]").length >= 2, "refresh replay messages"));
 
-    await typeComposer(page.client, "please request approval");
-    await clickButtonByText(page.client, "Send");
-    await waitFor(page.client, () => document.body.innerText.includes("Fixture approval"), "approval card");
-    await clickButtonByText(page.client, "Allow once");
-    await waitFor(page.client, () => document.body.innerText.includes("Approved"), "approval updated state");
-    await waitFor(page.client, () => document.body.innerText.includes("Approved fixture answer"), "post-approval assistant answer");
+    await steps.run("type approval request message", () => typeComposer(page.client, "please request approval"));
+    await steps.run("send approval request message", () => clickButtonByText(page.client, "Send"));
+    await steps.run("verify approval card", () => waitFor(page.client, () => document.body.innerText.includes("Fixture approval"), "approval card"));
+    await steps.run("approve once", () => clickButtonByText(page.client, "Allow once"));
+    await steps.run("verify approval updated state", () => waitFor(page.client, () => document.body.innerText.includes("Approved"), "approval updated state"));
+    await steps.run("verify post-approval assistant answer", () => waitFor(page.client, () => document.body.innerText.includes("Approved fixture answer"), "post-approval assistant answer"));
 
-    await page.client.send("Page.reload", { ignoreCache: true });
-    await waitFor(page.client, () => document.body.innerText.includes("Fixture approval"), "approval replay card");
-    await waitFor(page.client, () => document.body.innerText.includes("Approved"), "approval replay state");
-    await waitFor(page.client, () => document.body.innerText.includes("Approved fixture answer"), "approval replay answer");
+    await steps.run("reload after approval answer", () => page.client.send("Page.reload", { ignoreCache: true }));
+    await steps.run("verify approval replay card", () => waitFor(page.client, () => document.body.innerText.includes("Fixture approval"), "approval replay card"));
+    await steps.run("verify approval replay state", () => waitFor(page.client, () => document.body.innerText.includes("Approved"), "approval replay state"));
+    await steps.run("verify approval replay answer", () => waitFor(page.client, () => document.body.innerText.includes("Approved fixture answer"), "approval replay answer"));
 
-    await setChromeStorage(page.client, { "surf.theme": "dark" });
-    await page.client.send("Page.reload", { ignoreCache: true });
-    await waitFor(page.client, () => document.documentElement.classList.contains("dark"), "theme persistence");
+    await steps.run("persist dark theme", () => setChromeStorage(page.client, { "surf.theme": "dark" }));
+    await steps.run("reload after theme update", () => page.client.send("Page.reload", { ignoreCache: true }));
+    await steps.run("verify theme persistence", () => waitFor(page.client, () => document.documentElement.classList.contains("dark"), "theme persistence"));
 
-    const summary = await fixture.summary();
+    const summary = await steps.run("verify fixture summary", () => fixture.summary());
     assert(summary.sessions >= 1, "fixture should have at least one session");
     assert(summary.runs >= 2, "fixture should have created two runs");
     assert(summary.decisions >= 1, "fixture should have received approval decision");
@@ -79,10 +90,17 @@ async function main() {
       runs: summary.runs,
       decisions: summary.decisions
     }, null, 2));
+  } catch (error) {
+    const screenshotPath = await captureFailureScreenshot(page?.client, artifactDir, steps.currentLabel());
+    if (screenshotPath) {
+      console.error(`E2E failure screenshot: ${screenshotPath}`);
+    }
+    throw error;
   } finally {
+    page?.client?.close();
     await terminateChrome(chrome);
     await fixture.stop();
-    await rm(userDataDir, { recursive: true, force: true });
+    await removeTempDir(userDataDir);
   }
 }
 
@@ -771,6 +789,70 @@ function listen(server, port) {
 
 function randomId(prefix) {
   return `${prefix}-${Math.random().toString(36).slice(2)}-${Date.now().toString(36)}`;
+}
+
+function createStepRunner(stepDelayMs) {
+  let current = "startup";
+  return {
+    currentLabel() {
+      return current;
+    },
+    async run(label, action) {
+      current = label;
+      console.log(`[e2e] ${label}`);
+      const result = await action();
+      if (stepDelayMs > 0) {
+        await delay(stepDelayMs);
+      }
+      return result;
+    }
+  };
+}
+
+async function captureFailureScreenshot(client, artifactDir, stepLabel) {
+  if (!client) {
+    return undefined;
+  }
+
+  try {
+    await mkdir(artifactDir, { recursive: true });
+    const timestamp = new Date().toISOString().replace(/[:.]/gu, "-");
+    const safeStep = String(stepLabel || "unknown-step")
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/gu, "-")
+      .replace(/^-|-$/gu, "")
+      .slice(0, 80) || "unknown-step";
+    const screenshotPath = join(artifactDir, `${timestamp}-${safeStep}.png`);
+    const result = await client.send("Page.captureScreenshot", {
+      format: "png",
+      captureBeyondViewport: true
+    });
+    if (typeof result.data !== "string" || !result.data) {
+      return undefined;
+    }
+    await writeFile(screenshotPath, Buffer.from(result.data, "base64"));
+    return screenshotPath;
+  } catch (error) {
+    console.error(`Failed to capture E2E screenshot: ${error instanceof Error ? error.message : String(error)}`);
+    return undefined;
+  }
+}
+
+function parseNonNegativeInt(raw, fallback) {
+  if (!raw) {
+    return fallback;
+  }
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed >= 0 ? Math.floor(parsed) : fallback;
+}
+
+async function removeTempDir(path) {
+  await rm(path, {
+    recursive: true,
+    force: true,
+    maxRetries: 5,
+    retryDelay: 200
+  });
 }
 
 function delay(ms) {

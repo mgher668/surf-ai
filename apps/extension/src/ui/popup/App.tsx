@@ -59,27 +59,32 @@ export function App(): JSX.Element {
   }
 
   return (
-    <main className="grid w-[320px] gap-2 p-3">
-      <h1 className="text-base font-semibold">{t(locale, "appTitle")}</h1>
-      <Button
-        type="button"
-        className="w-full"
-        onClick={async () => {
-          const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-          if (tab?.windowId) {
-            await chrome.sidePanel.open({ windowId: tab.windowId });
-          }
-        }}
-      >
-        {t(locale, "openSidePanel")}
-      </Button>
-      <Button type="button" variant="outline" className="w-full" onClick={() => void openStandalone()}>
-        {t(locale, "openStandalone")}
-      </Button>
-      <Button type="button" variant="outline" className="w-full" onClick={() => void openSettings()}>
-        {t(locale, "openSettings")}
-      </Button>
-      <p className="mt-1 text-xs text-muted-foreground">{t(locale, "popupTipSelection")}</p>
+    <main className="surf-popup-shell">
+      <section className="surf-popup-card">
+        <div className="grid gap-1">
+          <span className="surf-field-label">Surf AI</span>
+          <h1 className="text-base font-semibold tracking-[-0.02em]">{t(locale, "appTitle")}</h1>
+        </div>
+        <Button
+          type="button"
+          className="w-full justify-between"
+          onClick={async () => {
+            const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+            if (tab?.windowId) {
+              await chrome.sidePanel.open({ windowId: tab.windowId });
+            }
+          }}
+        >
+          {t(locale, "openSidePanel")}
+        </Button>
+        <Button type="button" variant="outline" className="w-full justify-between" onClick={() => void openStandalone()}>
+          {t(locale, "openStandalone")}
+        </Button>
+        <Button type="button" variant="outline" className="w-full justify-between" onClick={() => void openSettings()}>
+          {t(locale, "openSettings")}
+        </Button>
+        <p className="text-xs leading-relaxed text-muted-foreground">{t(locale, "popupTipSelection")}</p>
+      </section>
     </main>
   );
 }

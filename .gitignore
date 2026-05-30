@@ -24,3 +24,5 @@ apps/bridge/temp/
 
 # gstack generated skill entry symlinks (machine-local, absolute targets)
 .agents/skills/gstack-*
+.codegraph/
+.serena/

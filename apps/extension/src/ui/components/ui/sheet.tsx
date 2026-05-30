@@ -14,7 +14,7 @@ const SheetOverlay = React.forwardRef<
   <DialogPrimitive.Overlay
     ref={ref}
     className={cn(
-      "fixed inset-0 z-50 bg-black/40 transition-opacity duration-200 data-[state=open]:opacity-100 data-[state=closed]:opacity-0",
+      "fixed inset-0 z-50 bg-[rgba(16,23,21,0.48)] backdrop-blur-[2px] transition-opacity duration-200 data-[state=open]:opacity-100 data-[state=closed]:opacity-0",
       className
     )}
     {...props}
@@ -34,7 +34,7 @@ const SheetContent = React.forwardRef<
     <DialogPrimitive.Content
       ref={ref}
       className={cn(
-        "fixed z-50 bg-popover text-popover-foreground shadow-xl transition-[transform,opacity] duration-200 ease-out data-[state=open]:opacity-100 data-[state=closed]:opacity-100",
+        "fixed z-50 bg-popover text-popover-foreground shadow-[var(--shadow-popover)] transition-[transform,opacity] duration-200 ease-[var(--ease-surf)] data-[state=open]:opacity-100 data-[state=closed]:opacity-100",
         side === "right" &&
           "inset-y-0 right-0 h-full w-[88vw] max-w-sm border-l border-border data-[state=open]:translate-x-0 data-[state=closed]:translate-x-full",
         side === "left" &&
@@ -49,7 +49,7 @@ const SheetContent = React.forwardRef<
     >
       {children}
       {showCloseButton ? (
-        <SheetClose className="absolute right-3 top-3 inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-accent-foreground">
+        <SheetClose className="absolute right-3 top-3 inline-flex h-7 w-7 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
           <span aria-hidden="true">×</span>
           <span className="sr-only">Close</span>
         </SheetClose>
