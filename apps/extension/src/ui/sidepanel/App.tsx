@@ -3,9 +3,6 @@ import {
   useMemo,
   useRef,
   useState,
-  type ChangeEvent,
-  type ClipboardEvent as ReactClipboardEvent,
-  type DragEvent as ReactDragEvent,
   type KeyboardEvent as ReactKeyboardEvent
 } from "react";
 import { STORAGE_KEYS } from "@surf-ai/shared";
@@ -77,6 +74,7 @@ import { RenameSessionDialog } from "./components/RenameSessionDialog";
 import { RunStatusBanner } from "./components/RunStatusBanner";
 import { SessionSidebar } from "./components/SessionSidebar";
 import { SidepanelTopbar } from "./components/SidepanelTopbar";
+import { useComposerAttachments } from "./hooks/useComposerAttachments";
 import { useKeyboardScroll } from "./hooks/useKeyboardScroll";
 import {
   fetchBridgeJson,
@@ -171,9 +169,6 @@ export function App(): JSX.Element {
   const [sessionMode, setSessionMode] = useState<SessionMode>("local");
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
-  const [composerAttachments, setComposerAttachments] = useState<ComposerAttachment[]>([]);
-  const [composerAttachmentError, setComposerAttachmentError] = useState<string | undefined>();
-  const [isDragOverlayVisible, setIsDragOverlayVisible] = useState(false);
   const [adapter, setAdapter] = useState<BridgeChatRequest["adapter"]>("mock");
   const [capabilities, setCapabilities] = useState<BridgeCapabilitiesResponse | undefined>();
   const [capabilitiesError, setCapabilitiesError] = useState<string | undefined>();
@@ -227,10 +222,27 @@ export function App(): JSX.Element {
   const messageItemRefs = useRef(new Map<string, HTMLElement>());
   const pendingAutoScrollSessionIdRef = useRef<string | undefined>(undefined);
   const preferredActiveSessionIdRef = useRef<string | undefined>(undefined);
-  const composerAttachmentsRef = useRef<ComposerAttachment[]>([]);
-  const dragDepthRef = useRef(0);
 
   const KEYBOARD_SCROLL_SPEED_PX_PER_SECOND = 780;
+  const {
+    composerAttachments,
+    composerAttachmentError,
+    isDragOverlayVisible,
+    setComposerAttachmentError,
+    clearComposerAttachments,
+    removeComposerAttachment,
+    handleComposerFileInputChange,
+    handleComposerPaste,
+    resetDragOverlay,
+    handleConversationDragEnter,
+    handleConversationDragOver,
+    handleConversationDragLeave,
+    handleConversationDrop
+  } = useComposerAttachments({
+    locale,
+    maxAttachmentsPerMessage: MAX_ATTACHMENTS_PER_MESSAGE,
+    maxAttachmentBytes: MAX_ATTACHMENT_BYTES
+  });
   const conversationKeyboardScroll = useKeyboardScroll(
     conversationViewportRef,
     KEYBOARD_SCROLL_SPEED_PX_PER_SECOND
@@ -471,16 +483,6 @@ export function App(): JSX.Element {
     return () => {
       removeStorageListener();
       chrome.runtime.onMessage.removeListener(messageListener);
-    };
-  }, []);
-
-  useEffect(() => {
-    composerAttachmentsRef.current = composerAttachments;
-  }, [composerAttachments]);
-
-  useEffect(() => {
-    return () => {
-      revokeComposerAttachmentPreviews(composerAttachmentsRef.current);
     };
   }, []);
 
@@ -894,137 +896,6 @@ export function App(): JSX.Element {
     }
     event.preventDefault();
     previewKeyboardScroll.handleScrollKeyUp(key as "j" | "k");
-  }
-
-  function appendComposerFiles(rawFiles: File[]): void {
-    if (rawFiles.length === 0) {
-      return;
-    }
-
-    const nextAttachments = [...composerAttachments];
-    let nextError: string | undefined;
-
-    for (const file of rawFiles) {
-      if (nextAttachments.length >= MAX_ATTACHMENTS_PER_MESSAGE) {
-        nextError ??= t(locale, "composerAttachmentLimitExceeded");
-        break;
-      }
-
-      if (!file.type.startsWith("image/")) {
-        nextError ??= t(locale, "composerAttachmentTypeNotAllowed");
-        continue;
-      }
-
-      if (file.size > MAX_ATTACHMENT_BYTES) {
-        nextError ??= t(locale, "composerAttachmentFileTooLarge");
-        continue;
-      }
-
-      nextAttachments.push({
-        id: crypto.randomUUID(),
-        file,
-        previewUrl: URL.createObjectURL(file),
-        mimeType: file.type || "application/octet-stream",
-        sizeBytes: file.size
-      });
-    }
-
-    setComposerAttachments(nextAttachments);
-    setComposerAttachmentError(nextError);
-  }
-
-  function clearComposerAttachments(): void {
-    setComposerAttachments((prev) => {
-      revokeComposerAttachmentPreviews(prev);
-      return [];
-    });
-  }
-
-  function removeComposerAttachment(attachmentId: string): void {
-    setComposerAttachments((prev) => {
-      const target = prev.find((item) => item.id === attachmentId);
-      if (!target) {
-        return prev;
-      }
-
-      URL.revokeObjectURL(target.previewUrl);
-      return prev.filter((item) => item.id !== attachmentId);
-    });
-  }
-
-  function handleComposerFileInputChange(event: ChangeEvent<HTMLInputElement>): void {
-    const files = event.target.files ? Array.from(event.target.files) : [];
-    if (files.length > 0) {
-      appendComposerFiles(files);
-    }
-    event.target.value = "";
-  }
-
-  function handleComposerPaste(event: ReactClipboardEvent<HTMLTextAreaElement>): void {
-    const files = Array.from(event.clipboardData.items)
-      .filter((item) => item.kind === "file")
-      .map((item) => item.getAsFile())
-      .filter((file): file is File => Boolean(file));
-
-    if (files.length === 0) {
-      return;
-    }
-
-    event.preventDefault();
-    appendComposerFiles(files);
-  }
-
-  function isFileDropEvent(event: ReactDragEvent<HTMLElement>): boolean {
-    const dataTransferTypes = event.dataTransfer?.types;
-    return Array.from(dataTransferTypes ?? []).includes("Files");
-  }
-
-  function resetDragOverlay(): void {
-    dragDepthRef.current = 0;
-    setIsDragOverlayVisible(false);
-  }
-
-  function handleConversationDragEnter(event: ReactDragEvent<HTMLElement>): void {
-    if (!isFileDropEvent(event)) {
-      return;
-    }
-
-    event.preventDefault();
-    dragDepthRef.current += 1;
-    setIsDragOverlayVisible(true);
-  }
-
-  function handleConversationDragOver(event: ReactDragEvent<HTMLElement>): void {
-    if (!isFileDropEvent(event)) {
-      return;
-    }
-
-    event.preventDefault();
-    event.dataTransfer.dropEffect = "copy";
-    if (!isDragOverlayVisible) {
-      setIsDragOverlayVisible(true);
-    }
-  }
-
-  function handleConversationDragLeave(event: ReactDragEvent<HTMLElement>): void {
-    if (!isDragOverlayVisible) {
-      return;
-    }
-
-    event.preventDefault();
-    dragDepthRef.current = Math.max(0, dragDepthRef.current - 1);
-    if (dragDepthRef.current === 0) {
-      setIsDragOverlayVisible(false);
-    }
-  }
-
-  function handleConversationDrop(event: ReactDragEvent<HTMLElement>): void {
-    event.preventDefault();
-    resetDragOverlay();
-    const droppedFiles = Array.from(event.dataTransfer.files ?? []);
-    if (droppedFiles.length > 0) {
-      appendComposerFiles(droppedFiles);
-    }
   }
 
   useEffect(() => {
@@ -3202,12 +3073,6 @@ async function bootstrap(): Promise<void> {
       </div>
     </SidebarProvider>
   );
-}
-
-function revokeComposerAttachmentPreviews(attachments: ComposerAttachment[]): void {
-  for (const attachment of attachments) {
-    URL.revokeObjectURL(attachment.previewUrl);
-  }
 }
 
 function createSession(title: string): ChatSession {
