@@ -2,8 +2,7 @@ import {
   useEffect,
   useMemo,
   useRef,
-  useState,
-  type KeyboardEvent as ReactKeyboardEvent
+  useState
 } from "react";
 import { STORAGE_KEYS } from "@surf-ai/shared";
 import type {
@@ -47,6 +46,7 @@ import { RunStatusBanner } from "./components/RunStatusBanner";
 import { SessionSidebar } from "./components/SessionSidebar";
 import { SidepanelTopbar } from "./components/SidepanelTopbar";
 import { useComposerAttachments } from "./hooks/useComposerAttachments";
+import { useConversationPreview } from "./hooks/useConversationPreview";
 import { useKeyboardScroll } from "./hooks/useKeyboardScroll";
 import { usePageContext } from "./hooks/usePageContext";
 import { useRuntimeAlert } from "./hooks/useRuntimeAlert";
@@ -115,27 +115,17 @@ export function App(): JSX.Element {
   const [input, setInput] = useState("");
   const [adapter, setAdapter] = useState<BridgeChatRequest["adapter"]>("mock");
   const [pending, setPending] = useState(false);
-  const [rawViewByMessageId, setRawViewByMessageId] = useState<Record<string, boolean>>({});
   const [renameDialogOpen, setRenameDialogOpen] = useState(false);
   const [renameTargetSession, setRenameTargetSession] = useState<ChatSession | null>(null);
   const [renameTitleInput, setRenameTitleInput] = useState("");
   const [renameError, setRenameError] = useState<string | undefined>();
   const [isAnyDropdownMenuOpen, setIsAnyDropdownMenuOpen] = useState(false);
   const [isAdapterSelectOpen, setIsAdapterSelectOpen] = useState(false);
-  const [isConversationFocused, setIsConversationFocused] = useState(false);
-  const [focusedMessageId, setFocusedMessageId] = useState<string | undefined>();
-  const [previewDialogOpen, setPreviewDialogOpen] = useState(false);
-  const [previewMessageId, setPreviewMessageId] = useState<string | undefined>();
-  const [imagePreviewVisible, setImagePreviewVisible] = useState(false);
-  const [imagePreviewIndex, setImagePreviewIndex] = useState(0);
-  const [composerImagePreviewVisible, setComposerImagePreviewVisible] = useState(false);
-  const [composerImagePreviewIndex, setComposerImagePreviewIndex] = useState(0);
   const [loadedMessagesSessionId, setLoadedMessagesSessionId] = useState<string | undefined>();
   const conversationViewportRef = useRef<HTMLElement | null>(null);
   const composerTextareaRef = useRef<HTMLTextAreaElement | null>(null);
   const composerFileInputRef = useRef<HTMLInputElement | null>(null);
   const previewViewportRef = useRef<HTMLDivElement | null>(null);
-  const messageItemRefs = useRef(new Map<string, HTMLElement>());
   const pendingAutoScrollSessionIdRef = useRef<string | undefined>(undefined);
   const preferredActiveSessionIdRef = useRef<string | undefined>(undefined);
 
@@ -289,21 +279,10 @@ export function App(): JSX.Element {
   });
   const isKeyboardShortcutBlocked =
     renameDialogOpen || isAnyDropdownMenuOpen || isAdapterSelectOpen || sidebarOverlayOpen;
-  const previewMessage = useMemo(
-    () => messages.find((item) => item.id === previewMessageId),
-    [messages, previewMessageId]
-  );
   const sessionGalleryImages = useMemo(
     () => buildSessionGalleryImages(messages, activeConnection, locale),
     [messages, activeConnection, locale]
   );
-  const sessionGalleryIndexByKey = useMemo(() => {
-    const indexByKey = new Map<string, number>();
-    sessionGalleryImages.forEach((image, index) => {
-      indexByKey.set(image.key, index);
-    });
-    return indexByKey;
-  }, [sessionGalleryImages]);
   const photoSliderImages = useMemo(
     () => sessionGalleryImages.map((item) => ({ key: item.key, src: item.src })),
     [sessionGalleryImages]
@@ -312,17 +291,53 @@ export function App(): JSX.Element {
     () => buildComposerGalleryImages(composerAttachments, locale),
     [composerAttachments, locale]
   );
-  const composerGalleryIndexByKey = useMemo(() => {
-    const indexByKey = new Map<string, number>();
-    composerGalleryImages.forEach((image, index) => {
-      indexByKey.set(image.key, index);
-    });
-    return indexByKey;
-  }, [composerGalleryImages]);
   const composerPhotoSliderImages = useMemo(
     () => composerGalleryImages.map((item) => ({ key: item.key, src: item.src })),
     [composerGalleryImages]
   );
+  const {
+    rawViewByMessageId,
+    isConversationFocused,
+    setIsConversationFocused,
+    focusedMessageId,
+    setFocusedMessageId,
+    previewDialogOpen,
+    setPreviewDialogOpen,
+    previewMessage,
+    previewMessageId,
+    setPreviewMessageId,
+    imagePreviewVisible,
+    setImagePreviewVisible,
+    imagePreviewIndex,
+    setImagePreviewIndex,
+    composerImagePreviewVisible,
+    setComposerImagePreviewVisible,
+    composerImagePreviewIndex,
+    setComposerImagePreviewIndex,
+    toggleRawView,
+    focusConversationViewport,
+    registerMessageItemRef,
+    openImagePreview,
+    openComposerImagePreview,
+    clearConversationKeyboardScrollKeys,
+    clearPreviewKeyboardScrollKeys,
+    handleConversationShortcut,
+    handleConversationShortcutKeyUp,
+    handlePreviewShortcut,
+    handlePreviewShortcutKeyUp,
+    resetEmptyConversationUiState,
+    resetSessionConversationUiState
+  } = useConversationPreview({
+    messages,
+    sessionGalleryImages,
+    composerGalleryImages,
+    conversationViewportRef,
+    composerTextareaRef,
+    previewViewportRef,
+    conversationKeyboardScroll,
+    previewKeyboardScroll,
+    isKeyboardShortcutBlocked
+  });
   const streamAssistantDisplayText = useMemo(
     () => pickDisplayAssistantText(streamAssistantByPhase),
     [streamAssistantByPhase]
@@ -482,20 +497,13 @@ export function App(): JSX.Element {
       setMessages([]);
       setLoadedMessagesSessionId(undefined);
       resetRunState();
-      setFocusedMessageId(undefined);
-      setPreviewDialogOpen(false);
-      setPreviewMessageId(undefined);
-      setImagePreviewVisible(false);
-      setImagePreviewIndex(0);
-      setRawViewByMessageId({});
+      resetEmptyConversationUiState();
       clearSelectionAndPageContext();
       return;
     }
 
-    setRawViewByMessageId({});
+    resetSessionConversationUiState();
     clearSelectionAndPageContext();
-    setImagePreviewVisible(false);
-    setImagePreviewIndex(0);
     resetRunState();
   }, [activeSessionId, isBackendDraftActive]);
 
@@ -541,102 +549,6 @@ export function App(): JSX.Element {
     };
   }, [visibleMessages, activeSessionId, isBackendDraftActive, loadedMessagesSessionId]);
 
-  useEffect(() => {
-    if (messages.length === 0) {
-      setFocusedMessageId(undefined);
-      return;
-    }
-    if (!focusedMessageId) {
-      return;
-    }
-    if (messages.some((item) => item.id === focusedMessageId)) {
-      return;
-    }
-    setFocusedMessageId(undefined);
-  }, [messages, focusedMessageId]);
-
-  useEffect(() => {
-    return () => {
-      clearConversationKeyboardScrollKeys();
-      clearPreviewKeyboardScrollKeys();
-    };
-  }, []);
-
-  useEffect(() => {
-    if (!previewDialogOpen) {
-      return;
-    }
-
-    const rafId = window.requestAnimationFrame(() => {
-      previewViewportRef.current?.focus({ preventScroll: true });
-    });
-
-    return () => {
-      window.cancelAnimationFrame(rafId);
-    };
-  }, [previewDialogOpen, previewMessageId]);
-
-  useEffect(() => {
-    if (!previewDialogOpen) {
-      return;
-    }
-    if (previewMessage) {
-      return;
-    }
-    setPreviewDialogOpen(false);
-    setPreviewMessageId(undefined);
-  }, [previewDialogOpen, previewMessage]);
-
-  useEffect(() => {
-    if (isKeyboardShortcutBlocked) {
-      clearConversationKeyboardScrollKeys();
-      clearPreviewKeyboardScrollKeys();
-    }
-  }, [isKeyboardShortcutBlocked]);
-
-  useEffect(() => {
-    if (previewDialogOpen) {
-      clearConversationKeyboardScrollKeys();
-      return;
-    }
-    clearPreviewKeyboardScrollKeys();
-  }, [previewDialogOpen]);
-
-  useEffect(() => {
-    if (!imagePreviewVisible) {
-      return;
-    }
-    if (sessionGalleryImages.length === 0) {
-      setImagePreviewVisible(false);
-      setImagePreviewIndex(0);
-      return;
-    }
-    if (imagePreviewIndex >= sessionGalleryImages.length) {
-      setImagePreviewIndex(sessionGalleryImages.length - 1);
-    }
-  }, [imagePreviewVisible, imagePreviewIndex, sessionGalleryImages]);
-
-  useEffect(() => {
-    if (!composerImagePreviewVisible) {
-      return;
-    }
-    if (composerGalleryImages.length === 0) {
-      setComposerImagePreviewVisible(false);
-      setComposerImagePreviewIndex(0);
-      return;
-    }
-    if (composerImagePreviewIndex >= composerGalleryImages.length) {
-      setComposerImagePreviewIndex(composerGalleryImages.length - 1);
-    }
-  }, [composerImagePreviewVisible, composerImagePreviewIndex, composerGalleryImages]);
-
-  function toggleRawView(messageId: string): void {
-    setRawViewByMessageId((previous) => ({
-      ...previous,
-      [messageId]: !previous[messageId]
-    }));
-  }
-
   function openRenameDialog(session: ChatSession): void {
     setRenameTargetSession(session);
     setRenameTitleInput(session.title);
@@ -649,148 +561,6 @@ export function App(): JSX.Element {
     setRenameTargetSession(null);
     setRenameTitleInput("");
     setRenameError(undefined);
-  }
-
-  function resolveFocusedMessageIdFromTarget(target: EventTarget | null): string | undefined {
-    if (!(target instanceof HTMLElement)) {
-      return undefined;
-    }
-    return target.closest<HTMLElement>("[data-message-id]")?.dataset.messageId;
-  }
-
-  function focusConversationViewport(): void {
-    if (focusedMessageId) {
-      const messageElement = messageItemRefs.current.get(focusedMessageId);
-      if (messageElement) {
-        messageElement.focus({ preventScroll: true });
-        return;
-      }
-    }
-    conversationViewportRef.current?.focus({ preventScroll: true });
-  }
-
-  function registerMessageItemRef(messageId: string, element: HTMLElement | null): void {
-    if (element) {
-      messageItemRefs.current.set(messageId, element);
-      return;
-    }
-    messageItemRefs.current.delete(messageId);
-  }
-
-  function openPreviewDialogForMessage(messageId: string): void {
-    setPreviewMessageId(messageId);
-    setPreviewDialogOpen(true);
-  }
-
-  function openImagePreview(imageKey: string): void {
-    const index = sessionGalleryIndexByKey.get(imageKey);
-    if (typeof index !== "number") {
-      return;
-    }
-    setComposerImagePreviewVisible(false);
-    setImagePreviewIndex(index);
-    setImagePreviewVisible(true);
-  }
-
-  function openComposerImagePreview(imageKey: string): void {
-    const index = composerGalleryIndexByKey.get(imageKey);
-    if (typeof index !== "number") {
-      return;
-    }
-    setImagePreviewVisible(false);
-    setComposerImagePreviewIndex(index);
-    setComposerImagePreviewVisible(true);
-  }
-
-  function clearConversationKeyboardScrollKeys(): void {
-    conversationKeyboardScroll.clearKeyboardScrollKeys();
-  }
-
-  function clearPreviewKeyboardScrollKeys(): void {
-    previewKeyboardScroll.clearKeyboardScrollKeys();
-  }
-
-  function handleConversationShortcut(event: ReactKeyboardEvent<HTMLElement>): void {
-    if (event.nativeEvent.isComposing || isKeyboardShortcutBlocked || previewDialogOpen) {
-      return;
-    }
-    if (event.metaKey || event.ctrlKey || event.altKey) {
-      return;
-    }
-
-    const key = event.key.toLowerCase();
-
-    if (key === "j" || key === "k") {
-      event.preventDefault();
-      conversationKeyboardScroll.handleScrollKeyDown(key as "j" | "k");
-      return;
-    }
-
-    if (key === "f") {
-      const focusedId = resolveFocusedMessageIdFromTarget(event.target);
-      if (!focusedId) {
-        return;
-      }
-      event.preventDefault();
-      openPreviewDialogForMessage(focusedId);
-      return;
-    }
-
-    if (event.key === "Escape") {
-      event.preventDefault();
-      const composer = composerTextareaRef.current;
-      if (!composer) {
-        return;
-      }
-      composer.focus({ preventScroll: true });
-    }
-  }
-
-  function handleConversationShortcutKeyUp(
-    event: ReactKeyboardEvent<HTMLElement>
-  ): void {
-    const key = event.key.toLowerCase();
-    if (key !== "j" && key !== "k") {
-      return;
-    }
-    event.preventDefault();
-    conversationKeyboardScroll.handleScrollKeyUp(key as "j" | "k");
-  }
-
-  function handlePreviewShortcut(event: ReactKeyboardEvent<HTMLDivElement>): void {
-    if (event.nativeEvent.isComposing || isKeyboardShortcutBlocked) {
-      return;
-    }
-    if (event.metaKey || event.ctrlKey || event.altKey) {
-      return;
-    }
-
-    const key = event.key.toLowerCase();
-
-    if (key === "j" || key === "k") {
-      event.preventDefault();
-      previewKeyboardScroll.handleScrollKeyDown(key as "j" | "k");
-      return;
-    }
-
-    if (event.key === "Escape") {
-      event.preventDefault();
-      setPreviewDialogOpen(false);
-      window.requestAnimationFrame(() => {
-        focusConversationViewport();
-      });
-    }
-  }
-
-  function handlePreviewShortcutKeyUp(
-    event: ReactKeyboardEvent<HTMLDivElement>
-  ): void {
-    const key = event.key.toLowerCase();
-    if (key !== "j" && key !== "k") {
-      return;
-    }
-    event.preventDefault();
-    previewKeyboardScroll.handleScrollKeyUp(key as "j" | "k");
   }
 
   useEffect(() => {
