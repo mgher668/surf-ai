@@ -10,13 +10,8 @@ import type {
   BridgeChatRequest,
   BridgeConnection,
   BridgeSessionRun,
-  BridgeSessionRunCancelResponse,
   BridgeSessionRunCreateResponse,
-  BridgeSessionRunApprovalDecisionRequest,
-  BridgeSessionRunApprovalDecisionResponse,
-  BridgeRunApproval,
   BridgeUploadCreateResponse,
-  BridgeRunStreamEvent,
   ChatMessage,
   ChatSession,
   ExtensionToUiMessage,
@@ -25,7 +20,6 @@ import type {
   UiThemeMode
 } from "@surf-ai/shared";
 import { deleteMessagesBySession, listMessagesBySession, saveMessage } from "../../lib/db";
-import { openBridgeRunStream, type BridgeRunStreamHandle } from "../../lib/bridge-sse";
 import {
   getActiveConnectionId,
   getActiveSessionId as getStoredActiveSessionId,
@@ -60,12 +54,7 @@ import { useKeyboardScroll } from "./hooks/useKeyboardScroll";
 import { usePageContext } from "./hooks/usePageContext";
 import { useRuntimeAlert } from "./hooks/useRuntimeAlert";
 import { useSidepanelModels } from "./hooks/useSidepanelModels";
-import {
-  fetchLatestSessionRun,
-  fetchRunApprovalsFromBackend,
-  fetchRunEventsFromBackend,
-  fetchSessionRunsFromBackend
-} from "./api/bridgeApi";
+import { useSidepanelRuns } from "./hooks/useSidepanelRuns";
 import {
   createSessionOnBackend,
   deleteSessionOnBackend,
@@ -76,26 +65,18 @@ import {
   updateSessionStarOnBackend
 } from "./api/sessionApi";
 import {
-  areMessageListsEqual,
   areSessionListsEqual,
   buildBridgeHeaders,
   buildChatContext,
   buildComposerGalleryImages,
   buildConversationTimelineItems,
-  buildRunArtifacts,
   buildSessionGalleryImages,
   buildSessionProcessTimelineItems,
-  createEmptyStreamAssistantByPhase,
   isRunInFlight,
-  mergeAssistantCompletedContent,
   mergeSessionsWithLocalAdapters,
-  normalizeAssistantStreamPhase,
   normalizeSidebarMode,
   pickDisplayAssistantText,
-  upsertApproval,
-  type ComposerAttachment,
-  type SessionRunProcessState,
-  type StreamAssistantByPhase
+  type ComposerAttachment
 } from "./utils/sidepanel-helpers";
 import {
   dragOverlayCardStyle,
@@ -139,19 +120,6 @@ export function App(): JSX.Element {
   const [input, setInput] = useState("");
   const [adapter, setAdapter] = useState<BridgeChatRequest["adapter"]>("mock");
   const [pending, setPending] = useState(false);
-  const [activeRun, setActiveRun] = useState<BridgeSessionRun | undefined>();
-  const [runApprovals, setRunApprovals] = useState<BridgeRunApproval[]>([]);
-  const [runEvents, setRunEvents] = useState<BridgeRunStreamEvent[]>([]);
-  const [sessionRunProcesses, setSessionRunProcesses] = useState<
-    Record<string, SessionRunProcessState>
-  >({});
-  const [streamAssistantByPhase, setStreamAssistantByPhase] = useState<StreamAssistantByPhase>(
-    createEmptyStreamAssistantByPhase()
-  );
-  const [runReasoningSummary, setRunReasoningSummary] = useState("");
-  const [runReasoningText, setRunReasoningText] = useState("");
-  const [runCommandOutput, setRunCommandOutput] = useState("");
-  const [runStreamError, setRunStreamError] = useState<string | undefined>();
   const [rawViewByMessageId, setRawViewByMessageId] = useState<Record<string, boolean>>({});
   const [renameDialogOpen, setRenameDialogOpen] = useState(false);
   const [renameTargetSession, setRenameTargetSession] = useState<ChatSession | null>(null);
@@ -172,7 +140,6 @@ export function App(): JSX.Element {
   const composerTextareaRef = useRef<HTMLTextAreaElement | null>(null);
   const composerFileInputRef = useRef<HTMLInputElement | null>(null);
   const previewViewportRef = useRef<HTMLDivElement | null>(null);
-  const runStreamRef = useRef<BridgeRunStreamHandle | null>(null);
   const messageItemRefs = useRef(new Map<string, HTMLElement>());
   const pendingAutoScrollSessionIdRef = useRef<string | undefined>(undefined);
   const preferredActiveSessionIdRef = useRef<string | undefined>(undefined);
@@ -208,15 +175,6 @@ export function App(): JSX.Element {
 
   const isBackendDraftActive =
     sessionMode === "backend" && activeSessionId === BACKEND_DRAFT_SESSION_ID;
-  const isActiveRunBusy = Boolean(
-    activeRun &&
-      activeRun.sessionId === activeSessionId &&
-      (activeRun.status === "QUEUED" ||
-        activeRun.status === "RUNNING" ||
-        activeRun.status === "CANCELLING")
-  );
-  const isKeyboardShortcutBlocked =
-    renameDialogOpen || isAnyDropdownMenuOpen || isAdapterSelectOpen || sidebarOverlayOpen;
   const activeConnection = useMemo(
     () => connections.find((item) => item.id === activeConnectionId),
     [connections, activeConnectionId]
@@ -268,6 +226,41 @@ export function App(): JSX.Element {
     setInput,
     requestTts
   });
+  const {
+    activeRun,
+    setActiveRun,
+    sessionRunProcesses,
+    streamAssistantByPhase,
+    runStreamError,
+    resetRunState,
+    handleRunCreated,
+    cancelActiveRunOnBackend,
+    submitApprovalDecision
+  } = useSidepanelRuns({
+    sessionMode,
+    activeConnectionId,
+    activeConnection,
+    activeSessionId,
+    isBackendDraftActive,
+    locale,
+    setMessages,
+    setLoadedMessagesSessionId,
+    setPending,
+    setSessionsState,
+    persistSessions: setSessions,
+    pendingAutoScrollSessionIdRef,
+    reportRuntimeAlert,
+    clearRuntimeAlert
+  });
+  const isActiveRunBusy = Boolean(
+    activeRun &&
+      activeRun.sessionId === activeSessionId &&
+      (activeRun.status === "QUEUED" ||
+        activeRun.status === "RUNNING" ||
+        activeRun.status === "CANCELLING")
+  );
+  const isKeyboardShortcutBlocked =
+    renameDialogOpen || isAnyDropdownMenuOpen || isAdapterSelectOpen || sidebarOverlayOpen;
   const previewMessage = useMemo(
     () => messages.find((item) => item.id === previewMessageId),
     [messages, previewMessageId]
@@ -458,19 +451,9 @@ export function App(): JSX.Element {
 
   useEffect(() => {
     if (!activeSessionId || isBackendDraftActive) {
-      runStreamRef.current?.close();
-      runStreamRef.current = null;
       setMessages([]);
       setLoadedMessagesSessionId(undefined);
-      setActiveRun(undefined);
-      setRunApprovals([]);
-      setRunEvents([]);
-      setSessionRunProcesses({});
-      setStreamAssistantByPhase(createEmptyStreamAssistantByPhase());
-      setRunReasoningSummary("");
-      setRunReasoningText("");
-      setRunCommandOutput("");
-      setRunStreamError(undefined);
+      resetRunState();
       setFocusedMessageId(undefined);
       setPreviewDialogOpen(false);
       setPreviewMessageId(undefined);
@@ -485,14 +468,7 @@ export function App(): JSX.Element {
     clearSelectionAndPageContext();
     setImagePreviewVisible(false);
     setImagePreviewIndex(0);
-    setRunApprovals([]);
-    setRunEvents([]);
-    setSessionRunProcesses({});
-    setStreamAssistantByPhase(createEmptyStreamAssistantByPhase());
-    setRunReasoningSummary("");
-    setRunReasoningText("");
-    setRunCommandOutput("");
-    setRunStreamError(undefined);
+    resetRunState();
   }, [activeSessionId, isBackendDraftActive]);
 
   useEffect(() => {
@@ -829,389 +805,6 @@ export function App(): JSX.Element {
       cancelled = true;
     };
   }, [activeConnectionId, activeConnection?.baseUrl, activeSessionId, sessionMode]);
-
-  useEffect(() => {
-    if (!activeSessionId || sessionMode !== "backend" || !activeConnection || isBackendDraftActive) {
-      setActiveRun(undefined);
-      return;
-    }
-
-    let cancelled = false;
-    setActiveRun(undefined);
-
-    const load = async (): Promise<void> => {
-      const latestRun = await fetchLatestSessionRun(activeConnection, activeSessionId);
-      if (cancelled) {
-        return;
-      }
-      setActiveRun(latestRun ?? undefined);
-    };
-
-    void load();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [activeConnectionId, activeConnection?.baseUrl, activeSessionId, sessionMode, isBackendDraftActive]);
-
-  useEffect(() => {
-    if (
-      sessionMode !== "backend" ||
-      !activeConnection ||
-      !activeSessionId ||
-      isBackendDraftActive
-    ) {
-      setSessionRunProcesses({});
-      return;
-    }
-
-    let cancelled = false;
-    const sessionId = activeSessionId;
-
-    const load = async (): Promise<void> => {
-      const runs = await fetchSessionRunsFromBackend(activeConnection, sessionId, 50);
-      if (cancelled || !runs) {
-        return;
-      }
-
-      const entries = await Promise.all(
-        runs.map(async (run) => {
-          const [approvals, events] = await Promise.all([
-            fetchRunApprovalsFromBackend(activeConnection, sessionId, run.id, "all"),
-            fetchRunEventsFromBackend(activeConnection, sessionId, run.id, 5000)
-          ]);
-          return [
-            run.id,
-            {
-              approvals: approvals ?? [],
-              events: events ?? []
-            } satisfies SessionRunProcessState
-          ] as const;
-        })
-      );
-
-      if (cancelled) {
-        return;
-      }
-      setSessionRunProcesses(Object.fromEntries(entries));
-    };
-
-    void load();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [
-    sessionMode,
-    activeConnectionId,
-    activeConnection?.baseUrl,
-    activeConnection?.userId,
-    activeConnection?.token,
-    activeSessionId,
-    isBackendDraftActive
-  ]);
-
-  useEffect(() => {
-    if (
-      sessionMode !== "backend" ||
-      !activeConnection ||
-      !activeSessionId ||
-      isBackendDraftActive ||
-      !activeRun ||
-      activeRun.sessionId !== activeSessionId
-    ) {
-      setRunApprovals([]);
-      setRunEvents([]);
-      setStreamAssistantByPhase(createEmptyStreamAssistantByPhase());
-      setRunReasoningSummary("");
-      setRunReasoningText("");
-      setRunCommandOutput("");
-      setRunStreamError(undefined);
-      return;
-    }
-
-    let cancelled = false;
-    const sessionId = activeSessionId;
-    const runId = activeRun.id;
-
-    const load = async (): Promise<void> => {
-      const [approvals, events] = await Promise.all([
-        fetchRunApprovalsFromBackend(activeConnection, sessionId, runId, "all"),
-        fetchRunEventsFromBackend(activeConnection, sessionId, runId, 5000)
-      ]);
-      if (cancelled) {
-        return;
-      }
-
-      if (approvals) {
-        setRunApprovals(approvals);
-      }
-
-      if (events) {
-        setRunEvents(events);
-        const artifacts = buildRunArtifacts(events);
-        setStreamAssistantByPhase(artifacts.assistantByPhase);
-        setRunReasoningSummary(artifacts.reasoningSummary);
-        setRunReasoningText(artifacts.reasoningText);
-        setRunCommandOutput(artifacts.commandOutput);
-        setRunStreamError(artifacts.errorMessage);
-      }
-
-      if (approvals || events) {
-        setSessionRunProcesses((prev) => ({
-          ...prev,
-          [runId]: {
-            approvals: approvals ?? prev[runId]?.approvals ?? [],
-            events: events ?? prev[runId]?.events ?? []
-          }
-        }));
-      }
-    };
-
-    void load();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [
-    sessionMode,
-    activeConnectionId,
-    activeConnection?.baseUrl,
-    activeSessionId,
-    isBackendDraftActive,
-    activeRun?.id
-  ]);
-
-  useEffect(() => {
-    if (
-      sessionMode !== "backend" ||
-      !activeConnection ||
-      !activeSessionId ||
-      isBackendDraftActive ||
-      !activeRun ||
-      activeRun.sessionId !== activeSessionId ||
-      !isRunInFlight(activeRun.status)
-    ) {
-      runStreamRef.current?.close();
-      runStreamRef.current = null;
-      return;
-    }
-
-    let cancelled = false;
-    const sessionId = activeSessionId;
-    const runId = activeRun.id;
-
-    setStreamAssistantByPhase(createEmptyStreamAssistantByPhase());
-    setRunReasoningSummary("");
-    setRunReasoningText("");
-    setRunCommandOutput("");
-    setRunStreamError(undefined);
-    setRunEvents([]);
-    setSessionRunProcesses((prev) => ({
-      ...prev,
-      [runId]: {
-        approvals: prev[runId]?.approvals ?? [],
-        events: []
-      }
-    }));
-
-    const applyTerminalSync = async (nextRun: BridgeSessionRun): Promise<void> => {
-      const loadedMessages = await loadMessagesFromBackend(
-        activeConnection,
-        sessionId,
-        getBackendRuntimeHandlers()
-      );
-      if (cancelled) {
-        return;
-      }
-      setMessages((prev) => {
-        if (areMessageListsEqual(prev, loadedMessages)) {
-          return prev;
-        }
-        const lastMessage = loadedMessages[loadedMessages.length - 1];
-        if (lastMessage?.sessionId === sessionId) {
-          pendingAutoScrollSessionIdRef.current = sessionId;
-        }
-        return loadedMessages;
-      });
-      setLoadedMessagesSessionId(sessionId);
-      setActiveRun(nextRun);
-      setPending(false);
-      const approvals = await fetchRunApprovalsFromBackend(activeConnection, sessionId, runId, "all");
-      if (!cancelled && approvals) {
-        setRunApprovals(approvals);
-      }
-      const events = await fetchRunEventsFromBackend(activeConnection, sessionId, runId, 5000);
-      if (!cancelled && events) {
-        setRunEvents(events);
-      }
-      if (!cancelled && (approvals || events)) {
-        setSessionRunProcesses((prev) => ({
-          ...prev,
-          [runId]: {
-            approvals: approvals ?? prev[runId]?.approvals ?? [],
-            events: events ?? prev[runId]?.events ?? []
-          }
-        }));
-      }
-
-      const backendSessions = await fetchSessionsFromBackend(
-        activeConnection,
-        getBackendRuntimeHandlers()
-      );
-      if (!cancelled && backendSessions) {
-        setSessionsState((prev) => {
-          const mergedSessions = mergeSessionsWithLocalAdapters(prev, backendSessions);
-          if (areSessionListsEqual(prev, mergedSessions)) {
-            return prev;
-          }
-          void setSessions(mergedSessions);
-          return mergedSessions;
-        });
-      }
-    };
-
-    const onEvent = (event: BridgeRunStreamEvent): void => {
-      if (cancelled) {
-        return;
-      }
-      if (event.sessionId !== sessionId || event.runId !== runId) {
-        return;
-      }
-      if (event.type !== "heartbeat") {
-        setRunEvents((prev) => {
-          if (prev.some((item) => item.eventId === event.eventId)) {
-            return prev;
-          }
-          return [...prev, event];
-        });
-
-        setSessionRunProcesses((prev) => {
-          const current = prev[runId] ?? { approvals: [], events: [] };
-          const hasEvent = current.events.some((item) => item.eventId === event.eventId);
-          const nextEvents = hasEvent ? current.events : [...current.events, event];
-          const nextApprovals =
-            event.type === "approval.requested" || event.type === "approval.updated"
-              ? upsertApproval(current.approvals, event.data.approval)
-              : current.approvals;
-
-          if (nextEvents === current.events && nextApprovals === current.approvals) {
-            return prev;
-          }
-
-          return {
-            ...prev,
-            [runId]: {
-              approvals: nextApprovals,
-              events: nextEvents
-            }
-          };
-        });
-      }
-
-      if (event.type === "assistant.delta") {
-        const phase = normalizeAssistantStreamPhase(event.data.phase);
-        setStreamAssistantByPhase((prev) => ({
-          ...prev,
-          [phase]: `${prev[phase]}${event.data.delta}`
-        }));
-        return;
-      }
-
-      if (event.type === "assistant.completed") {
-        if (typeof event.data.content === "string") {
-          const completedContent = event.data.content;
-          const phase = normalizeAssistantStreamPhase(event.data.phase);
-          setStreamAssistantByPhase((prev) => ({
-            ...prev,
-            [phase]: mergeAssistantCompletedContent(phase, prev[phase] ?? "", completedContent)
-          }));
-        }
-        return;
-      }
-
-      if (event.type === "reasoning.summary.delta") {
-        setRunReasoningSummary((prev) => prev + event.data.delta);
-        return;
-      }
-
-      if (event.type === "reasoning.text.delta") {
-        setRunReasoningText((prev) => prev + event.data.delta);
-        return;
-      }
-
-      if (event.type === "command.output.delta") {
-        setRunCommandOutput((prev) => prev + event.data.delta);
-        return;
-      }
-
-      if (event.type === "approval.requested" || event.type === "approval.updated") {
-        setRunApprovals((prev) => upsertApproval(prev, event.data.approval));
-        return;
-      }
-
-      if (event.type === "error") {
-        setRunStreamError(event.data.message);
-        return;
-      }
-
-      if (event.type === "run.status") {
-        const nextRun = event.data.run;
-        if (!isRunInFlight(nextRun.status)) {
-          void applyTerminalSync(nextRun);
-          return;
-        }
-        setActiveRun(nextRun);
-      }
-    };
-
-    const onError = (error: Error): void => {
-      if (cancelled) {
-        return;
-      }
-      setRunStreamError(error.message);
-    };
-
-    runStreamRef.current?.close();
-    const streamHandle = openBridgeRunStream({
-      connection: activeConnection,
-      sessionId,
-      runId,
-      onEvent,
-      onError
-    });
-    runStreamRef.current = streamHandle;
-
-    void fetchRunApprovalsFromBackend(activeConnection, sessionId, runId, "all").then((approvals) => {
-      if (!approvals || cancelled) {
-        return;
-      }
-      setRunApprovals(approvals);
-      setSessionRunProcesses((prev) => ({
-        ...prev,
-        [runId]: {
-          approvals,
-          events: prev[runId]?.events ?? []
-        }
-      }));
-    });
-
-    return () => {
-      cancelled = true;
-      streamHandle.close();
-      if (runStreamRef.current === streamHandle) {
-        runStreamRef.current = null;
-      }
-    };
-  }, [
-    sessionMode,
-    activeConnectionId,
-    activeConnection?.baseUrl,
-    activeSessionId,
-    isBackendDraftActive,
-    activeRun?.id,
-    activeRun?.status
-  ]);
 
   useEffect(() => {
     if (sessionMode !== "backend" || !activeConnection) {
@@ -1861,25 +1454,11 @@ export function App(): JSX.Element {
       clearRuntimeAlert();
       setInput("");
       clearComposerAttachments();
-      setRunApprovals([]);
-      setRunEvents([]);
-      setSessionRunProcesses((prev) => ({
-        ...prev,
-        [payload.run.id]: {
-          approvals: [],
-          events: []
-        }
-      }));
-      setStreamAssistantByPhase(createEmptyStreamAssistantByPhase());
-      setRunReasoningSummary("");
-      setRunReasoningText("");
-      setRunCommandOutput("");
-      setRunStreamError(undefined);
       pendingAutoScrollSessionIdRef.current = sessionId;
       setMessages((prev) => [...prev, payload.userMessage]);
       setLoadedMessagesSessionId(sessionId);
       await saveMessage(payload.userMessage);
-      setActiveRun(payload.run);
+      handleRunCreated(payload.run);
       setSessionsState((prev) => {
         const existingIndex = prev.findIndex((item) => item.id === payload.session.id);
         const next =
@@ -1906,97 +1485,6 @@ export function App(): JSX.Element {
     } finally {
       setPending(false);
       clearExtractedPageContent();
-    }
-  }
-
-  async function cancelActiveRunOnBackend(): Promise<void> {
-    if (!activeConnection || !activeRun) {
-      return;
-    }
-
-    try {
-      const response = await fetch(`${activeConnection.baseUrl}/runs/${activeRun.id}/cancel`, {
-        method: "POST",
-        headers: buildBridgeHeaders(activeConnection, true)
-      });
-      if (!response.ok) {
-        if (response.status === 401 || response.status === 403) {
-          reportRuntimeAlert("auth_failed", "error", t(locale, "alertAuthFailed"), response.status);
-        } else if (response.status === 429) {
-          reportRuntimeAlert("rate_limited", "warn", t(locale, "alertRateLimited"), response.status);
-        } else {
-          reportRuntimeAlert(
-            "bridge_request_failed",
-            "warn",
-            `${t(locale, "alertBridgeRequestFailed")} (${response.status})`,
-            response.status
-          );
-        }
-        return;
-      }
-
-      const payload = (await response.json()) as BridgeSessionRunCancelResponse;
-      setActiveRun(payload.run);
-      clearRuntimeAlert();
-    } catch (error) {
-      if (error instanceof TypeError) {
-        reportRuntimeAlert("backend_unreachable", "error", t(locale, "alertBackendUnreachable"));
-      }
-    }
-  }
-
-  async function submitApprovalDecision(
-    approval: BridgeRunApproval,
-    decision: unknown
-  ): Promise<void> {
-    if (!activeConnection || !activeSessionId || !activeRun) {
-      return;
-    }
-
-    try {
-      const payload: BridgeSessionRunApprovalDecisionRequest = { decision };
-      const response = await fetch(
-        `${activeConnection.baseUrl}/sessions/${activeSessionId}/runs/${activeRun.id}/approvals/${approval.approvalRequestId}/decision`,
-        {
-          method: "POST",
-          headers: buildBridgeHeaders(activeConnection, true),
-          body: JSON.stringify(payload)
-        }
-      );
-
-      if (!response.ok) {
-        if (response.status === 401 || response.status === 403) {
-          reportRuntimeAlert("auth_failed", "error", t(locale, "alertAuthFailed"), response.status);
-        } else if (response.status === 429) {
-          reportRuntimeAlert("rate_limited", "warn", t(locale, "alertRateLimited"), response.status);
-        } else {
-          reportRuntimeAlert(
-            "bridge_request_failed",
-            "warn",
-            `${t(locale, "alertBridgeRequestFailed")} (${response.status})`,
-            response.status
-          );
-        }
-        return;
-      }
-
-      const result = (await response.json()) as BridgeSessionRunApprovalDecisionResponse;
-      setRunApprovals((prev) => upsertApproval(prev, result.approval));
-      setSessionRunProcesses((prev) => {
-        const current = prev[activeRun.id] ?? { approvals: [], events: [] };
-        return {
-          ...prev,
-          [activeRun.id]: {
-            approvals: upsertApproval(current.approvals, result.approval),
-            events: current.events
-          }
-        };
-      });
-      clearRuntimeAlert();
-    } catch (error) {
-      if (error instanceof TypeError) {
-        reportRuntimeAlert("backend_unreachable", "error", t(locale, "alertBackendUnreachable"));
-      }
     }
   }
 
