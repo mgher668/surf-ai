@@ -77,6 +77,7 @@ import { RenameSessionDialog } from "./components/RenameSessionDialog";
 import { RunStatusBanner } from "./components/RunStatusBanner";
 import { SessionSidebar } from "./components/SessionSidebar";
 import { SidepanelTopbar } from "./components/SidepanelTopbar";
+import { useKeyboardScroll } from "./hooks/useKeyboardScroll";
 import {
   fetchBridgeJson,
   fetchLatestSessionRun,
@@ -224,18 +225,20 @@ export function App(): JSX.Element {
   const previewViewportRef = useRef<HTMLDivElement | null>(null);
   const runStreamRef = useRef<BridgeRunStreamHandle | null>(null);
   const messageItemRefs = useRef(new Map<string, HTMLElement>());
-  const conversationScrollLoopRef = useRef<number | null>(null);
-  const conversationScrollLastTsRef = useRef<number | null>(null);
-  const conversationScrollKeysRef = useRef({ j: false, k: false });
-  const previewScrollLoopRef = useRef<number | null>(null);
-  const previewScrollLastTsRef = useRef<number | null>(null);
-  const previewScrollKeysRef = useRef({ j: false, k: false });
   const pendingAutoScrollSessionIdRef = useRef<string | undefined>(undefined);
   const preferredActiveSessionIdRef = useRef<string | undefined>(undefined);
   const composerAttachmentsRef = useRef<ComposerAttachment[]>([]);
   const dragDepthRef = useRef(0);
 
   const KEYBOARD_SCROLL_SPEED_PX_PER_SECOND = 780;
+  const conversationKeyboardScroll = useKeyboardScroll(
+    conversationViewportRef,
+    KEYBOARD_SCROLL_SPEED_PX_PER_SECOND
+  );
+  const previewKeyboardScroll = useKeyboardScroll(
+    previewViewportRef,
+    KEYBOARD_SCROLL_SPEED_PX_PER_SECOND
+  );
 
   const isBackendDraftActive =
     sessionMode === "backend" && activeSessionId === BACKEND_DRAFT_SESSION_ID;
@@ -802,131 +805,12 @@ export function App(): JSX.Element {
     setComposerImagePreviewVisible(true);
   }
 
-  function stopConversationKeyboardScroll(): void {
-    if (conversationScrollLoopRef.current) {
-      window.cancelAnimationFrame(conversationScrollLoopRef.current);
-      conversationScrollLoopRef.current = null;
-    }
-    conversationScrollLastTsRef.current = null;
-  }
-
   function clearConversationKeyboardScrollKeys(): void {
-    conversationScrollKeysRef.current.j = false;
-    conversationScrollKeysRef.current.k = false;
-    stopConversationKeyboardScroll();
-  }
-
-  function startConversationKeyboardScroll(): void {
-    if (conversationScrollLoopRef.current) {
-      return;
-    }
-
-    const step = (timestamp: number): void => {
-      const viewport = conversationViewportRef.current;
-      if (!viewport) {
-        stopConversationKeyboardScroll();
-        return;
-      }
-
-      const direction =
-        (conversationScrollKeysRef.current.j ? 1 : 0) +
-        (conversationScrollKeysRef.current.k ? -1 : 0);
-      if (direction === 0) {
-        stopConversationKeyboardScroll();
-        return;
-      }
-
-      const lastTs = conversationScrollLastTsRef.current ?? timestamp;
-      const deltaMs = Math.max(0, timestamp - lastTs);
-      conversationScrollLastTsRef.current = timestamp;
-      const deltaPx =
-        direction * KEYBOARD_SCROLL_SPEED_PX_PER_SECOND * (deltaMs / 1_000);
-      if (deltaPx !== 0) {
-        viewport.scrollTop += deltaPx;
-      }
-
-      conversationScrollLoopRef.current = window.requestAnimationFrame(step);
-    };
-
-    conversationScrollLastTsRef.current = null;
-    conversationScrollLoopRef.current = window.requestAnimationFrame(step);
-  }
-
-  function updateConversationKeyboardScrollKey(
-    key: "j" | "k",
-    pressed: boolean
-  ): void {
-    conversationScrollKeysRef.current[key] = pressed;
-    const active =
-      conversationScrollKeysRef.current.j || conversationScrollKeysRef.current.k;
-    if (active) {
-      startConversationKeyboardScroll();
-      return;
-    }
-    stopConversationKeyboardScroll();
-  }
-
-  function stopPreviewKeyboardScroll(): void {
-    if (previewScrollLoopRef.current) {
-      window.cancelAnimationFrame(previewScrollLoopRef.current);
-      previewScrollLoopRef.current = null;
-    }
-    previewScrollLastTsRef.current = null;
+    conversationKeyboardScroll.clearKeyboardScrollKeys();
   }
 
   function clearPreviewKeyboardScrollKeys(): void {
-    previewScrollKeysRef.current.j = false;
-    previewScrollKeysRef.current.k = false;
-    stopPreviewKeyboardScroll();
-  }
-
-  function startPreviewKeyboardScroll(): void {
-    if (previewScrollLoopRef.current) {
-      return;
-    }
-
-    const step = (timestamp: number): void => {
-      const viewport = previewViewportRef.current;
-      if (!viewport) {
-        stopPreviewKeyboardScroll();
-        return;
-      }
-
-      const direction =
-        (previewScrollKeysRef.current.j ? 1 : 0) +
-        (previewScrollKeysRef.current.k ? -1 : 0);
-      if (direction === 0) {
-        stopPreviewKeyboardScroll();
-        return;
-      }
-
-      const lastTs = previewScrollLastTsRef.current ?? timestamp;
-      const deltaMs = Math.max(0, timestamp - lastTs);
-      previewScrollLastTsRef.current = timestamp;
-      const deltaPx =
-        direction * KEYBOARD_SCROLL_SPEED_PX_PER_SECOND * (deltaMs / 1_000);
-      if (deltaPx !== 0) {
-        viewport.scrollTop += deltaPx;
-      }
-
-      previewScrollLoopRef.current = window.requestAnimationFrame(step);
-    };
-
-    previewScrollLastTsRef.current = null;
-    previewScrollLoopRef.current = window.requestAnimationFrame(step);
-  }
-
-  function updatePreviewKeyboardScrollKey(
-    key: "j" | "k",
-    pressed: boolean
-  ): void {
-    previewScrollKeysRef.current[key] = pressed;
-    const active = previewScrollKeysRef.current.j || previewScrollKeysRef.current.k;
-    if (active) {
-      startPreviewKeyboardScroll();
-      return;
-    }
-    stopPreviewKeyboardScroll();
+    previewKeyboardScroll.clearKeyboardScrollKeys();
   }
 
   function handleConversationShortcut(event: ReactKeyboardEvent<HTMLElement>): void {
@@ -941,7 +825,7 @@ export function App(): JSX.Element {
 
     if (key === "j" || key === "k") {
       event.preventDefault();
-      updateConversationKeyboardScrollKey(key as "j" | "k", true);
+      conversationKeyboardScroll.handleScrollKeyDown(key as "j" | "k");
       return;
     }
 
@@ -973,7 +857,7 @@ export function App(): JSX.Element {
       return;
     }
     event.preventDefault();
-    updateConversationKeyboardScrollKey(key as "j" | "k", false);
+    conversationKeyboardScroll.handleScrollKeyUp(key as "j" | "k");
   }
 
   function handlePreviewShortcut(event: ReactKeyboardEvent<HTMLDivElement>): void {
@@ -988,7 +872,7 @@ export function App(): JSX.Element {
 
     if (key === "j" || key === "k") {
       event.preventDefault();
-      updatePreviewKeyboardScrollKey(key as "j" | "k", true);
+      previewKeyboardScroll.handleScrollKeyDown(key as "j" | "k");
       return;
     }
 
@@ -1009,7 +893,7 @@ export function App(): JSX.Element {
       return;
     }
     event.preventDefault();
-    updatePreviewKeyboardScrollKey(key as "j" | "k", false);
+    previewKeyboardScroll.handleScrollKeyUp(key as "j" | "k");
   }
 
   function appendComposerFiles(rawFiles: File[]): void {
