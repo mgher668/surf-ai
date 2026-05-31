@@ -3,7 +3,6 @@ import {
   useMemo,
   useRef,
   useState,
-  type CSSProperties,
   type ChangeEvent,
   type ClipboardEvent as ReactClipboardEvent,
   type DragEvent as ReactDragEvent,
@@ -11,22 +10,9 @@ import {
 } from "react";
 import { Icon } from "@iconify/react/dist/offline";
 import { PhotoSlider } from "react-photo-view";
-import dotsVertical from "@iconify-icons/mdi/dots-vertical";
-import cogOutline from "@iconify-icons/mdi/cog-outline";
-import openInNew from "@iconify-icons/mdi/open-in-new";
-import menuIcon from "@iconify-icons/mdi/menu";
-import sidebarModeIcon from "@iconify-icons/mdi/page-layout-sidebar-left";
-import themeLightDark from "@iconify-icons/mdi/theme-light-dark";
-import checkIcon from "@iconify-icons/mdi/check";
-import checkAllIcon from "@iconify-icons/mdi/check-all";
-import starIcon from "@iconify-icons/mdi/star";
-import starOutlineIcon from "@iconify-icons/mdi/star-outline";
-import pencilOutline from "@iconify-icons/mdi/pencil-outline";
 import deleteOutline from "@iconify-icons/mdi/delete-outline";
-import alertCircleOutline from "@iconify-icons/mdi/alert-circle-outline";
 import { STORAGE_KEYS } from "@surf-ai/shared";
 import type {
-  BridgeAssistantMessagePhase,
   BridgeAuditEvent,
   BridgeAuditEventsResponse,
   BridgeCapabilitiesResponse,
@@ -44,9 +30,6 @@ import type {
   BridgeSessionRunCreateResponse,
   BridgeSessionRunApprovalDecisionRequest,
   BridgeSessionRunApprovalDecisionResponse,
-  BridgeSessionRunApprovalsResponse,
-  BridgeSessionRunEventsResponse,
-  BridgeSessionRunsResponse,
   BridgeRunApproval,
   BridgeUploadCreateResponse,
   BridgeRunStreamEvent,
@@ -54,7 +37,6 @@ import type {
   BridgeSessionRenameResponse,
   BridgeSessionStarRequest,
   ChatMessage,
-  ChatMessagePart,
   ChatSession,
   ExtensionToUiMessage,
   BridgeTtsResponse,
@@ -88,9 +70,65 @@ import {
 } from "../../lib/storage";
 import { type Locale, resolveLocale, t } from "../common/i18n";
 import { applyTheme, listenSystemThemeChange, normalizeThemeMode } from "../common/theme";
-import { MarkdownMessage } from "./MarkdownMessage";
+import { ConversationMessage } from "./components/ConversationMessage";
+import { MessagePreviewDialog } from "./components/MessagePreviewDialog";
+import { ProcessTimelineEntry } from "./components/ProcessTimelineEntry";
+import { RenameSessionDialog } from "./components/RenameSessionDialog";
+import { SessionSidebar } from "./components/SessionSidebar";
+import { SidepanelTopbar } from "./components/SidepanelTopbar";
+import {
+  fetchBridgeJson,
+  fetchLatestSessionRun,
+  fetchRunApprovalsFromBackend,
+  fetchRunEventsFromBackend,
+  fetchSessionRunsFromBackend
+} from "./api/bridgeApi";
+import {
+  areMessageListsEqual,
+  areSessionListsEqual,
+  buildBridgeHeaders,
+  buildChatContext,
+  buildComposerGalleryImages,
+  buildConversationTimelineItems,
+  buildRunArtifacts,
+  buildSessionGalleryImages,
+  buildSessionProcessTimelineItems,
+  createComposerGalleryImageKey,
+  createEmptyStreamAssistantByPhase,
+  formatRunStatus,
+  isRunInFlight,
+  mergeAssistantCompletedContent,
+  mergeSessionsWithLocalAdapters,
+  normalizeAssistantStreamPhase,
+  normalizeModelList,
+  normalizeSidebarMode,
+  pickDisplayAssistantText,
+  upsertApproval,
+  type ComposerAttachment,
+  type SessionRunProcessState,
+  type StreamAssistantByPhase
+} from "./utils/sidepanel-helpers";
+import {
+  composerAttachmentOpenButtonStyle,
+  composerAttachmentPreviewGridStyle,
+  composerAttachmentPreviewImageStyle,
+  composerAttachmentPreviewItemStyle,
+  composerAttachmentPreviewSectionStyle,
+  composerAttachmentRemoveButtonStyle,
+  dragOverlayCardStyle,
+  dragOverlayStyle,
+  hintErrorStyle,
+  hintInfoStyle,
+  hintWarnStyle,
+  inlineCheckboxLabelStyle,
+  messageImageButtonStyle,
+  messageImageGridStyle,
+  messageImageStyle,
+  photoSliderCounterStyle,
+  photoSliderNameStyle,
+  photoSliderOverlayStyle
+} from "./styles";
 import { Button } from "../components/ui/button";
-import { Input } from "../components/ui/input";
 import {
   Select,
   SelectContent,
@@ -99,24 +137,6 @@ import {
   SelectValue
 } from "../components/ui/select";
 import { Textarea } from "../components/ui/textarea";
-import { Separator } from "../components/ui/separator";
-import { Badge } from "../components/ui/badge";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger
-} from "../components/ui/dropdown-menu";
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "../components/ui/tooltip";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle
-} from "../components/ui/dialog";
 import { Sheet, SheetContent } from "../components/ui/sheet";
 import { Sidebar, SidebarInset, SidebarProvider } from "../components/ui/sidebar";
 
@@ -140,7 +160,6 @@ type RuntimeAlertCode =
   | "auth_failed"
   | "rate_limited"
   | "bridge_request_failed";
-type StreamAssistantByPhase = Record<BridgeAssistantMessagePhase, string>;
 
 interface RuntimeAlert {
   code: RuntimeAlertCode;
@@ -149,72 +168,6 @@ interface RuntimeAlert {
   statusCode?: number;
   updatedAt: number;
 }
-
-function createEmptyStreamAssistantByPhase(): StreamAssistantByPhase {
-  return {
-    commentary: "",
-    final_answer: "",
-    unknown: ""
-  };
-}
-
-interface RunArtifacts {
-  assistantByPhase: StreamAssistantByPhase;
-  reasoningSummary: string;
-  reasoningText: string;
-  commandOutput: string;
-  errorMessage?: string;
-}
-
-interface SessionRunProcessState {
-  events: BridgeRunStreamEvent[];
-  approvals: BridgeRunApproval[];
-}
-
-interface ProcessTimelineItem {
-  id: string;
-  ts: number;
-  kind:
-    | "approval"
-    | "commentary"
-    | "reasoning_summary"
-    | "reasoning_text"
-    | "command_output"
-    | "runtime_error";
-  approval?: BridgeRunApproval;
-  content?: string;
-  segments?: string[];
-  message?: string;
-}
-
-interface ComposerAttachment {
-  id: string;
-  file: File;
-  previewUrl: string;
-  mimeType: string;
-  sizeBytes: number;
-}
-
-interface SessionGalleryImage {
-  key: string;
-  src: string;
-  alt: string;
-  fileName?: string;
-}
-
-type ConversationTimelineItem =
-  | {
-      id: string;
-      ts: number;
-      kind: "message";
-      message: ChatMessage;
-    }
-  | {
-      id: string;
-      ts: number;
-      kind: "process";
-      process: ProcessTimelineItem;
-    };
 
 export function App(): JSX.Element {
   const [locale, setLocaleState] = useState<Locale>(resolveLocale(navigator.language));
@@ -264,8 +217,6 @@ export function App(): JSX.Element {
   const [includePageContext, setIncludePageContext] = useState(false);
   const [selectionContext, setSelectionContext] = useState<SelectionPayload | undefined>();
   const [rawViewByMessageId, setRawViewByMessageId] = useState<Record<string, boolean>>({});
-  const [hoverSessionId, setHoverSessionId] = useState<string | undefined>();
-  const [truncatedTitleSessionId, setTruncatedTitleSessionId] = useState<string | undefined>();
   const [renameDialogOpen, setRenameDialogOpen] = useState(false);
   const [renameTargetSession, setRenameTargetSession] = useState<ChatSession | null>(null);
   const [renameTitleInput, setRenameTitleInput] = useState("");
@@ -2987,147 +2938,19 @@ async function bootstrap(): Promise<void> {
     sidebarMode === "overlay" ? sidebarOverlayOpen : !sidebarCollapsed;
 
   const sessionSidebarContent = (
-    <div className="surf-session-sidebar">
-      <h2 className="surf-session-title">{t(locale, "sessions")}</h2>
-      <Button type="button" onClick={() => void createSessionFromSidebar()} className="w-full justify-between">
-        {t(locale, "newSession")}
-      </Button>
-
-      <TooltipProvider delayDuration={240}>
-        <div className="surf-session-list">
-          {sessions.map((session) => (
-            <Tooltip
-              key={session.id}
-              open={hoverSessionId === session.id && truncatedTitleSessionId === session.id}
-            >
-              <TooltipTrigger asChild>
-                <div
-                  onClick={() => selectSessionFromSidebar(session.id)}
-                  className="surf-session-row"
-                  data-active={activeSessionId === session.id ? "true" : "false"}
-                  onMouseEnter={(event) => {
-                    setHoverSessionId(session.id);
-                    const titleElement = event.currentTarget.querySelector(
-                      "[data-session-title='true']"
-                    ) as HTMLElement | null;
-
-                    if (!titleElement || titleElement.scrollWidth <= titleElement.clientWidth) {
-                      setTruncatedTitleSessionId((previous) =>
-                        previous === session.id ? undefined : previous
-                      );
-                      return;
-                    }
-
-                    setTruncatedTitleSessionId(session.id);
-                  }}
-                  onMouseLeave={() => {
-                    setHoverSessionId((previous) =>
-                      previous === session.id ? undefined : previous
-                    );
-                    setTruncatedTitleSessionId((previous) =>
-                      previous === session.id ? undefined : previous
-                    );
-                  }}
-                >
-                  <button
-                    type="button"
-                    onClick={() => selectSessionFromSidebar(session.id)}
-                    style={sessionTitleButtonStyle}
-                  >
-                    {session.status === "RUNNING" ? (
-                      <span
-                        aria-hidden="true"
-                        className="surf-session-status-dot"
-                        data-status="RUNNING"
-                      />
-                    ) : session.status === "ERROR" ? (
-                      <span
-                        aria-hidden="true"
-                        className="surf-session-status-dot"
-                        data-status="ERROR"
-                      />
-                    ) : null}
-                    <span
-                      data-session-title="true"
-                      style={{
-                        display: "block",
-                        width: "100%",
-                        minWidth: 0,
-                        textAlign: "left",
-                        overflow: "hidden",
-                        textOverflow: "ellipsis",
-                        whiteSpace: "nowrap"
-                      }}
-                    >
-                      {session.title}
-                    </span>
-                  </button>
-
-                  <DropdownMenu onOpenChange={setIsAnyDropdownMenuOpen}>
-                    <DropdownMenuTrigger asChild>
-                      <Button
-                        type="button"
-                        aria-label={t(locale, "moreActions")}
-                        variant="ghost"
-                        size="icon"
-                        className="h-7 w-7 shrink-0 rounded-lg p-0 text-[hsl(var(--muted-foreground))] hover:bg-accent"
-                        onClick={(event) => event.stopPropagation()}
-                        onPointerDown={(event) => event.stopPropagation()}
-                      >
-                        <Icon icon={dotsVertical} width={16} height={16} />
-                      </Button>
-                    </DropdownMenuTrigger>
-                    <DropdownMenuContent align="end" className="min-w-[150px]">
-                      <DropdownMenuItem onSelect={() => void toggleStarSession(session.id)}>
-                        <Icon
-                          icon={session.starred ? starOutlineIcon : starIcon}
-                          width={16}
-                          height={16}
-                        />
-                        <span>{session.starred ? t(locale, "unfavorite") : t(locale, "favorite")}</span>
-                      </DropdownMenuItem>
-
-                      <DropdownMenuItem onSelect={() => openRenameDialog(session)}>
-                        <Icon icon={pencilOutline} width={16} height={16} />
-                        <span>{t(locale, "renameSession")}</span>
-                      </DropdownMenuItem>
-
-                      <DropdownMenuSeparator />
-
-                      <DropdownMenuItem
-                        onSelect={() => void deleteSession(session.id)}
-                        className="text-destructive focus:text-destructive"
-                      >
-                        <Icon icon={deleteOutline} width={16} height={16} />
-                        <span>{t(locale, "deleteSession")}</span>
-                      </DropdownMenuItem>
-                    </DropdownMenuContent>
-                  </DropdownMenu>
-                </div>
-              </TooltipTrigger>
-              <TooltipContent
-                side="right"
-                sideOffset={8}
-                className="max-w-[280px] whitespace-normal break-words"
-              >
-                {session.title}
-              </TooltipContent>
-            </Tooltip>
-          ))}
-        </div>
-      </TooltipProvider>
-
-      <Separator className="my-3" />
-      <div className="surf-connection-card">
-        <span className="surf-field-label">{t(locale, "currentConnection")}</span>
-        <span className="truncate text-sm font-semibold">
-          {activeConnection?.name ?? t(locale, "noConnection")}
-        </span>
-        <Button type="button" variant="outline" size="sm" onClick={() => void openSettingsFromSidebar()}>
-          {t(locale, "openSettings")}
-        </Button>
-      </div>
-    </div>
+    <SessionSidebar
+      locale={locale}
+      sessions={sessions}
+      activeSessionId={activeSessionId}
+      activeConnection={activeConnection}
+      onCreateSession={createSessionFromSidebar}
+      onSelectSession={selectSessionFromSidebar}
+      onOpenSettings={openSettingsFromSidebar}
+      onToggleStarSession={toggleStarSession}
+      onOpenRenameDialog={openRenameDialog}
+      onDeleteSession={deleteSession}
+      onDropdownOpenChange={setIsAnyDropdownMenuOpen}
+    />
   );
 
   return (
@@ -3161,121 +2984,18 @@ async function bootstrap(): Promise<void> {
             onDragEnd={resetDragOverlay}
             className="surf-main-grid"
           >
-        <header className="surf-topbar">
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon"
-            className={`h-8 w-8 rounded-lg p-0 text-[hsl(var(--muted-foreground))] hover:bg-accent ${
-              isSidebarVisible ? "bg-accent text-accent-foreground" : ""
-            }`}
-            title={t(locale, "toggleSidebar")}
-            aria-label={t(locale, "toggleSidebar")}
-            onClick={toggleSidebarPanel}
-          >
-            <Icon icon={menuIcon} width={18} height={18} />
-          </Button>
-          <DropdownMenu onOpenChange={setIsAnyDropdownMenuOpen}>
-            <DropdownMenuTrigger asChild>
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon"
-                className="h-8 w-8 rounded-lg p-0 text-[hsl(var(--muted-foreground))] hover:bg-accent"
-                title={t(locale, "sidebarMode")}
-                aria-label={t(locale, "sidebarMode")}
-              >
-                <Icon icon={sidebarModeIcon} width={18} height={18} />
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="start" className="min-w-[156px]">
-              <DropdownMenuItem onSelect={() => void updateSidebarModeValue("docked")}>
-                <Icon
-                  icon={checkIcon}
-                  width={16}
-                  height={16}
-                  className={sidebarMode === "docked" ? "opacity-100" : "opacity-0"}
-                />
-                <span>{t(locale, "sidebarModeDocked")}</span>
-              </DropdownMenuItem>
-              <DropdownMenuItem onSelect={() => void updateSidebarModeValue("overlay")}>
-                <Icon
-                  icon={checkIcon}
-                  width={16}
-                  height={16}
-                  className={sidebarMode === "overlay" ? "opacity-100" : "opacity-0"}
-                />
-                <span>{t(locale, "sidebarModeOverlay")}</span>
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
-          <strong className="surf-topbar-title">{t(locale, "appTitle")}</strong>
-          <DropdownMenu onOpenChange={setIsAnyDropdownMenuOpen}>
-            <DropdownMenuTrigger asChild>
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon"
-                className="h-8 w-8 rounded-lg p-0 text-[hsl(var(--muted-foreground))] hover:bg-accent"
-                title={t(locale, "theme")}
-                aria-label={t(locale, "theme")}
-              >
-                <Icon icon={themeLightDark} width={18} height={18} />
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end" className="min-w-[144px]">
-              <DropdownMenuItem onSelect={() => void updateThemeMode("system")}>
-                <Icon
-                  icon={checkIcon}
-                  width={16}
-                  height={16}
-                  className={themeMode === "system" ? "opacity-100" : "opacity-0"}
-                />
-                <span>{t(locale, "themeSystem")}</span>
-              </DropdownMenuItem>
-              <DropdownMenuItem onSelect={() => void updateThemeMode("light")}>
-                <Icon
-                  icon={checkIcon}
-                  width={16}
-                  height={16}
-                  className={themeMode === "light" ? "opacity-100" : "opacity-0"}
-                />
-                <span>{t(locale, "themeLight")}</span>
-              </DropdownMenuItem>
-              <DropdownMenuItem onSelect={() => void updateThemeMode("dark")}>
-                <Icon
-                  icon={checkIcon}
-                  width={16}
-                  height={16}
-                  className={themeMode === "dark" ? "opacity-100" : "opacity-0"}
-                />
-                <span>{t(locale, "themeDark")}</span>
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
-          <Button
-            type="button"
-            variant="outline"
-            size="icon"
-            className="h-8 w-8"
-            onClick={() => void openStandalonePage()}
-            title={t(locale, "openStandalone")}
-            aria-label={t(locale, "openStandalone")}
-          >
-            <Icon icon={openInNew} width={16} height={16} />
-          </Button>
-          <Button
-            type="button"
-            variant="outline"
-            size="icon"
-            className="h-8 w-8"
-            onClick={() => void openSettingsPage()}
-            title={t(locale, "openSettings")}
-            aria-label={t(locale, "openSettings")}
-          >
-            <Icon icon={cogOutline} width={16} height={16} />
-          </Button>
-        </header>
+            <SidepanelTopbar
+              locale={locale}
+              sidebarMode={sidebarMode}
+              themeMode={themeMode}
+              isSidebarVisible={isSidebarVisible}
+              onToggleSidebarPanel={toggleSidebarPanel}
+              onUpdateSidebarModeValue={updateSidebarModeValue}
+              onUpdateThemeMode={updateThemeMode}
+              onOpenStandalonePage={openStandalonePage}
+              onOpenSettingsPage={openSettingsPage}
+              onDropdownOpenChange={setIsAnyDropdownMenuOpen}
+            />
 
         {isDragOverlayVisible ? (
           <div style={dragOverlayStyle}>
@@ -3356,233 +3076,38 @@ async function bootstrap(): Promise<void> {
           ) : (
             conversationTimelineItems.map((item) => {
               if (item.kind === "message") {
-                const msg = item.message;
-                const showRaw = msg.role === "assistant" && Boolean(rawViewByMessageId[msg.id]);
-                const isHighlighted = isConversationFocused && focusedMessageId === msg.id;
-                const imageParts = extractImageParts(msg.parts);
-                const userMessageText = resolveUserMessageText(msg);
-
                 return (
-                  <article
+                  <ConversationMessage
                     key={item.id}
-                    ref={(element) => {
-                      registerMessageItemRef(msg.id, element);
-                    }}
-                    tabIndex={0}
-                    data-message-id={msg.id}
-                    data-highlighted={isHighlighted ? "true" : "false"}
-                    onFocus={() => {
-                      setFocusedMessageId(msg.id);
-                    }}
-                    className={`surf-message ${
-                      msg.role === "user" ? "surf-message-user" : "surf-message-assistant"
-                    }`}
-                  >
-                    {msg.role === "assistant" ? (
-                      <div style={{ display: "grid", gap: 8 }}>
-                        <div className="surf-message-toolbar">
-                          <button
-                            type="button"
-                            onClick={() => toggleRawView(msg.id)}
-                            style={messageRenderToggleStyle}
-                          >
-                            {showRaw ? "格式化" : "查看原文"}
-                          </button>
-                          {msg.adapter ? (
-                            <Badge
-                              variant="secondary"
-                              className="h-5 rounded-md px-1.5 text-[10px] font-medium tracking-wide text-muted-foreground"
-                            >
-                              {formatAdapterModel(msg.adapter, msg.model)}
-                            </Badge>
-                          ) : null}
-                        </div>
-                        {showRaw ? (
-                          <pre style={rawMessageContentStyle}>
-                            <code>{msg.content}</code>
-                          </pre>
-                        ) : (
-                          <MarkdownMessage content={msg.content} />
-                        )}
-                        {imageParts.length > 0 ? (
-                          <div style={messageImageGridStyle}>
-                            {imageParts.map((part, index) => {
-                              const src = resolveMessageImageSrc(activeConnection, part);
-                              if (!src) {
-                                return null;
-                              }
-                              const alt =
-                                part.attachment.fileName ??
-                                `${t(locale, "composerImagePreviewAltPrefix")} ${index + 1}`;
-                              const imageKey = createSessionGalleryImageKey(
-                                msg.id,
-                                part.attachment.id,
-                                index
-                              );
-                              return (
-                                <button
-                                  key={`${msg.id}:image:${part.attachment.id}:${index}`}
-                                  type="button"
-                                  onClick={() => openImagePreview(imageKey)}
-                                  style={messageImageButtonStyle}
-                                  title={alt}
-                                >
-                                  <img
-                                    src={src}
-                                    alt={alt}
-                                    loading="lazy"
-                                    style={messageImageStyle}
-                                  />
-                                </button>
-                              );
-                            })}
-                          </div>
-                        ) : null}
-                      </div>
-                    ) : (
-                      <div style={{ display: "grid", gap: 8 }}>
-                        {userMessageText ? (
-                          <span style={{ whiteSpace: "pre-wrap" }}>{userMessageText}</span>
-                        ) : null}
-                        {imageParts.length > 0 ? (
-                          <div style={messageImageGridStyle}>
-                            {imageParts.map((part, index) => {
-                              const src = resolveMessageImageSrc(activeConnection, part);
-                              if (!src) {
-                                return null;
-                              }
-                              const alt =
-                                part.attachment.fileName ??
-                                `${t(locale, "composerImagePreviewAltPrefix")} ${index + 1}`;
-                              const imageKey = createSessionGalleryImageKey(
-                                msg.id,
-                                part.attachment.id,
-                                index
-                              );
-                              return (
-                                <button
-                                  key={`${msg.id}:image:${part.attachment.id}:${index}`}
-                                  type="button"
-                                  onClick={() => openImagePreview(imageKey)}
-                                  style={messageImageButtonStyle}
-                                  title={alt}
-                                >
-                                  <img
-                                    src={src}
-                                    alt={alt}
-                                    loading="lazy"
-                                    style={messageImageStyle}
-                                  />
-                                </button>
-                              );
-                            })}
-                          </div>
-                        ) : null}
-                      </div>
-                    )}
-                  </article>
+                    itemId={item.id}
+                    message={item.message}
+                    locale={locale}
+                    activeConnection={activeConnection}
+                    showRaw={
+                      item.message.role === "assistant" &&
+                      Boolean(rawViewByMessageId[item.message.id])
+                    }
+                    isHighlighted={
+                      isConversationFocused && focusedMessageId === item.message.id
+                    }
+                    registerMessageItemRef={registerMessageItemRef}
+                    toggleRawView={toggleRawView}
+                    openImagePreview={openImagePreview}
+                    onFocusMessage={setFocusedMessageId}
+                    formatAdapterModel={formatAdapterModel}
+                  />
                 );
               }
 
-              const process = item.process;
-
-              if (process.kind === "approval" && process.approval) {
-                const approval = process.approval;
-                const pendingApproval = approval.status === "PENDING";
-                return (
-                  <div key={item.id} className="surf-process-card" data-kind="approval">
-                    <div className="surf-process-header">
-                      <strong className="surf-process-title">{approval.title ?? approval.kind}</strong>
-                      <span className="surf-process-meta">
-                        {renderApprovalStatus(locale, approval.status, approval.decision)}
-                      </span>
-                    </div>
-                    <div className="surf-process-body whitespace-pre-wrap">
-                      {approval.kind}
-                    </div>
-                    {pendingApproval ? (
-                      <div className="surf-process-actions">
-                        {approval.availableDecisions.map((decision) => (
-                          <Button
-                            key={stableDecisionKey(decision)}
-                            type="button"
-                            variant="outline"
-                            size="sm"
-                            className="h-7 px-2 text-xs"
-                            onClick={() => void submitApprovalDecision(approval, decision)}
-                          >
-                            {renderDecisionLabel(locale, decision)}
-                          </Button>
-                        ))}
-                      </div>
-                    ) : null}
-                  </div>
-                );
-              }
-
-              if (process.kind === "commentary" && process.content) {
-                const commentarySegments =
-                  process.segments && process.segments.length > 0
-                    ? process.segments
-                    : [process.content];
-                return (
-                  <details key={item.id} className="surf-process-details">
-                    <summary className="surf-process-summary">
-                      {t(locale, "assistantCommentaryTitle")}
-                    </summary>
-                    <div className="surf-process-markdown">
-                      {commentarySegments.map((segment, index) => (
-                        <p
-                          key={`${item.id}:commentary:${index}`}
-                          className="surf-process-paragraph"
-                        >
-                          {segment}
-                        </p>
-                      ))}
-                    </div>
-                  </details>
-                );
-              }
-
-              if (process.kind === "reasoning_summary" && process.content) {
-                return (
-                  <details key={item.id} className="surf-process-details">
-                    <summary className="surf-process-summary">Reasoning Summary</summary>
-                    <pre className="surf-process-content">{process.content}</pre>
-                  </details>
-                );
-              }
-
-              if (process.kind === "reasoning_text" && process.content) {
-                return (
-                  <details key={item.id} className="surf-process-details">
-                    <summary className="surf-process-summary">Reasoning (Raw)</summary>
-                    <pre className="surf-process-content">{process.content}</pre>
-                  </details>
-                );
-              }
-
-              if (process.kind === "command_output" && process.content) {
-                return (
-                  <details key={item.id} className="surf-process-details">
-                    <summary className="surf-process-summary">Tool / Command Output</summary>
-                    <pre className="surf-process-content">{process.content}</pre>
-                  </details>
-                );
-              }
-
-              if (process.kind === "runtime_error" && process.message) {
-                return (
-                  <div key={item.id} className="surf-process-card" data-kind="runtime_error">
-                    <div className="surf-process-header">
-                      <strong className="surf-process-title">Runtime error</strong>
-                    </div>
-                    <div className="surf-process-body whitespace-pre-wrap">{process.message}</div>
-                  </div>
-                );
-              }
-
-              return null;
+              return (
+                <ProcessTimelineEntry
+                  key={item.id}
+                  itemId={item.id}
+                  process={item.process}
+                  locale={locale}
+                  submitApprovalDecision={submitApprovalDecision}
+                />
+              );
             })
           )}
         </section>
@@ -3819,8 +3344,13 @@ async function bootstrap(): Promise<void> {
         </footer>
       </main>
 
-      <Dialog
-        open={previewDialogOpen}
+      <MessagePreviewDialog
+        locale={locale}
+        previewDialogOpen={previewDialogOpen}
+        previewMessage={previewMessage}
+        previewViewportRef={previewViewportRef}
+        rawViewByMessageId={rawViewByMessageId}
+        activeConnection={activeConnection}
         onOpenChange={(open) => {
           setPreviewDialogOpen(open);
           if (!open) {
@@ -3830,199 +3360,32 @@ async function bootstrap(): Promise<void> {
             });
           }
         }}
-      >
-        <DialogContent
-          className="h-[92vh] w-[96vw] max-w-none p-0"
-          onOpenAutoFocus={(event) => {
-            event.preventDefault();
-            previewViewportRef.current?.focus({ preventScroll: true });
-          }}
-        >
-          <div className="flex h-full min-h-0 flex-col">
-            <div className="flex items-center justify-between gap-2 border-b border-border px-4 py-3">
-              <DialogTitle>{t(locale, "messagePreviewTitle")}</DialogTitle>
-              {previewMessage?.role === "assistant" ? (
-                <button
-                  type="button"
-                  onClick={() => toggleRawView(previewMessage.id)}
-                  style={messageRenderToggleStyle}
-                >
-                  {rawViewByMessageId[previewMessage.id] ? "格式化" : "查看原文"}
-                </button>
-              ) : null}
-            </div>
-            <div
-              ref={previewViewportRef}
-              tabIndex={0}
-              onKeyDown={handlePreviewShortcut}
-              onKeyUp={handlePreviewShortcutKeyUp}
-              onBlur={() => {
-                clearPreviewKeyboardScrollKeys();
-              }}
-              className="min-h-0 flex-1 overflow-auto outline-none"
-              style={{
-                paddingBlock: "clamp(12px, 2.2vh, 28px)",
-                paddingInline: "clamp(8px, 1.8vw, 20px)"
-              }}
-            >
-              {previewMessage ? (
-                <div
-                  style={{
-                    marginInline: "auto",
-                    width: "100%",
-                    maxWidth: "min(150ch, 100%)",
-                    lineHeight: 1.65
-                  }}
-                >
-                  {(() => {
-                    const imageParts = extractImageParts(previewMessage.parts);
-                    const userMessageText = resolveUserMessageText(previewMessage);
-                    return previewMessage.role === "assistant" ? (
-                      <div style={{ display: "grid", gap: 12 }}>
-                        {rawViewByMessageId[previewMessage.id] ? (
-                          <pre style={{ ...rawMessageContentStyle, margin: 0 }}>
-                            <code>{previewMessage.content}</code>
-                          </pre>
-                        ) : (
-                          <MarkdownMessage content={previewMessage.content} />
-                        )}
-                        {imageParts.length > 0 ? (
-                          <div style={previewImageGridStyle}>
-                            {imageParts.map((part, index) => {
-                              const src = resolveMessageImageSrc(activeConnection, part);
-                              if (!src) {
-                                return null;
-                              }
-                              const alt =
-                                part.attachment.fileName ??
-                                `${t(locale, "composerImagePreviewAltPrefix")} ${index + 1}`;
-                              const imageKey = createSessionGalleryImageKey(
-                                previewMessage.id,
-                                part.attachment.id,
-                                index
-                              );
-                              return (
-                                <button
-                                  key={`${previewMessage.id}:preview-image:${part.attachment.id}:${index}`}
-                                  type="button"
-                                  onClick={() => openImagePreview(imageKey)}
-                                  style={previewImageButtonStyle}
-                                  title={alt}
-                                >
-                                  <img
-                                    src={src}
-                                    alt={alt}
-                                    loading="lazy"
-                                    style={previewImageStyle}
-                                  />
-                                </button>
-                              );
-                            })}
-                          </div>
-                        ) : null}
-                      </div>
-                    ) : (
-                      <div style={{ display: "grid", gap: 12 }}>
-                        {userMessageText ? (
-                          <span style={{ whiteSpace: "pre-wrap" }}>{userMessageText}</span>
-                        ) : null}
-                        {imageParts.length > 0 ? (
-                          <div style={previewImageGridStyle}>
-                            {imageParts.map((part, index) => {
-                              const src = resolveMessageImageSrc(activeConnection, part);
-                              if (!src) {
-                                return null;
-                              }
-                              const alt =
-                                part.attachment.fileName ??
-                                `${t(locale, "composerImagePreviewAltPrefix")} ${index + 1}`;
-                              const imageKey = createSessionGalleryImageKey(
-                                previewMessage.id,
-                                part.attachment.id,
-                                index
-                              );
-                              return (
-                                <button
-                                  key={`${previewMessage.id}:preview-image:${part.attachment.id}:${index}`}
-                                  type="button"
-                                  onClick={() => openImagePreview(imageKey)}
-                                  style={previewImageButtonStyle}
-                                  title={alt}
-                                >
-                                  <img
-                                    src={src}
-                                    alt={alt}
-                                    loading="lazy"
-                                    style={previewImageStyle}
-                                  />
-                                </button>
-                              );
-                            })}
-                          </div>
-                        ) : null}
-                      </div>
-                    );
-                  })()}
-                </div>
-              ) : (
-                <div style={{ color: "var(--muted-text)", fontSize: 13 }}>{t(locale, "previewMessageMissing")}</div>
-              )}
+        toggleRawView={toggleRawView}
+        openImagePreview={openImagePreview}
+        handlePreviewShortcut={handlePreviewShortcut}
+        handlePreviewShortcutKeyUp={handlePreviewShortcutKeyUp}
+        clearPreviewKeyboardScrollKeys={clearPreviewKeyboardScrollKeys}
+      />
 
-              <div className="mt-3 text-xs text-muted-foreground">{t(locale, "previewShortcutHint")}</div>
-            </div>
-          </div>
-        </DialogContent>
-      </Dialog>
-
-      <Dialog
+      <RenameSessionDialog
+        locale={locale}
         open={renameDialogOpen}
+        title={renameTitleInput}
+        error={renameError}
         onOpenChange={(open) => {
           if (!open) {
             closeRenameDialog();
           }
         }}
-      >
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>{t(locale, "renameSession")}</DialogTitle>
-            <DialogDescription>{t(locale, "renameSessionDescription")}</DialogDescription>
-          </DialogHeader>
-
-          <form
-            className="grid gap-3"
-            onSubmit={(event) => {
-              event.preventDefault();
-              void submitRenameDialog();
-            }}
-          >
-            <Input
-              value={renameTitleInput}
-              onChange={(event) => {
-                setRenameTitleInput(event.target.value);
-                if (renameError) {
-                  setRenameError(undefined);
-                }
-              }}
-              maxLength={120}
-              autoFocus
-            />
-            {renameError ? (
-              <div className="text-xs text-destructive">{renameError}</div>
-            ) : null}
-
-            <DialogFooter>
-              <Button
-                type="button"
-                variant="outline"
-                onClick={() => closeRenameDialog()}
-              >
-                {t(locale, "cancel")}
-              </Button>
-              <Button type="submit">{t(locale, "save")}</Button>
-            </DialogFooter>
-          </form>
-        </DialogContent>
-      </Dialog>
+        onTitleChange={(title) => {
+          setRenameTitleInput(title);
+          if (renameError) {
+            setRenameError(undefined);
+          }
+        }}
+        onSubmit={submitRenameDialog}
+        onCancel={closeRenameDialog}
+      />
       <PhotoSlider
         images={photoSliderImages}
         visible={imagePreviewVisible}
@@ -4087,137 +3450,6 @@ function revokeComposerAttachmentPreviews(attachments: ComposerAttachment[]): vo
   }
 }
 
-function createSessionGalleryImageKey(
-  messageId: string,
-  attachmentId: string,
-  imageIndexInMessage: number
-): string {
-  return `${messageId}:${attachmentId}:${imageIndexInMessage}`;
-}
-
-function createComposerGalleryImageKey(attachmentId: string, index: number): string {
-  return `${attachmentId}:${index}`;
-}
-
-function buildSessionGalleryImages(
-  messages: ChatMessage[],
-  activeConnection: BridgeConnection | undefined,
-  locale: Locale
-): SessionGalleryImage[] {
-  const images: SessionGalleryImage[] = [];
-  for (const message of messages) {
-    const imageParts = extractImageParts(message.parts);
-    if (imageParts.length === 0) {
-      continue;
-    }
-    imageParts.forEach((part, index) => {
-      const src = resolveMessageImageSrc(activeConnection, part);
-      if (!src) {
-        return;
-      }
-      images.push({
-        key: createSessionGalleryImageKey(message.id, part.attachment.id, index),
-        src,
-        alt:
-          part.attachment.fileName ??
-          `${t(locale, "composerImagePreviewAltPrefix")} ${images.length + 1}`,
-        ...(part.attachment.fileName ? { fileName: part.attachment.fileName } : {})
-      });
-    });
-  }
-  return images;
-}
-
-function buildComposerGalleryImages(
-  attachments: ComposerAttachment[],
-  locale: Locale
-): SessionGalleryImage[] {
-  return attachments.map((attachment, index) => {
-    const fileName = attachment.file.name?.trim();
-    return {
-      key: createComposerGalleryImageKey(attachment.id, index),
-      src: attachment.previewUrl,
-      alt: fileName || `${t(locale, "composerImagePreviewAltPrefix")} ${index + 1}`,
-      ...(fileName ? { fileName } : {})
-    };
-  });
-}
-
-function extractImageParts(
-  parts: ChatMessagePart[] | undefined
-): Array<Extract<ChatMessagePart, { type: "image" }>> {
-  if (!parts || parts.length === 0) {
-    return [];
-  }
-  return parts.filter(
-    (part): part is Extract<ChatMessagePart, { type: "image" }> => part.type === "image"
-  );
-}
-
-function resolveUserMessageText(message: ChatMessage): string | undefined {
-  if (message.parts && message.parts.length > 0) {
-    const text = message.parts
-      .filter((part): part is Extract<ChatMessagePart, { type: "text" }> => part.type === "text")
-      .map((part) => part.text.trim())
-      .filter(Boolean)
-      .join("\n\n");
-    if (text.length > 0) {
-      return text;
-    }
-
-    if (
-      extractImageParts(message.parts).length > 0 &&
-      /^\[\d+\simage(?:s)?\]$/iu.test(message.content.trim())
-    ) {
-      return undefined;
-    }
-  }
-
-  return message.content;
-}
-
-function resolveMessageImageSrc(
-  activeConnection: BridgeConnection | undefined,
-  part: Extract<ChatMessagePart, { type: "image" }>
-): string | undefined {
-  const { attachment } = part;
-  if (attachment.url) {
-    if (
-      attachment.url.startsWith("http://") ||
-      attachment.url.startsWith("https://") ||
-      attachment.url.startsWith("data:") ||
-      attachment.url.startsWith("blob:")
-    ) {
-      return attachment.url;
-    }
-
-    if (activeConnection) {
-      return joinBridgeUrl(activeConnection.baseUrl, attachment.url);
-    }
-    return attachment.url;
-  }
-
-  if (!activeConnection) {
-    return undefined;
-  }
-  return joinBridgeUrl(activeConnection.baseUrl, `/uploads/${attachment.id}`);
-}
-
-function joinBridgeUrl(baseUrl: string, path: string): string {
-  try {
-    const normalizedBase = baseUrl.endsWith("/") ? baseUrl : `${baseUrl}/`;
-    return new URL(path, normalizedBase).toString();
-  } catch {
-    const normalizedBase = baseUrl.endsWith("/") ? baseUrl.slice(0, -1) : baseUrl;
-    const normalizedPath = path.startsWith("/") ? path : `/${path}`;
-    return `${normalizedBase}${normalizedPath}`;
-  }
-}
-
-function normalizeSidebarMode(value: unknown): UiSidebarMode {
-  return value === "overlay" ? "overlay" : "docked";
-}
-
 function createSession(title: string): ChatSession {
   const now = Date.now();
   return {
@@ -4229,711 +3461,8 @@ function createSession(title: string): ChatSession {
   };
 }
 
-function mergeSessionsWithLocalAdapters(
-  localSessions: ChatSession[],
-  backendSessions: ChatSession[]
-): ChatSession[] {
-  if (localSessions.length === 0 || backendSessions.length === 0) {
-    return backendSessions;
-  }
-  const adapterBySessionId = new Map(
-    localSessions
-      .filter((item) => Boolean(item.lastAdapter))
-      .map((item) => [item.id, item.lastAdapter])
-  );
-  if (adapterBySessionId.size === 0) {
-    return backendSessions;
-  }
-  return backendSessions.map((session) => {
-    if (session.lastAdapter) {
-      return session;
-    }
-    const localAdapter = adapterBySessionId.get(session.id);
-    if (!localAdapter) {
-      return session;
-    }
-    return {
-      ...session,
-      lastAdapter: localAdapter
-    };
-  });
-}
-
-function areSessionListsEqual(left: ChatSession[], right: ChatSession[]): boolean {
-  if (left.length !== right.length) {
-    return false;
-  }
-
-  for (let index = 0; index < left.length; index += 1) {
-    const a = left[index];
-    const b = right[index];
-    if (!a || !b) {
-      return false;
-    }
-    if (
-      a.id !== b.id ||
-      a.title !== b.title ||
-      a.starred !== b.starred ||
-      a.lastAdapter !== b.lastAdapter ||
-      a.status !== b.status ||
-      a.lastActiveAt !== b.lastActiveAt ||
-      a.createdAt !== b.createdAt ||
-      a.updatedAt !== b.updatedAt
-    ) {
-      return false;
-    }
-  }
-
-  return true;
-}
-
-function normalizeModelList(models: BridgeModel[]): BridgeModel[] {
-  const dedup = new Map<string, BridgeModel>();
-  for (const item of models) {
-    if (!item.id.trim()) {
-      continue;
-    }
-    const key = `${item.adapter}::${item.id}`;
-    dedup.set(key, {
-      ...item,
-      id: item.id.trim(),
-      label: item.label.trim() || item.id.trim()
-    });
-  }
-  return [...dedup.values()];
-}
-
-function normalizeAssistantStreamPhase(phase: string | undefined): BridgeAssistantMessagePhase {
-  if (phase === "commentary" || phase === "final_answer") {
-    return phase;
-  }
-  return "unknown";
-}
-
-function mergeAssistantCompletedContent(
-  phase: BridgeAssistantMessagePhase,
-  existing: string,
-  completed: string
-): string {
-  if (phase !== "commentary") {
-    return completed;
-  }
-
-  const nextText = completed.trim();
-  if (!nextText) {
-    return existing;
-  }
-
-  const currentText = existing.trim();
-  if (!currentText) {
-    return completed;
-  }
-
-  if (currentText === nextText || currentText.endsWith(nextText)) {
-    return existing;
-  }
-
-  return `${existing.replace(/\s+$/u, "")}\n\n${completed}`;
-}
-
-function buildRunArtifacts(events: BridgeRunStreamEvent[]): RunArtifacts {
-  const assistantByPhase = createEmptyStreamAssistantByPhase();
-  let reasoningSummary = "";
-  let reasoningText = "";
-  let commandOutput = "";
-  let errorMessage: string | undefined;
-
-  for (const event of events) {
-    if (event.type === "assistant.delta") {
-      const phase = normalizeAssistantStreamPhase(event.data.phase);
-      assistantByPhase[phase] += event.data.delta;
-      continue;
-    }
-
-    if (event.type === "assistant.completed") {
-      if (typeof event.data.content !== "string") {
-        continue;
-      }
-      const phase = normalizeAssistantStreamPhase(event.data.phase);
-      assistantByPhase[phase] = mergeAssistantCompletedContent(
-        phase,
-        assistantByPhase[phase] ?? "",
-        event.data.content
-      );
-      continue;
-    }
-
-    if (event.type === "reasoning.summary.delta") {
-      reasoningSummary += event.data.delta;
-      continue;
-    }
-
-    if (event.type === "reasoning.text.delta") {
-      reasoningText += event.data.delta;
-      continue;
-    }
-
-    if (event.type === "command.output.delta") {
-      commandOutput += event.data.delta;
-      continue;
-    }
-
-    if (event.type === "error") {
-      errorMessage = event.data.message;
-    }
-  }
-
-  return {
-    assistantByPhase,
-    reasoningSummary,
-    reasoningText,
-    commandOutput,
-    ...(errorMessage ? { errorMessage } : {})
-  };
-}
-
-function buildSessionProcessTimelineItems(
-  sessionRunProcesses: Record<string, SessionRunProcessState>
-): ProcessTimelineItem[] {
-  const items: ProcessTimelineItem[] = [];
-  for (const [runId, process] of Object.entries(sessionRunProcesses)) {
-    items.push(...buildProcessTimelineItems(runId, process.events, process.approvals));
-  }
-  items.sort((left, right) => {
-    if (left.ts !== right.ts) {
-      return left.ts - right.ts;
-    }
-    return left.id.localeCompare(right.id);
-  });
-  return items;
-}
-
-function buildProcessTimelineItems(
-  runId: string,
-  events: BridgeRunStreamEvent[],
-  approvals: BridgeRunApproval[]
-): ProcessTimelineItem[] {
-  const artifacts = buildRunArtifacts(events);
-  const firstSeen = extractProcessFirstSeenTs(events);
-  const items: ProcessTimelineItem[] = [];
-  const mergedApprovals = mergeApprovalsFromEvents(events, approvals);
-  const commentarySegments = extractCommentarySegments(events);
-
-  for (const approval of mergedApprovals) {
-    items.push({
-      id: `approval-${runId}-${approval.id}`,
-      ts: approval.requestedAt,
-      kind: "approval",
-      approval
-    });
-  }
-
-  if (commentarySegments.length > 0 && typeof firstSeen.commentary === "number") {
-    items.push({
-      id: `${runId}:commentary`,
-      ts: firstSeen.commentary,
-      kind: "commentary",
-      content: commentarySegments.join("\n\n"),
-      segments: commentarySegments
-    });
-  } else if (artifacts.assistantByPhase.commentary && typeof firstSeen.commentary === "number") {
-    items.push({
-      id: `${runId}:commentary`,
-      ts: firstSeen.commentary,
-      kind: "commentary",
-      content: artifacts.assistantByPhase.commentary,
-      segments: [artifacts.assistantByPhase.commentary]
-    });
-  }
-
-  if (artifacts.reasoningSummary && typeof firstSeen.reasoningSummary === "number") {
-    items.push({
-      id: `${runId}:reasoning-summary`,
-      ts: firstSeen.reasoningSummary,
-      kind: "reasoning_summary",
-      content: artifacts.reasoningSummary
-    });
-  }
-
-  if (artifacts.reasoningText && typeof firstSeen.reasoningText === "number") {
-    items.push({
-      id: `${runId}:reasoning-text`,
-      ts: firstSeen.reasoningText,
-      kind: "reasoning_text",
-      content: artifacts.reasoningText
-    });
-  }
-
-  if (artifacts.commandOutput && typeof firstSeen.commandOutput === "number") {
-    items.push({
-      id: `${runId}:command-output`,
-      ts: firstSeen.commandOutput,
-      kind: "command_output",
-      content: artifacts.commandOutput
-    });
-  }
-
-  if (artifacts.errorMessage && typeof firstSeen.runtimeError === "number") {
-    items.push({
-      id: `${runId}:runtime-error`,
-      ts: firstSeen.runtimeError,
-      kind: "runtime_error",
-      message: artifacts.errorMessage
-    });
-  }
-
-  items.sort((left, right) => {
-    if (left.ts !== right.ts) {
-      return left.ts - right.ts;
-    }
-    return left.id.localeCompare(right.id);
-  });
-  return items;
-}
-
-function extractCommentarySegments(events: BridgeRunStreamEvent[]): string[] {
-  const segments: string[] = [];
-  for (const event of events) {
-    if (event.type !== "assistant.completed") {
-      continue;
-    }
-    const phase = normalizeAssistantStreamPhase(event.data.phase);
-    if (phase !== "commentary") {
-      continue;
-    }
-    if (typeof event.data.content !== "string") {
-      continue;
-    }
-    const text = event.data.content.trim();
-    if (!text) {
-      continue;
-    }
-    const prev = segments[segments.length - 1];
-    if (prev === text) {
-      continue;
-    }
-    segments.push(text);
-  }
-  return segments;
-}
-
-function mergeApprovalsFromEvents(
-  events: BridgeRunStreamEvent[],
-  approvals: BridgeRunApproval[]
-): BridgeRunApproval[] {
-  const merged = new Map<string, BridgeRunApproval>();
-
-  for (const approval of approvals) {
-    merged.set(approval.id, approval);
-  }
-
-  for (const event of events) {
-    if (event.type !== "approval.requested" && event.type !== "approval.updated") {
-      continue;
-    }
-    const approval = event.data.approval;
-    if (!approval?.id) {
-      continue;
-    }
-    merged.set(approval.id, approval);
-  }
-
-  return [...merged.values()].sort((left, right) => {
-    if (left.requestedAt !== right.requestedAt) {
-      return left.requestedAt - right.requestedAt;
-    }
-    return left.id.localeCompare(right.id);
-  });
-}
-
-function buildConversationTimelineItems(
-  messages: ChatMessage[],
-  processItems: ProcessTimelineItem[]
-): ConversationTimelineItem[] {
-  const timeline: ConversationTimelineItem[] = [
-    ...messages.map((message) => ({
-      id: `message-${message.id}`,
-      ts: message.createdAt,
-      kind: "message" as const,
-      message
-    })),
-    ...processItems.map((process) => ({
-      id: `process-${process.id}`,
-      ts: process.ts,
-      kind: "process" as const,
-      process
-    }))
-  ];
-
-  timeline.sort((left, right) => {
-    if (left.ts !== right.ts) {
-      return left.ts - right.ts;
-    }
-    if (left.kind !== right.kind) {
-      return left.kind === "process" ? -1 : 1;
-    }
-    return left.id.localeCompare(right.id);
-  });
-
-  return timeline;
-}
-
-function extractProcessFirstSeenTs(events: BridgeRunStreamEvent[]): {
-  commentary?: number;
-  reasoningSummary?: number;
-  reasoningText?: number;
-  commandOutput?: number;
-  runtimeError?: number;
-} {
-  let commentary: number | undefined;
-  let reasoningSummary: number | undefined;
-  let reasoningText: number | undefined;
-  let commandOutput: number | undefined;
-  let runtimeError: number | undefined;
-
-  for (const event of events) {
-    if (event.type === "assistant.delta") {
-      const phase = normalizeAssistantStreamPhase(event.data.phase);
-      if (phase === "commentary" && commentary === undefined) {
-        commentary = event.ts;
-      }
-      continue;
-    }
-
-    if (event.type === "assistant.completed") {
-      const phase = normalizeAssistantStreamPhase(event.data.phase);
-      if (phase === "commentary" && commentary === undefined) {
-        commentary = event.ts;
-      }
-      continue;
-    }
-
-    if (event.type === "reasoning.summary.delta" && reasoningSummary === undefined) {
-      reasoningSummary = event.ts;
-      continue;
-    }
-
-    if (event.type === "reasoning.text.delta" && reasoningText === undefined) {
-      reasoningText = event.ts;
-      continue;
-    }
-
-    if (event.type === "command.output.delta" && commandOutput === undefined) {
-      commandOutput = event.ts;
-      continue;
-    }
-
-    if (event.type === "error" && runtimeError === undefined) {
-      runtimeError = event.ts;
-    }
-  }
-
-  return {
-    ...(typeof commentary === "number" ? { commentary } : {}),
-    ...(typeof reasoningSummary === "number" ? { reasoningSummary } : {}),
-    ...(typeof reasoningText === "number" ? { reasoningText } : {}),
-    ...(typeof commandOutput === "number" ? { commandOutput } : {}),
-    ...(typeof runtimeError === "number" ? { runtimeError } : {})
-  };
-}
-
-function pickDisplayAssistantText(streamByPhase: StreamAssistantByPhase): string {
-  if (streamByPhase.final_answer.length > 0) {
-    return streamByPhase.final_answer;
-  }
-  if (streamByPhase.unknown.length > 0) {
-    return streamByPhase.unknown;
-  }
-  return "";
-}
-
 function formatAdapterModel(adapter: string, model: string | undefined): string {
   return `${adapter} / ${model?.trim() || AUTO_MODEL_ID}`;
-}
-
-async function fetchLatestSessionRun(
-  connection: BridgeConnection,
-  sessionId: string
-): Promise<BridgeSessionRun | null> {
-  const response = await fetchBridgeJson<BridgeSessionRunsResponse>(
-    connection,
-    `/sessions/${sessionId}/runs?limit=1`
-  ).catch(() => ({ ok: false as const, status: 0 }));
-  if (!response.ok) {
-    return null;
-  }
-  return response.data.runs[0] ?? null;
-}
-
-async function fetchSessionRunsFromBackend(
-  connection: BridgeConnection,
-  sessionId: string,
-  limit = 50
-): Promise<BridgeSessionRun[] | null> {
-  const response = await fetchBridgeJson<BridgeSessionRunsResponse>(
-    connection,
-    `/sessions/${sessionId}/runs?limit=${limit}`
-  ).catch(() => ({ ok: false as const, status: 0 }));
-  if (!response.ok) {
-    return null;
-  }
-  return response.data.runs;
-}
-
-async function fetchRunApprovalsFromBackend(
-  connection: BridgeConnection,
-  sessionId: string,
-  runId: string,
-  status: "pending" | "all" = "all"
-): Promise<BridgeRunApproval[] | null> {
-  const response = await fetchBridgeJson<BridgeSessionRunApprovalsResponse>(
-    connection,
-    `/sessions/${sessionId}/runs/${runId}/approvals?status=${status}`
-  ).catch(() => ({ ok: false as const, status: 0 }));
-  if (!response.ok) {
-    return null;
-  }
-  return response.data.approvals;
-}
-
-async function fetchRunEventsFromBackend(
-  connection: BridgeConnection,
-  sessionId: string,
-  runId: string,
-  limit = 2000
-): Promise<BridgeRunStreamEvent[] | null> {
-  const response = await fetchBridgeJson<BridgeSessionRunEventsResponse>(
-    connection,
-    `/sessions/${sessionId}/runs/${runId}/events?limit=${limit}`
-  ).catch(() => ({ ok: false as const, status: 0 }));
-  if (!response.ok) {
-    return null;
-  }
-  return response.data.events;
-}
-
-function isRunInFlight(status: BridgeSessionRun["status"]): boolean {
-  return status === "QUEUED" || status === "RUNNING" || status === "CANCELLING";
-}
-
-function formatRunStatus(locale: Locale, status: BridgeSessionRun["status"]): string {
-  if (status === "QUEUED") return t(locale, "runStatusQueued");
-  if (status === "RUNNING") return t(locale, "runStatusRunning");
-  if (status === "CANCELLING") return t(locale, "runStatusCancelling");
-  if (status === "SUCCEEDED") return t(locale, "runStatusSucceeded");
-  if (status === "FAILED") return t(locale, "runStatusFailed");
-  return t(locale, "runStatusCancelled");
-}
-
-async function fetchBridgeJson<T>(
-  connection: BridgeConnection,
-  path: string
-): Promise<{ ok: true; data: T } | { ok: false; status: number }> {
-  const response = await fetch(`${connection.baseUrl}${path}`, {
-    headers: buildBridgeHeaders(connection),
-    cache: "no-store"
-  });
-
-  if (!response.ok) {
-    return { ok: false, status: response.status };
-  }
-
-  const data = (await response.json()) as T;
-  return { ok: true, data };
-}
-
-function areMessageListsEqual(left: ChatMessage[], right: ChatMessage[]): boolean {
-  if (left.length !== right.length) {
-    return false;
-  }
-
-  for (let index = 0; index < left.length; index += 1) {
-    const a = left[index];
-    const b = right[index];
-    if (!a || !b) {
-      return false;
-    }
-
-    if (
-      a.id !== b.id ||
-      a.sessionId !== b.sessionId ||
-      a.seq !== b.seq ||
-      a.role !== b.role ||
-      a.adapter !== b.adapter ||
-      a.model !== b.model ||
-      a.content !== b.content ||
-      !areMessagePartsEqual(a.parts, b.parts) ||
-      a.createdAt !== b.createdAt
-    ) {
-      return false;
-    }
-  }
-
-  return true;
-}
-
-function areMessagePartsEqual(
-  left: ChatMessagePart[] | undefined,
-  right: ChatMessagePart[] | undefined
-): boolean {
-  if (!left || left.length === 0) {
-    return !right || right.length === 0;
-  }
-  if (!right || right.length === 0 || left.length !== right.length) {
-    return false;
-  }
-
-  for (let index = 0; index < left.length; index += 1) {
-    const a = left[index];
-    const b = right[index];
-    if (!a || !b || a.type !== b.type) {
-      return false;
-    }
-    if (a.type === "text" && b.type === "text") {
-      if (a.text !== b.text) {
-        return false;
-      }
-      continue;
-    }
-    if (a.type === "image" && b.type === "image") {
-      if (
-        a.attachment.id !== b.attachment.id ||
-        a.attachment.mimeType !== b.attachment.mimeType ||
-        a.attachment.sizeBytes !== b.attachment.sizeBytes ||
-        a.attachment.fileName !== b.attachment.fileName ||
-        a.attachment.url !== b.attachment.url ||
-        a.attachment.createdAt !== b.attachment.createdAt
-      ) {
-        return false;
-      }
-      continue;
-    }
-    return false;
-  }
-
-  return true;
-}
-
-function upsertApproval(list: BridgeRunApproval[], approval: BridgeRunApproval): BridgeRunApproval[] {
-  const index = list.findIndex((item) => item.id === approval.id);
-  if (index < 0) {
-    return [...list, approval];
-  }
-  const next = [...list];
-  next[index] = approval;
-  return next;
-}
-
-function renderDecisionLabel(locale: Locale, decision: unknown): string {
-  if (decision === "accept") {
-    return locale === "zh-CN" ? "允许本次" : "Allow once";
-  }
-  if (decision === "acceptForSession") {
-    return locale === "zh-CN" ? "允许会话内" : "Allow for session";
-  }
-  if (decision === "decline") {
-    return locale === "zh-CN" ? "拒绝" : "Decline";
-  }
-  if (decision === "cancel") {
-    return locale === "zh-CN" ? "取消" : "Cancel";
-  }
-
-  if (decision && typeof decision === "object" && !Array.isArray(decision)) {
-    const key = Object.keys(decision)[0];
-    if (key === "acceptWithExecpolicyAmendment") {
-      return locale === "zh-CN" ? "允许并记住规则" : "Allow + remember rule";
-    }
-    if (key === "applyNetworkPolicyAmendment") {
-      return locale === "zh-CN" ? "允许并更新网络规则" : "Allow + network rule";
-    }
-    return key ?? String(decision);
-  }
-
-  return String(decision);
-}
-
-function renderApprovalStatus(
-  locale: Locale,
-  status: BridgeRunApproval["status"],
-  decision: unknown
-): JSX.Element {
-  if (status === "PENDING") {
-    return <span>{locale === "zh-CN" ? "待处理" : "Pending"}</span>;
-  }
-
-  const isSessionAllow = decision === "acceptForSession";
-  const isAccepted = status === "APPROVED";
-  const isDeclined = status === "DENIED" || status === "CANCELLED" || status === "TIMEOUT" || status === "FAILED";
-
-  if (isAccepted) {
-    return (
-      <span style={{ display: "inline-flex", alignItems: "center", gap: 4, color: "var(--hint-info-text)" }}>
-        <Icon icon={isSessionAllow ? checkAllIcon : checkIcon} width={14} height={14} />
-        <span>{locale === "zh-CN" ? "已允许" : "Approved"}</span>
-      </span>
-    );
-  }
-
-  if (isDeclined) {
-    return (
-      <span style={{ display: "inline-flex", alignItems: "center", gap: 4, color: "var(--hint-error-text)" }}>
-        <Icon icon={alertCircleOutline} width={14} height={14} />
-        <span>{locale === "zh-CN" ? "已拒绝" : "Denied"}</span>
-      </span>
-    );
-  }
-
-  return <span>{status}</span>;
-}
-
-function stableDecisionKey(decision: unknown): string {
-  try {
-    return JSON.stringify(decision, (_key, value) => {
-      if (!value || typeof value !== "object" || Array.isArray(value)) {
-        return value;
-      }
-      return Object.fromEntries(
-        Object.keys(value as Record<string, unknown>)
-          .sort((a, b) => a.localeCompare(b))
-          .map((key) => [key, (value as Record<string, unknown>)[key]])
-      );
-    });
-  } catch {
-    return String(decision);
-  }
-}
-
-function buildBridgeHeaders(connection: BridgeConnection, includeJsonContentType = false): Record<string, string> {
-  const headers: Record<string, string> = {
-    ...(connection.userId ? { "x-surf-user-id": connection.userId } : {})
-  };
-  if (includeJsonContentType) {
-    headers["content-type"] = "application/json";
-  }
-  if (connection.token) {
-    headers["x-surf-token"] = connection.token;
-  }
-  return headers;
-}
-
-function buildChatContext(
-  selectionContext: SelectionPayload | undefined,
-  pageContent: PageContentPayload | undefined,
-  includePageContext: boolean
-): NonNullable<BridgeChatRequest["context"]> {
-  const context: NonNullable<BridgeChatRequest["context"]> = {};
-  const pageTitle = pageContent?.pageTitle || selectionContext?.pageTitle;
-  if (pageTitle) context.pageTitle = pageTitle;
-  const pageUrl = pageContent?.pageUrl || selectionContext?.pageUrl;
-  if (pageUrl) context.pageUrl = pageUrl;
-  if (selectionContext?.text) {
-    context.selectedText = selectionContext.text;
-  }
-  if (includePageContext && pageContent?.text) {
-    context.pageText = pageContent.text;
-    context.pageTextSource = pageContent.source;
-  }
-  return context;
 }
 
 async function getActiveTab(): Promise<chrome.tabs.Tab | undefined> {
@@ -4946,288 +3475,3 @@ function sleep(ms: number): Promise<void> {
     setTimeout(resolve, ms);
   });
 }
-
-const rowButtonStyle: CSSProperties = {
-  display: "flex",
-  alignItems: "center",
-  gap: 6,
-  width: "100%",
-  border: "none",
-  borderRadius: 8,
-  padding: "2px 4px",
-  background: "transparent",
-  color: "var(--ink)",
-  cursor: "pointer"
-};
-
-const hintInfoStyle: CSSProperties = {
-  border: "1px solid var(--hint-info-border)",
-  borderRadius: 10,
-  padding: "8px 10px",
-  background: "var(--hint-info-bg)",
-  color: "var(--hint-info-text)",
-  fontSize: 12
-};
-
-const hintErrorStyle: CSSProperties = {
-  border: "1px solid var(--hint-error-border)",
-  borderRadius: 10,
-  padding: "8px 10px",
-  background: "var(--hint-error-bg)",
-  color: "var(--hint-error-text)",
-  fontSize: 12
-};
-
-const hintWarnStyle: CSSProperties = {
-  border: "1px solid var(--hint-warn-border)",
-  borderRadius: 10,
-  padding: "8px 10px",
-  background: "var(--hint-warn-bg)",
-  color: "var(--hint-warn-text)",
-  fontSize: 12
-};
-
-const inlineCheckboxLabelStyle: CSSProperties = {
-  display: "inline-flex",
-  alignItems: "center",
-  gap: 6,
-  marginLeft: 10,
-  fontSize: 12
-};
-
-const sessionTitleButtonStyle: CSSProperties = {
-  flex: 1,
-  minWidth: 0,
-  border: "none",
-  background: "transparent",
-  color: "inherit",
-  cursor: "pointer",
-  padding: "2px 0",
-  display: "inline-flex",
-  alignItems: "center",
-  overflow: "hidden"
-};
-
-const messageRenderToggleStyle: CSSProperties = {
-  border: "none",
-  background: "transparent",
-  color: "var(--link)",
-  padding: 0,
-  margin: 0,
-  width: "fit-content",
-  cursor: "pointer",
-  fontSize: 12,
-  textDecoration: "underline",
-  textUnderlineOffset: 2
-};
-
-const approvalCardStyle: CSSProperties = {
-  border: "1px solid var(--line)",
-  borderRadius: 10,
-  padding: "8px 10px",
-  background: "var(--panel)"
-};
-
-const collapsibleBlockStyle: CSSProperties = {
-  border: "1px solid var(--line)",
-  borderRadius: 10,
-  background: "var(--panel)"
-};
-
-const collapsibleSummaryStyle: CSSProperties = {
-  padding: "8px 10px",
-  cursor: "pointer",
-  fontSize: 12,
-  fontWeight: 600
-};
-
-const collapsibleContentStyle: CSSProperties = {
-  margin: 0,
-  padding: "0 10px 10px",
-  whiteSpace: "pre-wrap",
-  wordBreak: "break-word",
-  fontSize: 12,
-  fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace"
-};
-
-const collapsibleMarkdownBodyStyle: CSSProperties = {
-  padding: "0 10px 10px"
-};
-
-const rawMessageContentStyle: CSSProperties = {
-  margin: 0,
-  padding: "8px 10px",
-  border: "1px solid var(--line)",
-  borderRadius: 8,
-  background: "var(--code-block-bg)",
-  whiteSpace: "pre-wrap",
-  wordBreak: "break-word",
-  fontSize: 12,
-  fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace"
-};
-
-const dragOverlayStyle: CSSProperties = {
-  position: "absolute",
-  inset: 0,
-  zIndex: 30,
-  display: "grid",
-  placeItems: "center",
-  padding: 24,
-  pointerEvents: "none",
-  background: "hsl(var(--background) / 0.74)",
-  backdropFilter: "blur(2px)"
-};
-
-const dragOverlayCardStyle: CSSProperties = {
-  width: "min(420px, 100%)",
-  border: "2px dashed hsl(var(--ring) / 0.7)",
-  borderRadius: 14,
-  padding: "18px 20px",
-  background: "hsl(var(--card) / 0.95)",
-  color: "hsl(var(--foreground))",
-  textAlign: "center",
-  display: "grid",
-  gap: 6
-};
-
-const composerAttachmentPreviewSectionStyle: CSSProperties = {
-  border: "1px solid var(--line)",
-  borderRadius: 10,
-  padding: "8px 10px",
-  background: "var(--panel)",
-  display: "grid",
-  gap: 8
-};
-
-const composerAttachmentPreviewGridStyle: CSSProperties = {
-  display: "flex",
-  flexWrap: "wrap",
-  gap: 8
-};
-
-const composerAttachmentPreviewItemStyle: CSSProperties = {
-  position: "relative",
-  width: 76,
-  height: 76,
-  borderRadius: 8,
-  overflow: "hidden",
-  border: "1px solid var(--line)",
-  background: "var(--code-block-bg)"
-};
-
-const composerAttachmentOpenButtonStyle: CSSProperties = {
-  border: "none",
-  padding: 0,
-  margin: 0,
-  width: "100%",
-  height: "100%",
-  background: "transparent",
-  cursor: "zoom-in"
-};
-
-const composerAttachmentPreviewImageStyle: CSSProperties = {
-  width: "100%",
-  height: "100%",
-  objectFit: "cover",
-  display: "block"
-};
-
-const composerAttachmentRemoveButtonStyle: CSSProperties = {
-  position: "absolute",
-  top: 4,
-  right: 4,
-  width: 22,
-  height: 22,
-  borderRadius: 999,
-  border: "1px solid hsl(var(--border) / 0.9)",
-  background: "hsl(var(--background) / 0.9)",
-  color: "hsl(var(--foreground))",
-  display: "inline-flex",
-  alignItems: "center",
-  justifyContent: "center",
-  cursor: "pointer"
-};
-
-const messageImageGridStyle: CSSProperties = {
-  display: "flex",
-  flexWrap: "wrap",
-  gap: 8
-};
-
-const messageImageButtonStyle: CSSProperties = {
-  border: "none",
-  padding: 0,
-  margin: 0,
-  background: "transparent",
-  cursor: "zoom-in",
-  lineHeight: 0
-};
-
-const messageImageStyle: CSSProperties = {
-  width: 168,
-  maxWidth: "100%",
-  maxHeight: 220,
-  borderRadius: 8,
-  border: "1px solid var(--line)",
-  objectFit: "cover",
-  display: "block"
-};
-
-const previewImageGridStyle: CSSProperties = {
-  display: "grid",
-  gridTemplateColumns: "repeat(auto-fill, minmax(180px, 1fr))",
-  gap: 10
-};
-
-const previewImageButtonStyle: CSSProperties = {
-  border: "none",
-  padding: 0,
-  margin: 0,
-  background: "transparent",
-  cursor: "zoom-in",
-  lineHeight: 0,
-  textAlign: "left"
-};
-
-const previewImageStyle: CSSProperties = {
-  width: "100%",
-  maxHeight: 420,
-  borderRadius: 10,
-  border: "1px solid var(--line)",
-  objectFit: "contain",
-  background: "hsl(var(--muted) / 0.28)"
-};
-
-const photoSliderOverlayStyle: CSSProperties = {
-  position: "fixed",
-  top: 12,
-  left: "50%",
-  transform: "translateX(-50%)",
-  zIndex: 40,
-  display: "inline-flex",
-  alignItems: "center",
-  gap: 10,
-  padding: "7px 12px",
-  borderRadius: 999,
-  background: "hsl(var(--background) / 0.76)",
-  color: "hsl(var(--foreground))",
-  border: "1px solid hsl(var(--border) / 0.65)",
-  boxShadow: "0 10px 30px hsl(var(--background) / 0.35)",
-  backdropFilter: "blur(8px)",
-  maxWidth: "min(calc(100vw - 20px), 760px)",
-  pointerEvents: "none"
-};
-
-const photoSliderCounterStyle: CSSProperties = {
-  fontSize: 12,
-  fontWeight: 600,
-  whiteSpace: "nowrap",
-  opacity: 0.92
-};
-
-const photoSliderNameStyle: CSSProperties = {
-  fontSize: 12,
-  overflow: "hidden",
-  textOverflow: "ellipsis",
-  whiteSpace: "nowrap"
-};

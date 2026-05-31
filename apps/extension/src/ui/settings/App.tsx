@@ -2,13 +2,6 @@ import { useEffect, useMemo, useState } from "react";
 import type {
   BridgeAdapter,
   BridgeConnection,
-  BridgeMemory,
-  BridgeMemoryListResponse,
-  BridgeMemoryResponse,
-  BridgeModel,
-  BridgeModelsResponse,
-  BridgeModelsUpdateRequest,
-  CodexReasoningEffort,
   UiSidebarMode,
   UiThemeMode
 } from "@surf-ai/shared";
@@ -28,18 +21,17 @@ import {
   setSidebarMode,
   setTheme
 } from "../../lib/storage";
-import { type Locale, resolveLocale, t } from "../common/i18n";
+import { type Locale, resolveLocale } from "../common/i18n";
 import { applyTheme, listenSystemThemeChange, normalizeThemeMode } from "../common/theme";
-import { Button } from "../components/ui/button";
-import { Input } from "../components/ui/input";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue
-} from "../components/ui/select";
-import { ModelsEditableTable } from "./components/ModelsEditableTable";
+import { ConnectionsSection } from "./components/ConnectionsSection";
+import { GeneralSection } from "./components/GeneralSection";
+import { MemoriesSection } from "./components/MemoriesSection";
+import { ModelsSection } from "./components/ModelsSection";
+import { SettingsHeader } from "./components/SettingsHeader";
+import { SettingsNav } from "./components/SettingsNav";
+import { useSettingsMemories } from "./hooks/useSettingsMemories";
+import { useSettingsModels } from "./hooks/useSettingsModels";
+import { type SettingsSection, resolveSettingsSection } from "./utils/settingsSections";
 
 const DEFAULT_CONNECTION_URL = "http://127.0.0.1:43127";
 const DEFAULT_CONNECTION_USER_ID = "local";
@@ -52,9 +44,6 @@ const ADAPTER_OPTIONS: BridgeAdapter[] = [
   "gemini"
 ];
 const MODEL_ADAPTER_OPTIONS: BridgeAdapter[] = ["codex", "claude", "openai-compatible", "mock"];
-const AUTO_MODEL_ID = "auto";
-const SETTINGS_SECTIONS = ["general", "connections", "models", "memories"] as const;
-type SettingsSection = (typeof SETTINGS_SECTIONS)[number];
 
 export function App(): JSX.Element {
   const [locale, setLocaleState] = useState<Locale>(resolveLocale(navigator.language));
@@ -71,22 +60,37 @@ export function App(): JSX.Element {
   const [newConnUrl, setNewConnUrl] = useState(DEFAULT_CONNECTION_URL);
   const [newConnUserId, setNewConnUserId] = useState(DEFAULT_CONNECTION_USER_ID);
   const [newConnToken, setNewConnToken] = useState("");
-  const [models, setModelsState] = useState<BridgeModel[]>([]);
-  const [modelsDirty, setModelsDirty] = useState(false);
-  const [modelsFeedback, setModelsFeedback] = useState<string | undefined>();
-  const [memories, setMemoriesState] = useState<BridgeMemory[]>([]);
-  const [memoriesFeedback, setMemoriesFeedback] = useState<string | undefined>();
-  const [draftModelIdByAdapter, setDraftModelIdByAdapter] = useState<
-    Partial<Record<BridgeAdapter, string>>
-  >({});
-  const [draftModelLabelByAdapter, setDraftModelLabelByAdapter] = useState<
-    Partial<Record<BridgeAdapter, string>>
-  >({});
 
   const activeConnection = useMemo(
     () => connections.find((item) => item.id === activeConnectionId),
     [connections, activeConnectionId]
   );
+
+  const {
+    models,
+    modelsDirty,
+    modelsFeedback,
+    draftModelIdByAdapter,
+    draftModelLabelByAdapter,
+    updateDraftModelId,
+    updateDraftModelLabel,
+    addModel,
+    editModel,
+    setDefaultModel,
+    toggleModelEnabled,
+    updateModelReasoningEffort,
+    removeModel,
+    saveModelsToBackend
+  } = useSettingsModels({ activeConnection, locale });
+
+  const {
+    memories,
+    memoriesFeedback,
+    loadMemories,
+    confirmMemory,
+    rejectMemory,
+    deleteMemory
+  } = useSettingsMemories({ activeConnection, locale });
 
   useEffect(() => {
     void bootstrap();
@@ -172,14 +176,6 @@ export function App(): JSX.Element {
     });
   }, [themeMode]);
 
-  useEffect(() => {
-    void loadModels(activeConnection);
-  }, [activeConnection?.id, activeConnection?.baseUrl, activeConnection?.userId, activeConnection?.token]);
-
-  useEffect(() => {
-    void loadMemories(activeConnection);
-  }, [activeConnection?.id, activeConnection?.baseUrl, activeConnection?.userId, activeConnection?.token]);
-
   async function bootstrap(): Promise<void> {
     const [
       storedConnections,
@@ -264,679 +260,89 @@ export function App(): JSX.Element {
     await setSidebarMode(nextMode);
   }
 
-  async function loadModels(connection: BridgeConnection | undefined): Promise<void> {
-    if (!connection) {
-      setModelsState([]);
-      setModelsDirty(false);
-      setModelsFeedback(undefined);
-      return;
-    }
-
-    try {
-      const response = await fetch(`${connection.baseUrl}/models`, {
-        method: "GET",
-        headers: buildBridgeHeaders(connection)
-      });
-      if (!response.ok) {
-        setModelsFeedback(`${t(locale, "modelsLoadFailed")} (${response.status})`);
-        return;
-      }
-      const payload = (await response.json()) as BridgeModelsResponse;
-      setModelsState(normalizeModelList(payload.models));
-      setModelsDirty(false);
-      setModelsFeedback(undefined);
-    } catch {
-      setModelsFeedback(t(locale, "modelsLoadFailed"));
-    }
-  }
-
-  async function loadMemories(connection: BridgeConnection | undefined): Promise<void> {
-    setMemoriesFeedback(undefined);
-    if (!connection) {
-      setMemoriesState([]);
-      return;
-    }
-
-    try {
-      const response = await fetch(`${connection.baseUrl}/memories?limit=100`, {
-        headers: buildBridgeHeaders(connection)
-      });
-      if (!response.ok) {
-        setMemoriesFeedback(`${t(locale, "memoriesLoadFailed")} (${response.status})`);
-        return;
-      }
-      const payload = (await response.json()) as BridgeMemoryListResponse;
-      setMemoriesState(payload.memories);
-    } catch {
-      setMemoriesFeedback(t(locale, "memoriesLoadFailed"));
-    }
-  }
-
-  async function confirmMemory(memoryId: string): Promise<void> {
-    await mutateMemory(memoryId, "confirm");
-  }
-
-  async function rejectMemory(memoryId: string): Promise<void> {
-    await mutateMemory(memoryId, "reject");
-  }
-
-  async function deleteMemory(memoryId: string): Promise<void> {
-    await mutateMemory(memoryId, "delete");
-  }
-
-  async function mutateMemory(
-    memoryId: string,
-    action: "confirm" | "reject" | "delete"
-  ): Promise<void> {
-    if (!activeConnection) {
-      return;
-    }
-
-    setMemoriesFeedback(undefined);
-    try {
-      const url =
-        action === "delete"
-          ? `${activeConnection.baseUrl}/memories/${memoryId}`
-          : `${activeConnection.baseUrl}/memories/${memoryId}/${action}`;
-      const response = await fetch(url, {
-        method: action === "delete" ? "DELETE" : "POST",
-        headers: buildBridgeHeaders(activeConnection, action !== "delete")
-      });
-      if (!response.ok) {
-        setMemoriesFeedback(`${t(locale, "memoriesActionFailed")} (${response.status})`);
-        return;
-      }
-
-      if (action === "delete") {
-        setMemoriesState((prev) => prev.filter((item) => item.id !== memoryId));
-        setMemoriesFeedback(t(locale, "memoriesDeleted"));
-        return;
-      }
-
-      const payload = (await response.json()) as BridgeMemoryResponse;
-      setMemoriesState((prev) =>
-        prev.map((item) => (item.id === payload.memory.id ? payload.memory : item))
-      );
-      setMemoriesFeedback(
-        action === "confirm" ? t(locale, "memoriesConfirmed") : t(locale, "memoriesRejected")
-      );
-    } catch {
-      setMemoriesFeedback(t(locale, "memoriesActionFailed"));
-    }
-  }
-
-  function updateModels(mutator: (previous: BridgeModel[]) => BridgeModel[]): void {
-    setModelsState((previous) => {
-      const next = normalizeModelList(mutator(previous));
-      setModelsDirty(true);
-      setModelsFeedback(undefined);
-      return next;
-    });
-  }
-
-  function setDefaultModel(adapter: BridgeAdapter, modelId: string): void {
-    updateModels((previous) =>
-      previous.map((item) => {
-        if (item.adapter !== adapter) {
-          return item;
-        }
-        return {
-          ...item,
-          isDefault: item.id === modelId,
-          enabled: item.id === modelId ? true : item.enabled
-        };
-      })
-    );
-  }
-
-  function updateModelReasoningEffort(
-    adapter: BridgeAdapter,
-    modelId: string,
-    effort: CodexReasoningEffort | undefined
-  ): void {
-    if (adapter !== "codex") {
-      return;
-    }
-
-    updateModels((previous) =>
-      previous.map((item) => {
-        if (item.adapter !== adapter || item.id !== modelId) {
-          return item;
-        }
-        if (!effort) {
-          const { modelReasoningEffort: _unused, ...rest } = item;
-          return rest;
-        }
-        return {
-          ...item,
-          modelReasoningEffort: effort
-        };
-      })
-    );
-  }
-
-  function toggleModelEnabled(adapter: BridgeAdapter, modelId: string): void {
-    updateModels((previous) => {
-      const target = previous.find((item) => item.adapter === adapter && item.id === modelId);
-      if (!target) {
-        return previous;
-      }
-      const nextEnabled = !target.enabled;
-      const next = previous.map((item) => {
-        if (item.adapter !== adapter || item.id !== modelId) {
-          return item;
-        }
-        return {
-          ...item,
-          enabled: nextEnabled,
-          isDefault: nextEnabled ? item.isDefault : false
-        };
-      });
-
-      const enabledModels = next.filter((item) => item.adapter === adapter && item.enabled);
-      if (enabledModels.length === 0) {
-        return next.map((item) => {
-          if (item.adapter !== adapter || item.id !== modelId) {
-            return item;
-          }
-          return {
-            ...item,
-            enabled: true,
-            isDefault: true
-          };
-        });
-      }
-
-      const hasDefault = enabledModels.some((item) => item.isDefault);
-      if (hasDefault) {
-        return next;
-      }
-
-      const fallbackDefaultId = enabledModels[0]?.id;
-      if (!fallbackDefaultId) {
-        return next;
-      }
-      return next.map((item) => {
-        if (item.adapter !== adapter) {
-          return item;
-        }
-        return {
-          ...item,
-          isDefault: item.id === fallbackDefaultId
-        };
-      });
-    });
-  }
-
-  function removeModel(adapter: BridgeAdapter, modelId: string): void {
-    updateModels((previous) => {
-      const next = previous.filter((item) => !(item.adapter === adapter && item.id === modelId));
-      const adapterModels = next.filter((item) => item.adapter === adapter);
-      if (adapterModels.length === 0) {
-        next.push({
-          id: AUTO_MODEL_ID,
-          label: "Auto (CLI default)",
-          adapter,
-          enabled: true,
-          isDefault: true
-        });
-        return next;
-      }
-      if (adapterModels.some((item) => item.isDefault && item.enabled)) {
-        return next;
-      }
-      const fallbackDefaultId = adapterModels.find((item) => item.enabled)?.id ?? adapterModels[0]?.id;
-      if (!fallbackDefaultId) {
-        return next;
-      }
-      return next.map((item) => {
-        if (item.adapter !== adapter) {
-          return item;
-        }
-        return {
-          ...item,
-          enabled: item.id === fallbackDefaultId ? true : item.enabled,
-          isDefault: item.id === fallbackDefaultId
-        };
-      });
-    });
-  }
-
-  function addModel(adapter: BridgeAdapter): void {
-    const id = draftModelIdByAdapter[adapter]?.trim() ?? "";
-    const label = draftModelLabelByAdapter[adapter]?.trim() ?? "";
-    if (!id) {
-      return;
-    }
-
-    updateModels((previous) => {
-      if (previous.some((item) => item.adapter === adapter && item.id === id)) {
-        return previous;
-      }
-
-      const hasDefault = previous.some((item) => item.adapter === adapter && item.isDefault && item.enabled);
-      return [
-        ...previous,
-        {
-          id,
-          label: label || id,
-          adapter,
-          enabled: true,
-          isDefault: !hasDefault
-        }
-      ];
-    });
-
-    setDraftModelIdByAdapter((previous) => ({ ...previous, [adapter]: "" }));
-    setDraftModelLabelByAdapter((previous) => ({ ...previous, [adapter]: "" }));
-  }
-
-  function editModel(
-    adapter: BridgeAdapter,
-    currentId: string,
-    patch: { id?: string; label?: string }
-  ): void {
-    const nextId = typeof patch.id === "string" ? patch.id.trim() : undefined;
-    const nextLabel = typeof patch.label === "string" ? patch.label.trim() : undefined;
-    if (nextId !== undefined && !nextId) {
-      return;
-    }
-
-    updateModels((previous) => {
-      const target = previous.find((item) => item.adapter === adapter && item.id === currentId);
-      if (!target) {
-        return previous;
-      }
-
-      const resolvedId = nextId ?? target.id;
-      const resolvedLabel = nextLabel ?? target.label;
-      if (!resolvedId) {
-        return previous;
-      }
-
-      const duplicated = previous.some(
-        (item) => item.adapter === adapter && item.id === resolvedId && item.id !== currentId
-      );
-      if (duplicated) {
-        return previous;
-      }
-
-      return previous.map((item) => {
-        if (item.adapter !== adapter || item.id !== currentId) {
-          return item;
-        }
-        return {
-          ...item,
-          id: resolvedId,
-          label: resolvedLabel || resolvedId
-        };
-      });
-    });
-  }
-
-  async function saveModelsToBackend(): Promise<void> {
-    if (!activeConnection) {
-      return;
-    }
-
-    try {
-      const payload: BridgeModelsUpdateRequest = {
-        models: normalizeModelList(models)
-      };
-      const response = await fetch(`${activeConnection.baseUrl}/models`, {
-        method: "PUT",
-        headers: buildBridgeHeaders(activeConnection, true),
-        body: JSON.stringify(payload)
-      });
-      if (!response.ok) {
-        setModelsFeedback(`${t(locale, "modelsSaveFailed")} (${response.status})`);
-        return;
-      }
-      const updated = (await response.json()) as BridgeModelsResponse;
-      setModelsState(normalizeModelList(updated.models));
-      setModelsDirty(false);
-      setModelsFeedback(t(locale, "modelsSaved"));
-    } catch {
-      setModelsFeedback(t(locale, "modelsSaveFailed"));
-    }
-  }
-
-  function updateDraftModelId(adapter: BridgeAdapter, value: string): void {
-    setDraftModelIdByAdapter((previous) => ({ ...previous, [adapter]: value }));
-  }
-
-  function updateDraftModelLabel(adapter: BridgeAdapter, value: string): void {
-    setDraftModelLabelByAdapter((previous) => ({ ...previous, [adapter]: value }));
-  }
-
   async function openChatPage(): Promise<void> {
     const chatUrl = chrome.runtime.getURL("src/ui/sidepanel/index.html");
     window.location.href = chatUrl;
   }
 
-  const sectionItems: Array<{
-    key: SettingsSection;
-    labelKey:
-      | "settingsSectionGeneral"
-      | "settingsSectionConnections"
-      | "settingsSectionModels"
-      | "settingsSectionMemories";
-    descriptionKey:
-      | "settingsSectionGeneralDescription"
-      | "settingsSectionConnectionsDescription"
-      | "settingsSectionModelsDescription"
-      | "settingsSectionMemoriesDescription";
-  }> = [
-    {
-      key: "general",
-      labelKey: "settingsSectionGeneral",
-      descriptionKey: "settingsSectionGeneralDescription"
-    },
-    {
-      key: "connections",
-      labelKey: "settingsSectionConnections",
-      descriptionKey: "settingsSectionConnectionsDescription"
-    },
-    {
-      key: "models",
-      labelKey: "settingsSectionModels",
-      descriptionKey: "settingsSectionModelsDescription"
-    },
-    {
-      key: "memories",
-      labelKey: "settingsSectionMemories",
-      descriptionKey: "settingsSectionMemoriesDescription"
-    }
-  ];
-
   return (
     <main className="surf-settings-shell">
-      <header className="surf-settings-header">
-        <div className="grid gap-0.5">
-          <h1 className="surf-settings-title">{t(locale, "settingsTitle")}</h1>
-          <p className="text-xs text-muted-foreground">{t(locale, "settingsDescription")}</p>
-        </div>
-        <Button type="button" variant="outline" onClick={() => void openChatPage()}>
-          {t(locale, "backToChat")}
-        </Button>
-      </header>
+      <SettingsHeader locale={locale} onBackToChat={() => void openChatPage()} />
 
       <div className="grid items-start gap-4 lg:grid-cols-[240px_minmax(0,1fr)]">
-        <aside className="surf-settings-nav">
-          <nav className="flex gap-1 overflow-x-auto lg:flex-col">
-            {sectionItems.map((item) => {
-              const active = activeSection === item.key;
-              return (
-                <button
-                  key={item.key}
-                  type="button"
-                  onClick={() => setActiveSection(item.key)}
-                  className="surf-settings-nav-item"
-                  data-active={active ? "true" : "false"}
-                >
-                  <div className="text-sm font-medium">{t(locale, item.labelKey)}</div>
-                  <div className={`text-[11px] ${active ? "text-primary-foreground/80" : "text-muted-foreground"}`}>
-                    {t(locale, item.descriptionKey)}
-                  </div>
-                </button>
-              );
-            })}
-          </nav>
-        </aside>
+        <SettingsNav
+          locale={locale}
+          activeSection={activeSection}
+          onSectionChange={setActiveSection}
+        />
 
         <section className="grid content-start gap-4">
           {activeSection === "general" ? (
-            <section className="surf-settings-card">
-              <div className="grid gap-1">
-                <h2 className="surf-settings-section-title">{t(locale, "settingsSectionGeneral")}</h2>
-                <p className="text-xs text-muted-foreground">
-                  {t(locale, "settingsSectionGeneralDescription")}
-                </p>
-              </div>
-
-              <div className="grid gap-2">
-                <span className="surf-field-label">{t(locale, "defaultAdapter")}</span>
-                <Select
-                  value={defaultAdapter}
-                  onValueChange={(value) => void updateDefaultAdapter(value as BridgeAdapter)}
-                >
-                  <SelectTrigger>
-                    <SelectValue placeholder={t(locale, "defaultAdapter")} />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {ADAPTER_OPTIONS.map((item) => (
-                      <SelectItem key={item} value={item}>
-                        {item}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-
-              <div className="grid gap-2">
-                <span className="surf-field-label">{t(locale, "language")}</span>
-                <Select
-                  value={locale}
-                  onValueChange={(value) => void updateLocale(value as Locale)}
-                >
-                  <SelectTrigger>
-                    <SelectValue placeholder={t(locale, "language")} />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="zh-CN">{t(locale, "languageZhCn")}</SelectItem>
-                    <SelectItem value="en-US">{t(locale, "languageEnUs")}</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-
-              <div className="grid gap-2">
-                <span className="surf-field-label">{t(locale, "sidebarMode")}</span>
-                <Select
-                  value={sidebarMode}
-                  onValueChange={(value) => void updateSidebarMode(value as UiSidebarMode)}
-                >
-                  <SelectTrigger>
-                    <SelectValue placeholder={t(locale, "sidebarMode")} />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="docked">{t(locale, "sidebarModeDocked")}</SelectItem>
-                    <SelectItem value="overlay">{t(locale, "sidebarModeOverlay")}</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-
-              <div className="grid gap-2">
-                <span className="surf-field-label">{t(locale, "theme")}</span>
-                <Select
-                  value={themeMode}
-                  onValueChange={(value) => void updateThemeMode(value as UiThemeMode)}
-                >
-                  <SelectTrigger>
-                    <SelectValue placeholder={t(locale, "theme")} />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="system">{t(locale, "themeSystem")}</SelectItem>
-                    <SelectItem value="light">{t(locale, "themeLight")}</SelectItem>
-                    <SelectItem value="dark">{t(locale, "themeDark")}</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-            </section>
+            <GeneralSection
+              locale={locale}
+              adapterOptions={ADAPTER_OPTIONS}
+              defaultAdapter={defaultAdapter}
+              sidebarMode={sidebarMode}
+              themeMode={themeMode}
+              onDefaultAdapterChange={(value) => void updateDefaultAdapter(value)}
+              onLocaleChange={(value) => void updateLocale(value)}
+              onSidebarModeChange={(value) => void updateSidebarMode(value)}
+              onThemeModeChange={(value) => void updateThemeMode(value)}
+            />
           ) : null}
 
           {activeSection === "connections" ? (
-            <>
-              <section className="surf-settings-card">
-                <div className="grid gap-1">
-                  <h2 className="surf-settings-section-title">{t(locale, "settingsSectionConnections")}</h2>
-                  <p className="text-xs text-muted-foreground">
-                    {t(locale, "settingsSectionConnectionsDescription")}
-                  </p>
-                </div>
-
-                <div className="grid gap-1">
-                  <span className="surf-field-label">{t(locale, "currentConnection")}</span>
-                  <Select
-                    {...(activeConnectionId ? { value: activeConnectionId } : {})}
-                    onValueChange={(value) => void updateActiveConnection(value)}
-                  >
-                    <SelectTrigger>
-                      <SelectValue placeholder={t(locale, "noConnection")} />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {connections.map((conn) => (
-                        <SelectItem key={conn.id} value={conn.id}>
-                          {conn.name}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                  <p className="text-xs text-muted-foreground">
-                    {activeConnection
-                      ? `${activeConnection.baseUrl} · ${activeConnection.userId ?? "-"}`
-                      : t(locale, "noConnection")}
-                  </p>
-                </div>
-              </section>
-
-              <section className="surf-settings-card">
-                <h3 className="surf-settings-section-title">{t(locale, "addConnection")}</h3>
-                <div className="grid gap-2">
-                  <span className="surf-field-label">{t(locale, "connectionName")}</span>
-                  <Input value={newConnName} onChange={(event) => setNewConnName(event.target.value)} />
-                </div>
-                <div className="grid gap-2">
-                  <span className="surf-field-label">{t(locale, "baseUrl")}</span>
-                  <Input value={newConnUrl} onChange={(event) => setNewConnUrl(event.target.value)} />
-                </div>
-                <div className="grid gap-2">
-                  <span className="surf-field-label">{t(locale, "connectionUserId")}</span>
-                  <Input value={newConnUserId} onChange={(event) => setNewConnUserId(event.target.value)} />
-                </div>
-                <div className="grid gap-2">
-                  <span className="surf-field-label">{t(locale, "token")}</span>
-                  <Input value={newConnToken} onChange={(event) => setNewConnToken(event.target.value)} />
-                </div>
-                <div>
-                  <Button type="button" onClick={() => void addConnection()}>
-                    {t(locale, "addConnection")}
-                  </Button>
-                </div>
-              </section>
-            </>
+            <ConnectionsSection
+              locale={locale}
+              connections={connections}
+              activeConnectionId={activeConnectionId}
+              activeConnection={activeConnection}
+              newConnName={newConnName}
+              newConnUrl={newConnUrl}
+              newConnUserId={newConnUserId}
+              newConnToken={newConnToken}
+              onActiveConnectionChange={(value) => void updateActiveConnection(value)}
+              onNewConnNameChange={setNewConnName}
+              onNewConnUrlChange={setNewConnUrl}
+              onNewConnUserIdChange={setNewConnUserId}
+              onNewConnTokenChange={setNewConnToken}
+              onAddConnection={() => void addConnection()}
+            />
           ) : null}
 
           {activeSection === "models" ? (
-            <section className="surf-settings-card">
-              <div className="grid gap-1">
-                <h2 className="surf-settings-section-title">{t(locale, "modelsTitle")}</h2>
-                <p className="text-xs text-muted-foreground">{t(locale, "modelsDescription")}</p>
-              </div>
-
-              {!activeConnection ? (
-                <p className="text-xs text-muted-foreground">{t(locale, "noConnection")}</p>
-              ) : (
-                <ModelsEditableTable
-                  locale={locale}
-                  adapters={MODEL_ADAPTER_OPTIONS}
-                  models={models}
-                  modelsDirty={modelsDirty}
-                  modelsFeedback={modelsFeedback}
-                  draftModelIdByAdapter={draftModelIdByAdapter}
-                  draftModelLabelByAdapter={draftModelLabelByAdapter}
-                  onDraftModelIdChange={updateDraftModelId}
-                  onDraftModelLabelChange={updateDraftModelLabel}
-                  onAddModel={addModel}
-                  onEditModel={editModel}
-                  onSetDefaultModel={setDefaultModel}
-                  onToggleModelEnabled={toggleModelEnabled}
-                  onUpdateModelReasoningEffort={updateModelReasoningEffort}
-                  onRemoveModel={removeModel}
-                  onSaveModels={() => void saveModelsToBackend()}
-                />
-              )}
-            </section>
+            <ModelsSection
+              locale={locale}
+              activeConnection={activeConnection}
+              adapters={MODEL_ADAPTER_OPTIONS}
+              models={models}
+              modelsDirty={modelsDirty}
+              modelsFeedback={modelsFeedback}
+              draftModelIdByAdapter={draftModelIdByAdapter}
+              draftModelLabelByAdapter={draftModelLabelByAdapter}
+              onDraftModelIdChange={updateDraftModelId}
+              onDraftModelLabelChange={updateDraftModelLabel}
+              onAddModel={addModel}
+              onEditModel={editModel}
+              onSetDefaultModel={setDefaultModel}
+              onToggleModelEnabled={toggleModelEnabled}
+              onUpdateModelReasoningEffort={updateModelReasoningEffort}
+              onRemoveModel={removeModel}
+              onSaveModels={() => void saveModelsToBackend()}
+            />
           ) : null}
 
           {activeSection === "memories" ? (
-            <section className="surf-settings-card">
-              <div className="flex flex-wrap items-start justify-between gap-2">
-                <div className="grid gap-1">
-                  <h2 className="surf-settings-section-title">{t(locale, "memoriesTitle")}</h2>
-                  <p className="text-xs text-muted-foreground">{t(locale, "memoriesDescription")}</p>
-                </div>
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  onClick={() => void loadMemories(activeConnection)}
-                  disabled={!activeConnection}
-                >
-                  {t(locale, "refresh")}
-                </Button>
-              </div>
-
-              {!activeConnection ? (
-                <p className="text-xs text-muted-foreground">{t(locale, "noConnection")}</p>
-              ) : memories.length === 0 ? (
-                <p className="text-xs text-muted-foreground">{t(locale, "memoriesEmpty")}</p>
-              ) : (
-                <div className="grid gap-2">
-                  {memories.map((memory) => (
-                    <article key={memory.id} className="surf-memory-card">
-                      <div className="flex flex-wrap items-center justify-between gap-2">
-                        <div className="flex flex-wrap items-center gap-2 text-xs">
-                          <span className="rounded-full bg-muted px-2 py-0.5">{memory.scope}</span>
-                          <span className="rounded-full bg-muted px-2 py-0.5">{memory.kind}</span>
-                          <span className="rounded-full bg-muted px-2 py-0.5">{memory.status}</span>
-                          <span className="text-muted-foreground">
-                            {Math.round(memory.confidence * 100)}%
-                          </span>
-                        </div>
-                        <span className="text-[11px] text-muted-foreground">
-                          {new Date(memory.updatedAt).toLocaleString()}
-                        </span>
-                      </div>
-                      <p className="whitespace-pre-wrap break-words text-sm leading-6">{memory.content}</p>
-                      {memory.scopeKey || memory.sessionId ? (
-                        <p className="truncate text-xs text-muted-foreground">
-                          {memory.scopeKey ?? memory.sessionId}
-                        </p>
-                      ) : null}
-                      <div className="flex flex-wrap gap-2">
-                        {memory.status === "candidate" ? (
-                          <>
-                            <Button type="button" size="sm" onClick={() => void confirmMemory(memory.id)}>
-                              {t(locale, "memoryConfirm")}
-                            </Button>
-                            <Button
-                              type="button"
-                              variant="outline"
-                              size="sm"
-                              onClick={() => void rejectMemory(memory.id)}
-                            >
-                              {t(locale, "memoryReject")}
-                            </Button>
-                          </>
-                        ) : null}
-                        <Button
-                          type="button"
-                          variant="outline"
-                          size="sm"
-                          onClick={() => void deleteMemory(memory.id)}
-                        >
-                          {t(locale, "memoryDelete")}
-                        </Button>
-                      </div>
-                    </article>
-                  ))}
-                </div>
-              )}
-
-              {memoriesFeedback ? (
-                <p className="text-xs text-muted-foreground">{memoriesFeedback}</p>
-              ) : null}
-            </section>
+            <MemoriesSection
+              locale={locale}
+              activeConnection={activeConnection}
+              memories={memories}
+              memoriesFeedback={memoriesFeedback}
+              onRefresh={() => void loadMemories(activeConnection)}
+              onConfirmMemory={(memoryId) => void confirmMemory(memoryId)}
+              onRejectMemory={(memoryId) => void rejectMemory(memoryId)}
+              onDeleteMemory={(memoryId) => void deleteMemory(memoryId)}
+            />
           ) : null}
         </section>
       </div>
@@ -944,63 +350,6 @@ export function App(): JSX.Element {
   );
 }
 
-function buildBridgeHeaders(
-  connection: BridgeConnection,
-  includeJsonContentType = false
-): Record<string, string> {
-  const headers: Record<string, string> = {
-    ...(connection.userId ? { "x-surf-user-id": connection.userId } : {})
-  };
-  if (includeJsonContentType) {
-    headers["content-type"] = "application/json";
-  }
-  if (connection.token) {
-    headers["x-surf-token"] = connection.token;
-  }
-  return headers;
-}
-
-function normalizeModelList(models: BridgeModel[]): BridgeModel[] {
-  const dedup = new Map<string, BridgeModel>();
-
-  for (const item of models) {
-    const id = item.id.trim();
-    if (!id) {
-      continue;
-    }
-    const key = `${item.adapter}::${id}`;
-    const normalized: BridgeModel = {
-      id,
-      adapter: item.adapter,
-      label: item.label.trim() || id,
-      enabled: item.enabled,
-      isDefault: item.isDefault,
-      ...(item.adapter === "codex" && item.modelReasoningEffort
-        ? { modelReasoningEffort: item.modelReasoningEffort }
-        : {})
-    };
-    dedup.set(key, normalized);
-  }
-
-  return [...dedup.values()].sort((a, b) => {
-    const adapterCmp = a.adapter.localeCompare(b.adapter);
-    if (adapterCmp !== 0) {
-      return adapterCmp;
-    }
-    if (a.isDefault !== b.isDefault) {
-      return a.isDefault ? -1 : 1;
-    }
-    return a.label.localeCompare(b.label);
-  });
-}
-
 function normalizeSidebarMode(value: unknown): UiSidebarMode {
   return value === "overlay" ? "overlay" : "docked";
-}
-
-function resolveSettingsSection(raw: string): SettingsSection | undefined {
-  if (SETTINGS_SECTIONS.includes(raw as SettingsSection)) {
-    return raw as SettingsSection;
-  }
-  return undefined;
 }
