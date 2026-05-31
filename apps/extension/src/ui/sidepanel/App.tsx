@@ -7,8 +7,6 @@ import {
 } from "react";
 import { STORAGE_KEYS } from "@surf-ai/shared";
 import type {
-  BridgeAuditEvent,
-  BridgeAuditEventsResponse,
   BridgeCapabilitiesResponse,
   BridgeChatRequest,
   BridgeConnection,
@@ -39,7 +37,6 @@ import type {
   SelectionPayload,
   UiSidebarMode,
   UiThemeMode,
-  UiStatusBadgeLevel,
   UiToExtensionMessage,
   UiToExtensionResponse
 } from "@surf-ai/shared";
@@ -76,6 +73,7 @@ import { SessionSidebar } from "./components/SessionSidebar";
 import { SidepanelTopbar } from "./components/SidepanelTopbar";
 import { useComposerAttachments } from "./hooks/useComposerAttachments";
 import { useKeyboardScroll } from "./hooks/useKeyboardScroll";
+import { useRuntimeAlert } from "./hooks/useRuntimeAlert";
 import {
   fetchBridgeJson,
   fetchLatestSessionRun,
@@ -139,20 +137,6 @@ const AUTO_MODEL_LABEL = "Auto (CLI default)";
 const MAX_ATTACHMENTS_PER_MESSAGE = 10;
 const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;
 type SessionMode = "backend" | "local";
-type RuntimeAlertLevel = "warn" | "error";
-type RuntimeAlertCode =
-  | "backend_unreachable"
-  | "auth_failed"
-  | "rate_limited"
-  | "bridge_request_failed";
-
-interface RuntimeAlert {
-  code: RuntimeAlertCode;
-  level: RuntimeAlertLevel;
-  message: string;
-  statusCode?: number;
-  updatedAt: number;
-}
 
 export function App(): JSX.Element {
   const [locale, setLocaleState] = useState<Locale>(resolveLocale(navigator.language));
@@ -177,8 +161,6 @@ export function App(): JSX.Element {
   const [modelByAdapter, setModelByAdapter] = useState<
     Partial<Record<BridgeChatRequest["adapter"], string>>
   >({});
-  const [runtimeAlert, setRuntimeAlert] = useState<RuntimeAlert | undefined>();
-  const [recentAuditEvents, setRecentAuditEvents] = useState<BridgeAuditEvent[]>([]);
   const [pending, setPending] = useState(false);
   const [activeRun, setActiveRun] = useState<BridgeSessionRun | undefined>();
   const [runApprovals, setRunApprovals] = useState<BridgeRunApproval[]>([]);
@@ -267,6 +249,12 @@ export function App(): JSX.Element {
     () => connections.find((item) => item.id === activeConnectionId),
     [connections, activeConnectionId]
   );
+  const {
+    runtimeAlert,
+    recentAuditEvents,
+    reportRuntimeAlert,
+    clearRuntimeAlert
+  } = useRuntimeAlert(activeConnection);
   const previewMessage = useMemo(
     () => messages.find((item) => item.id === previewMessageId),
     [messages, previewMessageId]
@@ -382,36 +370,6 @@ export function App(): JSX.Element {
     }
     return capabilities.tts.minimax.enabled && capabilities.tts.minimax.configured;
   }, [capabilities]);
-
-  const reportRuntimeAlert = (
-    code: RuntimeAlertCode,
-    level: RuntimeAlertLevel,
-    message: string,
-    statusCode?: number
-  ): void => {
-    setRuntimeAlert((previous) => {
-      if (
-        previous &&
-        previous.code === code &&
-        previous.level === level &&
-        previous.message === message &&
-        previous.statusCode === statusCode
-      ) {
-        return previous;
-      }
-      return {
-        code,
-        level,
-        message,
-        ...(typeof statusCode === "number" ? { statusCode } : {}),
-        updatedAt: Date.now()
-      };
-    });
-  };
-
-  const clearRuntimeAlert = (): void => {
-    setRuntimeAlert(undefined);
-  };
 
   useEffect(() => {
     void bootstrap();
@@ -1318,51 +1276,6 @@ export function App(): JSX.Element {
   useEffect(() => {
     void bootstrapModels(activeConnection);
   }, [activeConnection]);
-
-  useEffect(() => {
-    const level: UiStatusBadgeLevel =
-      runtimeAlert?.level === "error"
-        ? "error"
-        : runtimeAlert?.level === "warn"
-          ? "warn"
-          : "clear";
-
-    void chrome.runtime
-      .sendMessage({
-        type: "set_status_badge",
-        level,
-        ...(level !== "clear" ? { text: "!" } : {})
-      } satisfies UiToExtensionMessage)
-      .catch(() => undefined);
-  }, [runtimeAlert?.code, runtimeAlert?.level]);
-
-  useEffect(() => {
-    if (!runtimeAlert || !activeConnection) {
-      setRecentAuditEvents([]);
-      return;
-    }
-
-    let cancelled = false;
-
-    const load = async (): Promise<void> => {
-      const response = await fetchBridgeJson<BridgeAuditEventsResponse>(
-        activeConnection,
-        "/audit/events?limit=5"
-      ).catch(() => ({ ok: false as const, status: 0 }));
-
-      if (cancelled || !response.ok) {
-        return;
-      }
-
-      setRecentAuditEvents(response.data.events);
-    };
-
-    void load();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [runtimeAlert?.code, activeConnection?.id, activeConnection?.baseUrl, activeConnection?.userId, activeConnection?.token]);
 
   useEffect(() => {
     if (sessionMode !== "backend" || !activeConnection) {
