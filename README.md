@@ -97,7 +97,8 @@ pnpm dev:extension
   - `MiniMax TTS` integration via bridge `/tts` (API key only in bridge env)
 - Current strategy:
   - Local-Agent-first backend strategy (`codex` / `claude`)
-  - Provider-mode adapters are compatibility placeholders in current version
+  - `openai-compatible` is a real API runtime
+  - `anthropic` / `gemini` are compatibility placeholders in current version
 
 ## Development Commands
 
@@ -113,6 +114,28 @@ pnpm cli:smoke
 pnpm gstack:setup
 pnpm gstack:check
 ```
+
+## Extension E2E
+
+```bash
+pnpm build
+pnpm e2e:extension
+```
+
+Visual debug mode:
+
+```bash
+SURF_AI_E2E_HEADLESS=0 SURF_AI_E2E_STEP_DELAY_MS=1000 pnpm e2e:extension
+```
+
+Useful options:
+
+- `SURF_AI_E2E_CHROME=/path/to/chrome`
+- `SURF_AI_E2E_HEADLESS=0`
+- `SURF_AI_E2E_STEP_DELAY_MS=1000`
+- `SURF_AI_E2E_ARTIFACT_DIR=/tmp/surf-ai-extension-e2e-artifacts`
+
+On failure, the E2E script captures a PNG screenshot to `SURF_AI_E2E_ARTIFACT_DIR`.
 
 ## CLI Client
 

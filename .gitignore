@@ -17,6 +17,9 @@ coverage
 .vscode
 .idea
 
+# Temp
+temp/
+
 # Bridge local state
 .bridge-data
 apps/bridge/data/
