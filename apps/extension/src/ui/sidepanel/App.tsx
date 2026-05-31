@@ -29,13 +29,8 @@ import type {
   ChatSession,
   ExtensionToUiMessage,
   BridgeTtsResponse,
-  PageContentPayload,
-  QuickAction,
-  SelectionPayload,
   UiSidebarMode,
   UiThemeMode,
-  UiToExtensionMessage,
-  UiToExtensionResponse
 } from "@surf-ai/shared";
 import { deleteMessagesBySession, listMessagesBySession, saveMessage, saveMessages } from "../../lib/db";
 import { openBridgeRunStream, type BridgeRunStreamHandle } from "../../lib/bridge-sse";
@@ -70,6 +65,7 @@ import { SessionSidebar } from "./components/SessionSidebar";
 import { SidepanelTopbar } from "./components/SidepanelTopbar";
 import { useComposerAttachments } from "./hooks/useComposerAttachments";
 import { useKeyboardScroll } from "./hooks/useKeyboardScroll";
+import { usePageContext } from "./hooks/usePageContext";
 import { useRuntimeAlert } from "./hooks/useRuntimeAlert";
 import { useSidepanelModels } from "./hooks/useSidepanelModels";
 import {
@@ -120,13 +116,6 @@ import { Textarea } from "../components/ui/textarea";
 import { Sheet, SheetContent } from "../components/ui/sheet";
 import { Sidebar, SidebarInset, SidebarProvider } from "../components/ui/sidebar";
 
-const ACTION_PROMPT_PREFIX: Record<QuickAction, string> = {
-  summarize: "Please summarize this content:",
-  translate: "Please translate this content into Chinese and English:",
-  read_aloud: "Please prepare this content for read-aloud:",
-  ask: "Please help answer based on this content:"
-};
-
 const BACKEND_DRAFT_SESSION_ID = "__backend_draft__";
 const AUTO_MODEL_ID = "auto";
 const MAX_ATTACHMENTS_PER_MESSAGE = 10;
@@ -163,11 +152,6 @@ export function App(): JSX.Element {
   const [runReasoningText, setRunReasoningText] = useState("");
   const [runCommandOutput, setRunCommandOutput] = useState("");
   const [runStreamError, setRunStreamError] = useState<string | undefined>();
-  const [extractingPage, setExtractingPage] = useState(false);
-  const [extractError, setExtractError] = useState<string | undefined>();
-  const [pageContent, setPageContent] = useState<PageContentPayload | undefined>();
-  const [includePageContext, setIncludePageContext] = useState(false);
-  const [selectionContext, setSelectionContext] = useState<SelectionPayload | undefined>();
   const [rawViewByMessageId, setRawViewByMessageId] = useState<Record<string, boolean>>({});
   const [renameDialogOpen, setRenameDialogOpen] = useState(false);
   const [renameTargetSession, setRenameTargetSession] = useState<ChatSession | null>(null);
@@ -264,6 +248,25 @@ export function App(): JSX.Element {
     messages,
     reportRuntimeAlert,
     clearRuntimeAlert
+  });
+  const {
+    extractingPage,
+    extractError,
+    pageContent,
+    includePageContext,
+    selectionContext,
+    setIncludePageContext,
+    consumePendingSelectionPayload,
+    applySelectionPayload,
+    applyPageContentPayload,
+    applyPageContentError,
+    extractCurrentPage,
+    clearExtractedPageContent,
+    clearSelectionAndPageContext
+  } = usePageContext({
+    input,
+    setInput,
+    requestTts
   });
   const previewMessage = useMemo(
     () => messages.find((item) => item.id === previewMessageId),
@@ -391,14 +394,12 @@ export function App(): JSX.Element {
       }
 
       if (message?.type === "page_content_payload") {
-        setPageContent(message.payload);
-        setExtractError(undefined);
-        setIncludePageContext(false);
+        applyPageContentPayload(message.payload);
         return;
       }
 
       if (message?.type === "page_content_error") {
-        setExtractError(message.payload.message);
+        applyPageContentError(message.payload.message);
       }
     };
 
@@ -455,34 +456,6 @@ export function App(): JSX.Element {
     };
   }, [sidebarMode, sidebarCollapsed]);
 
-  async function consumePendingSelectionPayload(): Promise<void> {
-    try {
-      const activeTab = await getActiveTab();
-      const request: UiToExtensionMessage = {
-        type: "consume_pending_selection_payload",
-        ...(activeTab?.id ? { tabId: activeTab.id } : {})
-      };
-      const response = (await chrome.runtime.sendMessage(request)) as UiToExtensionResponse;
-      if (response?.ok && response.selectionPayload) {
-        applySelectionPayload(response.selectionPayload);
-      }
-    } catch {
-      // Ignore; sidepanel can still receive live runtime messages.
-    }
-  }
-
-  function applySelectionPayload(payload: SelectionPayload): void {
-    const text = `${ACTION_PROMPT_PREFIX[payload.action]}\n\n${payload.text}`;
-    setInput(text);
-    setSelectionContext(payload);
-    setPageContent(undefined);
-    setExtractError(undefined);
-    setIncludePageContext(false);
-    if (payload.action === "read_aloud") {
-      void requestTts(payload.text);
-    }
-  }
-
   useEffect(() => {
     if (!activeSessionId || isBackendDraftActive) {
       runStreamRef.current?.close();
@@ -504,18 +477,12 @@ export function App(): JSX.Element {
       setImagePreviewVisible(false);
       setImagePreviewIndex(0);
       setRawViewByMessageId({});
-      setSelectionContext(undefined);
-      setPageContent(undefined);
-      setExtractError(undefined);
-      setIncludePageContext(false);
+      clearSelectionAndPageContext();
       return;
     }
 
     setRawViewByMessageId({});
-    setSelectionContext(undefined);
-    setPageContent(undefined);
-    setExtractError(undefined);
-    setIncludePageContext(false);
+    clearSelectionAndPageContext();
     setImagePreviewVisible(false);
     setImagePreviewIndex(0);
     setRunApprovals([]);
@@ -1614,10 +1581,7 @@ export function App(): JSX.Element {
     if (sessionMode === "backend") {
       setActiveSessionId(BACKEND_DRAFT_SESSION_ID);
       setMessages([]);
-      setSelectionContext(undefined);
-      setPageContent(undefined);
-      setExtractError(undefined);
-      setIncludePageContext(false);
+      clearSelectionAndPageContext();
       return;
     }
 
@@ -1968,9 +1932,7 @@ export function App(): JSX.Element {
       setMessages((prev) => [...prev, errMessage]);
     } finally {
       setPending(false);
-      setPageContent(undefined);
-      setExtractError(undefined);
-      setIncludePageContext(false);
+      clearExtractedPageContent();
     }
   }
 
@@ -2128,9 +2090,7 @@ export function App(): JSX.Element {
       setMessages((prev) => [...prev, errMessage]);
     } finally {
       setPending(false);
-      setPageContent(undefined);
-      setExtractError(undefined);
-      setIncludePageContext(false);
+      clearExtractedPageContent();
     }
   }
 
@@ -2254,35 +2214,6 @@ export function App(): JSX.Element {
       void audio.play();
     } catch {
       // Keep silent for skeleton: chat flow should continue even if TTS is unavailable.
-    }
-  }
-
-  async function extractCurrentPage(): Promise<void> {
-    setExtractingPage(true);
-    setExtractError(undefined);
-
-    try {
-      const request: UiToExtensionMessage = {
-        type: "extract_active_tab_content",
-        maxChars: 100_000
-      };
-      const response = (await chrome.runtime.sendMessage(request)) as UiToExtensionResponse;
-      if (!response?.ok) {
-        throw new Error(response?.error || "extract_failed");
-      }
-      if (response.payload) {
-        setPageContent(response.payload);
-        setIncludePageContext(false);
-      }
-      if (!input.trim()) {
-        setInput("Please summarize the current tab using extracted full-page content.");
-      }
-    } catch (error) {
-      setExtractError(error instanceof Error ? error.message : "extract_failed");
-      setPageContent(undefined);
-      setIncludePageContext(false);
-    } finally {
-      setExtractingPage(false);
     }
   }
 
@@ -2762,11 +2693,6 @@ function createSession(title: string): ChatSession {
 
 function formatAdapterModel(adapter: string, model: string | undefined): string {
   return `${adapter} / ${model?.trim() || AUTO_MODEL_ID}`;
-}
-
-async function getActiveTab(): Promise<chrome.tabs.Tab | undefined> {
-  const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
-  return tabs[0];
 }
 
 function sleep(ms: number): Promise<void> {
