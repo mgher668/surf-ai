@@ -14,7 +14,7 @@ import type {
   UiSidebarMode,
   UiThemeMode
 } from "@surf-ai/shared";
-import { deleteMessagesBySession, listMessagesBySession } from "../../lib/db";
+import { listMessagesBySession } from "../../lib/db";
 import {
   getActiveConnectionId,
   getActiveSessionId as getStoredActiveSessionId,
@@ -49,17 +49,15 @@ import { useConversationPreview } from "./hooks/useConversationPreview";
 import { useKeyboardScroll } from "./hooks/useKeyboardScroll";
 import { usePageContext } from "./hooks/usePageContext";
 import { useRuntimeAlert } from "./hooks/useRuntimeAlert";
+import { useSessionActions } from "./hooks/useSessionActions";
 import { useSidepanelModels } from "./hooks/useSidepanelModels";
 import { useSidepanelRuns } from "./hooks/useSidepanelRuns";
 import { useSidepanelSend } from "./hooks/useSidepanelSend";
 import { useSidepanelTts } from "./hooks/useSidepanelTts";
 import {
-  deleteSessionOnBackend,
   fetchSessionsFromBackend,
   loadMessagesFromBackend,
-  renameSessionOnBackend,
-  updateSessionAdapterOnBackend,
-  updateSessionStarOnBackend
+  updateSessionAdapterOnBackend
 } from "./api/sessionApi";
 import {
   areSessionListsEqual,
@@ -114,10 +112,6 @@ export function App(): JSX.Element {
   const [input, setInput] = useState("");
   const [adapter, setAdapter] = useState<BridgeChatRequest["adapter"]>("mock");
   const [pending, setPending] = useState(false);
-  const [renameDialogOpen, setRenameDialogOpen] = useState(false);
-  const [renameTargetSession, setRenameTargetSession] = useState<ChatSession | null>(null);
-  const [renameTitleInput, setRenameTitleInput] = useState("");
-  const [renameError, setRenameError] = useState<string | undefined>();
   const [isAnyDropdownMenuOpen, setIsAnyDropdownMenuOpen] = useState(false);
   const [isAdapterSelectOpen, setIsAdapterSelectOpen] = useState(false);
   const [loadedMessagesSessionId, setLoadedMessagesSessionId] = useState<string | undefined>();
@@ -213,6 +207,35 @@ export function App(): JSX.Element {
     input,
     setInput,
     requestTts
+  });
+  const {
+    renameDialogOpen,
+    renameTargetSession,
+    renameTitleInput,
+    setRenameTitleInput,
+    renameError,
+    setRenameError,
+    openRenameDialog,
+    closeRenameDialog,
+    submitRenameDialog,
+    createNewSession,
+    rememberSessionAdapter,
+    toggleStarSession,
+    deleteSession
+  } = useSessionActions({
+    locale,
+    sessionMode,
+    backendDraftSessionId: BACKEND_DRAFT_SESSION_ID,
+    activeConnection,
+    sessions,
+    setSessionsState,
+    activeSessionId,
+    setActiveSessionId,
+    setMessages,
+    clearSelectionAndPageContext,
+    createLocalSession: createSession,
+    reportRuntimeAlert,
+    clearRuntimeAlert
   });
   const {
     activeRun,
@@ -552,20 +575,6 @@ export function App(): JSX.Element {
     };
   }, [visibleMessages, activeSessionId, isBackendDraftActive, loadedMessagesSessionId]);
 
-  function openRenameDialog(session: ChatSession): void {
-    setRenameTargetSession(session);
-    setRenameTitleInput(session.title);
-    setRenameError(undefined);
-    setRenameDialogOpen(true);
-  }
-
-  function closeRenameDialog(): void {
-    setRenameDialogOpen(false);
-    setRenameTargetSession(null);
-    setRenameTitleInput("");
-    setRenameError(undefined);
-  }
-
   useEffect(() => {
     if (!activeSessionId) {
       return;
@@ -770,213 +779,6 @@ export function App(): JSX.Element {
       }
       return storedSessions[0]?.id;
     });
-  }
-
-  async function createNewSession(): Promise<void> {
-    if (sessionMode === "backend") {
-      setActiveSessionId(BACKEND_DRAFT_SESSION_ID);
-      setMessages([]);
-      clearSelectionAndPageContext();
-      return;
-    }
-
-    const session = createSession(`Chat ${sessions.length + 1}`);
-    const next = [session, ...sessions];
-    await setSessions(next);
-    setSessionsState(next);
-    setActiveSessionId(session.id);
-  }
-
-  function rememberSessionAdapter(sessionId: string, nextAdapter: BridgeChatRequest["adapter"]): void {
-    if (sessionId === BACKEND_DRAFT_SESSION_ID) {
-      return;
-    }
-    setSessionsState((prev) => {
-      let changed = false;
-      const next = prev.map((item) => {
-        if (item.id !== sessionId || item.lastAdapter === nextAdapter) {
-          return item;
-        }
-        changed = true;
-        return {
-          ...item,
-          lastAdapter: nextAdapter
-        };
-      });
-      if (!changed) {
-        return prev;
-      }
-      void setSessions(next);
-      return next;
-    });
-  }
-
-  async function toggleStarSession(id: string): Promise<void> {
-    if (sessionMode === "backend" && activeConnection) {
-      const current = sessions.find((item) => item.id === id);
-      if (!current) {
-        return;
-      }
-      const updated = await updateSessionStarOnBackend(
-        activeConnection,
-        id,
-        !current.starred,
-        getBackendRuntimeHandlers()
-      );
-      if (updated) {
-        setSessionsState((prev) => {
-          const next = prev.map((item) => (item.id === id ? updated : item));
-          void setSessions(next);
-          return next;
-        });
-      }
-      return;
-    }
-
-    const next = sessions.map((item) => (item.id === id ? { ...item, starred: !item.starred, updatedAt: Date.now() } : item));
-    await setSessions(next);
-    setSessionsState(next);
-  }
-
-  async function renameSession(session: ChatSession, title: string): Promise<boolean> {
-    if (!title || title === session.title) {
-      return true;
-    }
-
-    if (sessionMode === "backend") {
-      if (!activeConnection) {
-        setMessages((prev) => [
-          ...prev,
-          {
-            id: crypto.randomUUID(),
-            sessionId: activeSessionId ?? session.id,
-            role: "assistant",
-            content: "Error: no active bridge connection. Please add/select one in Settings first.",
-            createdAt: Date.now()
-          }
-        ]);
-        return false;
-      }
-
-      const updated = await renameSessionOnBackend(
-        activeConnection,
-        session.id,
-        title,
-        getBackendRuntimeHandlers()
-      );
-      if (!updated) {
-        setMessages((prev) => [
-          ...prev,
-          {
-            id: crypto.randomUUID(),
-            sessionId: activeSessionId ?? session.id,
-            role: "assistant",
-            content: `${t(locale, "renameSessionFailed")}.`,
-            createdAt: Date.now()
-          }
-        ]);
-        return false;
-      }
-
-      setSessionsState((prev) => {
-        const next = prev.map((item) => (item.id === session.id ? updated : item));
-        void setSessions(next);
-        return next;
-      });
-      return true;
-    }
-
-    const next = sessions.map((item) =>
-      item.id === session.id
-        ? {
-            ...item,
-            title,
-            updatedAt: Date.now()
-          }
-        : item
-    );
-    await setSessions(next);
-    setSessionsState(next);
-    return true;
-  }
-
-  async function submitRenameDialog(): Promise<void> {
-    if (!renameTargetSession) {
-      closeRenameDialog();
-      return;
-    }
-
-    const title = renameTitleInput.trim();
-    if (!title) {
-      setRenameError(t(locale, "renameSessionEmpty"));
-      return;
-    }
-    if (title.length > 120) {
-      setRenameError(t(locale, "renameSessionTooLong"));
-      return;
-    }
-
-    const renamed = await renameSession(renameTargetSession, title);
-    if (!renamed) {
-      setRenameError(t(locale, "renameSessionFailed"));
-      return;
-    }
-
-    closeRenameDialog();
-  }
-
-  async function deleteSession(id: string): Promise<void> {
-    const confirmed = window.confirm(t(locale, "deleteSessionConfirm"));
-    if (!confirmed) {
-      return;
-    }
-
-    if (sessionMode === "backend") {
-      if (!activeConnection) {
-        setMessages((prev) => [
-          ...prev,
-          {
-            id: crypto.randomUUID(),
-            sessionId: activeSessionId ?? "pending",
-            role: "assistant",
-            content: "Error: no active bridge connection. Please add/select one in Settings first.",
-            createdAt: Date.now()
-          }
-        ]);
-        return;
-      }
-      const deleted = await deleteSessionOnBackend(activeConnection, id, getBackendRuntimeHandlers());
-      if (!deleted) {
-        setMessages((prev) => [
-          ...prev,
-          {
-            id: crypto.randomUUID(),
-            sessionId: activeSessionId ?? "pending",
-            role: "assistant",
-            content: "Error: failed to delete backend session.",
-            createdAt: Date.now()
-          }
-        ]);
-        return;
-      }
-
-      await deleteMessagesBySession(id).catch(() => undefined);
-      setSessionsState((prev) => {
-        const filtered = prev.filter((item) => item.id !== id);
-        void setSessions(filtered);
-        return filtered;
-      });
-      setActiveSessionId(BACKEND_DRAFT_SESSION_ID);
-      return;
-    }
-
-    await deleteMessagesBySession(id).catch(() => undefined);
-    const replacement = createSession("New chat");
-    const filtered = sessions.filter((item) => item.id !== id);
-    const next = [replacement, ...filtered];
-    await setSessions(next);
-    setSessionsState(next);
-    setActiveSessionId(replacement.id);
   }
 
   async function openStandalonePage(): Promise<void> {
