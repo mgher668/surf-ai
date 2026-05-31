@@ -8,7 +8,7 @@ import type { Mermaid } from "mermaid";
 import "katex/dist/katex.min.css";
 import "./markdown-message.css";
 
-interface MarkdownMessageProps {
+export interface MarkdownMessageProps {
   content: string;
 }
 

@@ -6,7 +6,7 @@ import {
   DialogContent,
   DialogTitle
 } from "../../components/ui/dialog";
-import { MarkdownMessage } from "../MarkdownMessage";
+import { LazyMarkdownMessage } from "./LazyMarkdownMessage";
 import {
   createSessionGalleryImageKey,
   extractImageParts,
@@ -108,7 +108,7 @@ export function MessagePreviewDialog({
                           <code>{previewMessage.content}</code>
                         </pre>
                       ) : (
-                        <MarkdownMessage content={previewMessage.content} />
+                        <LazyMarkdownMessage content={previewMessage.content} />
                       )}
                       {imageParts.length > 0 ? (
                         <div style={previewImageGridStyle}>

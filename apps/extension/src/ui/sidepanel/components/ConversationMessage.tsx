@@ -1,7 +1,7 @@
 import type { BridgeConnection, ChatMessage } from "@surf-ai/shared";
 import { type Locale, t } from "../../common/i18n";
 import { Badge } from "../../components/ui/badge";
-import { MarkdownMessage } from "../MarkdownMessage";
+import { LazyMarkdownMessage } from "./LazyMarkdownMessage";
 import {
   createSessionGalleryImageKey,
   extractImageParts,
@@ -86,7 +86,7 @@ export function ConversationMessage({
               <code>{msg.content}</code>
             </pre>
           ) : (
-            <MarkdownMessage content={msg.content} />
+            <LazyMarkdownMessage content={msg.content} />
           )}
           {imageParts.length > 0 ? (
             <div style={messageImageGridStyle}>
