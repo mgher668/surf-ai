@@ -8,9 +8,6 @@ import {
   type DragEvent as ReactDragEvent,
   type KeyboardEvent as ReactKeyboardEvent
 } from "react";
-import { Icon } from "@iconify/react/dist/offline";
-import { PhotoSlider } from "react-photo-view";
-import deleteOutline from "@iconify-icons/mdi/delete-outline";
 import { STORAGE_KEYS } from "@surf-ai/shared";
 import type {
   BridgeAuditEvent,
@@ -70,10 +67,14 @@ import {
 } from "../../lib/storage";
 import { type Locale, resolveLocale, t } from "../common/i18n";
 import { applyTheme, listenSystemThemeChange, normalizeThemeMode } from "../common/theme";
+import { ComposerAttachmentPreview } from "./components/ComposerAttachmentPreview";
+import { ImagePreviewSliders } from "./components/ImagePreviewSliders";
 import { ConversationMessage } from "./components/ConversationMessage";
 import { MessagePreviewDialog } from "./components/MessagePreviewDialog";
+import { PageContextBanner } from "./components/PageContextBanner";
 import { ProcessTimelineEntry } from "./components/ProcessTimelineEntry";
 import { RenameSessionDialog } from "./components/RenameSessionDialog";
+import { RunStatusBanner } from "./components/RunStatusBanner";
 import { SessionSidebar } from "./components/SessionSidebar";
 import { SidepanelTopbar } from "./components/SidepanelTopbar";
 import {
@@ -93,9 +94,7 @@ import {
   buildRunArtifacts,
   buildSessionGalleryImages,
   buildSessionProcessTimelineItems,
-  createComposerGalleryImageKey,
   createEmptyStreamAssistantByPhase,
-  formatRunStatus,
   isRunInFlight,
   mergeAssistantCompletedContent,
   mergeSessionsWithLocalAdapters,
@@ -109,24 +108,11 @@ import {
   type StreamAssistantByPhase
 } from "./utils/sidepanel-helpers";
 import {
-  composerAttachmentOpenButtonStyle,
-  composerAttachmentPreviewGridStyle,
-  composerAttachmentPreviewImageStyle,
-  composerAttachmentPreviewItemStyle,
-  composerAttachmentPreviewSectionStyle,
-  composerAttachmentRemoveButtonStyle,
   dragOverlayCardStyle,
   dragOverlayStyle,
   hintErrorStyle,
   hintInfoStyle,
-  hintWarnStyle,
-  inlineCheckboxLabelStyle,
-  messageImageButtonStyle,
-  messageImageGridStyle,
-  messageImageStyle,
-  photoSliderCounterStyle,
-  photoSliderNameStyle,
-  photoSliderOverlayStyle
+  hintWarnStyle
 } from "./styles";
 import { Button } from "../components/ui/button";
 import {
@@ -285,10 +271,6 @@ export function App(): JSX.Element {
     () => sessionGalleryImages.map((item) => ({ key: item.key, src: item.src })),
     [sessionGalleryImages]
   );
-  const activeGalleryImage =
-    sessionGalleryImages.length > 0
-      ? sessionGalleryImages[Math.min(imagePreviewIndex, sessionGalleryImages.length - 1)]
-      : undefined;
   const composerGalleryImages = useMemo(
     () => buildComposerGalleryImages(composerAttachments, locale),
     [composerAttachments, locale]
@@ -304,10 +286,6 @@ export function App(): JSX.Element {
     () => composerGalleryImages.map((item) => ({ key: item.key, src: item.src })),
     [composerGalleryImages]
   );
-  const activeComposerGalleryImage =
-    composerGalleryImages.length > 0
-      ? composerGalleryImages[Math.min(composerImagePreviewIndex, composerGalleryImages.length - 1)]
-      : undefined;
   const streamAssistantDisplayText = useMemo(
     () => pickDisplayAssistantText(streamAssistantByPhase),
     [streamAssistantByPhase]
@@ -3114,62 +3092,24 @@ async function bootstrap(): Promise<void> {
 
         <footer className="surf-composer">
           {pageContent ? (
-            <div style={hintInfoStyle}>
-              {t(locale, "pageContextReady")} · {pageContent.source} · {pageContent.charCount} chars
-              <label style={inlineCheckboxLabelStyle}>
-                <input
-                  type="checkbox"
-                  checked={includePageContext}
-                  onChange={(event) => setIncludePageContext(event.target.checked)}
-                />
-                {t(locale, "includePageContext")}
-              </label>
-            </div>
+            <PageContextBanner
+              locale={locale}
+              pageContent={pageContent}
+              includePageContext={includePageContext}
+              onIncludePageContextChange={setIncludePageContext}
+            />
           ) : null}
           {activeRun &&
           activeRun.sessionId === activeSessionId &&
           (isRunInFlight(activeRun.status) ||
             activeRun.status === "FAILED" ||
             activeRun.status === "CANCELLED") ? (
-            <div
-              style={
-                activeRun.status === "FAILED"
-                  ? hintErrorStyle
-                  : activeRun.status === "CANCELLED"
-                    ? hintWarnStyle
-                    : hintInfoStyle
-              }
-            >
-              <div className="flex items-center justify-between gap-2">
-                <span className="text-xs">
-                  {t(locale, "runStatusLabel")} {formatRunStatus(locale, activeRun.status)} ·{" "}
-                  {formatAdapterModel(activeRun.adapter, activeRun.model)}
-                </span>
-                {isRunInFlight(activeRun.status) ? (
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    className="h-7 px-2 text-xs"
-                    onClick={() => void cancelActiveRunOnBackend()}
-                    disabled={activeRun.status === "CANCELLING"}
-                  >
-                    {activeRun.status === "CANCELLING" ? t(locale, "stopping") : t(locale, "stopRun")}
-                  </Button>
-                ) : null}
-              </div>
-              {activeRun.errorMessage &&
-              (activeRun.status === "FAILED" || activeRun.status === "CANCELLED") ? (
-                <div style={{ marginTop: 4, fontSize: 11, whiteSpace: "pre-wrap" }}>
-                  {activeRun.errorMessage}
-                </div>
-              ) : null}
-              {runStreamError ? (
-                <div style={{ marginTop: 4, fontSize: 11, whiteSpace: "pre-wrap" }}>
-                  {runStreamError}
-                </div>
-              ) : null}
-            </div>
+            <RunStatusBanner
+              activeRun={activeRun}
+              runStreamError={runStreamError}
+              locale={locale}
+              onCancelActiveRun={cancelActiveRunOnBackend}
+            />
           ) : null}
           <div className="surf-composer-bar">
             <div className="surf-composer-controls">
@@ -3275,44 +3215,13 @@ async function bootstrap(): Promise<void> {
             </div>
           </div>
           {composerAttachments.length > 0 ? (
-            <div style={composerAttachmentPreviewSectionStyle}>
-              <div className="text-xs text-muted-foreground">
-                {t(locale, "composerAttachmentsLabel")} ({composerAttachments.length}/{MAX_ATTACHMENTS_PER_MESSAGE})
-              </div>
-              <div style={composerAttachmentPreviewGridStyle}>
-                {composerAttachments.map((attachment, index) => (
-                  <div key={attachment.id} style={composerAttachmentPreviewItemStyle}>
-                    <button
-                      type="button"
-                      onClick={() =>
-                        openComposerImagePreview(
-                          createComposerGalleryImageKey(attachment.id, index)
-                        )
-                      }
-                      style={composerAttachmentOpenButtonStyle}
-                      title={attachment.file.name || `${t(locale, "composerImagePreviewAltPrefix")} ${index + 1}`}
-                    >
-                      <img
-                        src={attachment.previewUrl}
-                        alt={`${t(locale, "composerImagePreviewAltPrefix")} ${index + 1}`}
-                        style={composerAttachmentPreviewImageStyle}
-                      />
-                    </button>
-                    <button
-                      type="button"
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        removeComposerAttachment(attachment.id);
-                      }}
-                      style={composerAttachmentRemoveButtonStyle}
-                      aria-label={t(locale, "composerRemoveImage")}
-                    >
-                      <Icon icon={deleteOutline} width={14} height={14} />
-                    </button>
-                  </div>
-                ))}
-              </div>
-            </div>
+            <ComposerAttachmentPreview
+              locale={locale}
+              attachments={composerAttachments}
+              maxAttachmentsPerMessage={MAX_ATTACHMENTS_PER_MESSAGE}
+              onOpenImagePreview={openComposerImagePreview}
+              onRemoveAttachment={removeComposerAttachment}
+            />
           ) : null}
           {composerAttachmentError ? <div style={hintErrorStyle}>{composerAttachmentError}</div> : null}
           <Textarea
@@ -3386,57 +3295,24 @@ async function bootstrap(): Promise<void> {
         onSubmit={submitRenameDialog}
         onCancel={closeRenameDialog}
       />
-      <PhotoSlider
-        images={photoSliderImages}
-        visible={imagePreviewVisible}
-        index={imagePreviewIndex}
-        bannerVisible={false}
-        onClose={() => {
+      <ImagePreviewSliders
+        locale={locale}
+        sessionGalleryImages={sessionGalleryImages}
+        sessionPhotoSliderImages={photoSliderImages}
+        sessionImagePreviewVisible={imagePreviewVisible}
+        sessionImagePreviewIndex={imagePreviewIndex}
+        onCloseSessionImagePreview={() => {
           setImagePreviewVisible(false);
         }}
-        onIndexChange={(index) => {
-          setImagePreviewIndex(index);
-        }}
-        overlayRender={() => (
-          <div style={photoSliderOverlayStyle}>
-            <span style={photoSliderCounterStyle}>
-              {sessionGalleryImages.length === 0
-                ? "0 / 0"
-                : `${Math.min(imagePreviewIndex + 1, sessionGalleryImages.length)} / ${sessionGalleryImages.length}`}
-            </span>
-            <span style={photoSliderNameStyle}>
-              {activeGalleryImage?.fileName?.trim() ||
-                activeGalleryImage?.alt ||
-                t(locale, "composerImagePreviewAltPrefix")}
-            </span>
-          </div>
-        )}
-      />
-      <PhotoSlider
-        images={composerPhotoSliderImages}
-        visible={composerImagePreviewVisible}
-        index={composerImagePreviewIndex}
-        bannerVisible={false}
-        onClose={() => {
+        onSessionImagePreviewIndexChange={setImagePreviewIndex}
+        composerGalleryImages={composerGalleryImages}
+        composerPhotoSliderImages={composerPhotoSliderImages}
+        composerImagePreviewVisible={composerImagePreviewVisible}
+        composerImagePreviewIndex={composerImagePreviewIndex}
+        onCloseComposerImagePreview={() => {
           setComposerImagePreviewVisible(false);
         }}
-        onIndexChange={(index) => {
-          setComposerImagePreviewIndex(index);
-        }}
-        overlayRender={() => (
-          <div style={photoSliderOverlayStyle}>
-            <span style={photoSliderCounterStyle}>
-              {composerGalleryImages.length === 0
-                ? "0 / 0"
-                : `${Math.min(composerImagePreviewIndex + 1, composerGalleryImages.length)} / ${composerGalleryImages.length}`}
-            </span>
-            <span style={photoSliderNameStyle}>
-              {activeComposerGalleryImage?.fileName?.trim() ||
-                activeComposerGalleryImage?.alt ||
-                t(locale, "composerImagePreviewAltPrefix")}
-            </span>
-          </div>
-        )}
+        onComposerImagePreviewIndexChange={setComposerImagePreviewIndex}
       />
         </SidebarInset>
       </div>
