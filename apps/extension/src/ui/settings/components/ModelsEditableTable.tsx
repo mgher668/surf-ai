@@ -132,7 +132,7 @@ export function ModelsEditableTable({
       >
         <TabsList className="h-auto w-full justify-start gap-1 overflow-x-auto rounded-md p-1">
           {adapters.map((adapter) => (
-            <TabsTrigger key={adapter} value={adapter} className="uppercase">
+            <TabsTrigger key={adapter} value={adapter} className="font-mono text-[11px]">
               {adapter}
             </TabsTrigger>
           ))}
@@ -187,17 +187,17 @@ function AdapterModelsTableSection({
   onRemoveModel
 }: AdapterModelsTableSectionProps): JSX.Element {
   return (
-    <section className="grid gap-3 rounded-lg border border-border p-3">
-      <div className="overflow-x-auto rounded-md border border-border">
+    <section className="grid gap-3 rounded-md border border-border/80 bg-[var(--surface-panel-2)] p-3">
+      <div className="overflow-x-auto rounded-md border border-border/80 bg-[var(--surface-panel)]">
         <table className="w-full min-w-[680px] border-collapse text-xs">
           <thead>
-            <tr className="bg-muted/40 text-muted-foreground">
-              <th className="border-b border-border px-3 py-2 text-left font-medium">{t(locale, "modelId")}</th>
-              <th className="border-b border-border px-3 py-2 text-left font-medium">{t(locale, "modelLabel")}</th>
-              <th className="border-b border-border px-3 py-2 text-left font-medium">
+            <tr className="bg-muted/45 font-mono text-[11px] text-muted-foreground">
+              <th className="border-b border-border/80 px-3 py-2 text-left font-semibold">{t(locale, "modelId")}</th>
+              <th className="border-b border-border/80 px-3 py-2 text-left font-semibold">{t(locale, "modelLabel")}</th>
+              <th className="border-b border-border/80 px-3 py-2 text-left font-semibold">
                 {t(locale, "codexReasoningEffort")}
               </th>
-              <th className="w-[104px] border-b border-border px-3 py-2 text-right font-medium">
+              <th className="w-[104px] border-b border-border/80 px-3 py-2 text-right font-semibold">
                 {t(locale, "moreActions")}
               </th>
             </tr>
@@ -212,7 +212,7 @@ function AdapterModelsTableSection({
             ) : (
               models.map((item, index) => (
                 <tr key={`${item.adapter}:${item.id}:${index}`} className="align-top">
-                  <td className="border-b border-border px-3 py-2">
+                  <td className="border-b border-border/80 px-3 py-2">
                     <Input
                       defaultValue={item.id}
                       placeholder={t(locale, "modelId")}
@@ -226,7 +226,7 @@ function AdapterModelsTableSection({
                       }}
                     />
                   </td>
-                  <td className="border-b border-border px-3 py-2">
+                  <td className="border-b border-border/80 px-3 py-2">
                     <Input
                       defaultValue={item.label}
                       placeholder={t(locale, "modelLabel")}
@@ -240,7 +240,7 @@ function AdapterModelsTableSection({
                       }}
                     />
                   </td>
-                  <td className="border-b border-border px-3 py-2">
+                  <td className="border-b border-border/80 px-3 py-2">
                     {adapter === "codex" ? (
                       <Select
                         value={item.modelReasoningEffort ?? "default"}
@@ -267,7 +267,7 @@ function AdapterModelsTableSection({
                       <span className="text-muted-foreground">-</span>
                     )}
                   </td>
-                  <td className="border-b border-border px-3 py-2 text-right">
+                  <td className="border-b border-border/80 px-3 py-2 text-right">
                     <DropdownMenu>
                       <DropdownMenuTrigger asChild>
                         <Button

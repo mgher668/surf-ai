@@ -51,7 +51,7 @@ export function SessionSidebar({
   return (
     <div className="surf-session-sidebar">
       <h2 className="surf-session-title">{t(locale, "sessions")}</h2>
-      <Button type="button" onClick={() => void onCreateSession()} className="w-full justify-between">
+      <Button type="button" onClick={() => void onCreateSession()} className="w-full shrink-0 justify-between">
         {t(locale, "newSession")}
       </Button>
 
@@ -179,7 +179,7 @@ export function SessionSidebar({
         </div>
       </TooltipProvider>
 
-      <Separator className="my-3" />
+      <Separator className="my-3 shrink-0" />
       <div className="surf-connection-card">
         <span className="surf-field-label">{t(locale, "currentConnection")}</span>
         <span className="truncate text-sm font-semibold">

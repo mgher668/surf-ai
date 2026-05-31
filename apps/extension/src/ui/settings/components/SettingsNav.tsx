@@ -26,7 +26,7 @@ export function SettingsNav({
               data-active={active ? "true" : "false"}
             >
               <div className="text-sm font-medium">{t(locale, item.labelKey)}</div>
-              <div className={`text-[11px] ${active ? "text-primary-foreground/80" : "text-muted-foreground"}`}>
+              <div className="text-[11px] text-muted-foreground">
                 {t(locale, item.descriptionKey)}
               </div>
             </button>

@@ -40,6 +40,8 @@ export function SidepanelTopbar({
   onOpenSettingsPage,
   onDropdownOpenChange
 }: SidepanelTopbarProps): JSX.Element {
+  const logoUrl = chrome.runtime.getURL("logo-surf-ai-image2.png");
+
   return (
     <header className="surf-topbar">
       <Button
@@ -89,6 +91,7 @@ export function SidepanelTopbar({
           </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
+      <img className="surf-brand-mark surf-brand-mark-sm" src={logoUrl} alt="" aria-hidden="true" />
       <strong className="surf-topbar-title">{t(locale, "appTitle")}</strong>
       <DropdownMenu onOpenChange={onDropdownOpenChange}>
         <DropdownMenuTrigger asChild>

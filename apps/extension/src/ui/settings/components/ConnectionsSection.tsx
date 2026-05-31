@@ -53,7 +53,7 @@ export function ConnectionsSection({
           </p>
         </div>
 
-        <div className="grid gap-1">
+        <div className="surf-settings-control">
           <span className="surf-field-label">{t(locale, "currentConnection")}</span>
           <Select
             {...(activeConnectionId ? { value: activeConnectionId } : {})}
@@ -70,7 +70,7 @@ export function ConnectionsSection({
               ))}
             </SelectContent>
           </Select>
-          <p className="text-xs text-muted-foreground">
+          <p className="truncate font-mono text-xs text-muted-foreground">
             {activeConnection
               ? `${activeConnection.baseUrl} · ${activeConnection.userId ?? "-"}`
               : t(locale, "noConnection")}
@@ -80,21 +80,23 @@ export function ConnectionsSection({
 
       <section className="surf-settings-card">
         <h3 className="surf-settings-section-title">{t(locale, "addConnection")}</h3>
-        <div className="grid gap-2">
-          <span className="surf-field-label">{t(locale, "connectionName")}</span>
-          <Input value={newConnName} onChange={(event) => onNewConnNameChange(event.target.value)} />
-        </div>
-        <div className="grid gap-2">
-          <span className="surf-field-label">{t(locale, "baseUrl")}</span>
-          <Input value={newConnUrl} onChange={(event) => onNewConnUrlChange(event.target.value)} />
-        </div>
-        <div className="grid gap-2">
-          <span className="surf-field-label">{t(locale, "connectionUserId")}</span>
-          <Input value={newConnUserId} onChange={(event) => onNewConnUserIdChange(event.target.value)} />
-        </div>
-        <div className="grid gap-2">
-          <span className="surf-field-label">{t(locale, "token")}</span>
-          <Input value={newConnToken} onChange={(event) => onNewConnTokenChange(event.target.value)} />
+        <div className="surf-settings-form-grid">
+          <div className="surf-settings-control">
+            <span className="surf-field-label">{t(locale, "connectionName")}</span>
+            <Input value={newConnName} onChange={(event) => onNewConnNameChange(event.target.value)} />
+          </div>
+          <div className="surf-settings-control">
+            <span className="surf-field-label">{t(locale, "baseUrl")}</span>
+            <Input value={newConnUrl} onChange={(event) => onNewConnUrlChange(event.target.value)} />
+          </div>
+          <div className="surf-settings-control">
+            <span className="surf-field-label">{t(locale, "connectionUserId")}</span>
+            <Input value={newConnUserId} onChange={(event) => onNewConnUserIdChange(event.target.value)} />
+          </div>
+          <div className="surf-settings-control">
+            <span className="surf-field-label">{t(locale, "token")}</span>
+            <Input value={newConnToken} onChange={(event) => onNewConnTokenChange(event.target.value)} />
+          </div>
         </div>
         <div>
           <Button type="button" onClick={onAddConnection}>

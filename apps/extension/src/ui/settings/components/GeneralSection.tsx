@@ -40,66 +40,68 @@ export function GeneralSection({
         </p>
       </div>
 
-      <div className="grid gap-2">
-        <span className="surf-field-label">{t(locale, "defaultAdapter")}</span>
-        <Select
-          value={defaultAdapter}
-          onValueChange={(value) => onDefaultAdapterChange(value as BridgeAdapter)}
-        >
-          <SelectTrigger>
-            <SelectValue placeholder={t(locale, "defaultAdapter")} />
-          </SelectTrigger>
-          <SelectContent>
-            {adapterOptions.map((item) => (
-              <SelectItem key={item} value={item}>
-                {item}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-      </div>
+      <div className="surf-settings-form-grid">
+        <div className="surf-settings-control">
+          <span className="surf-field-label">{t(locale, "defaultAdapter")}</span>
+          <Select
+            value={defaultAdapter}
+            onValueChange={(value) => onDefaultAdapterChange(value as BridgeAdapter)}
+          >
+            <SelectTrigger>
+              <SelectValue placeholder={t(locale, "defaultAdapter")} />
+            </SelectTrigger>
+            <SelectContent>
+              {adapterOptions.map((item) => (
+                <SelectItem key={item} value={item}>
+                  {item}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
 
-      <div className="grid gap-2">
-        <span className="surf-field-label">{t(locale, "language")}</span>
-        <Select value={locale} onValueChange={(value) => onLocaleChange(value as Locale)}>
-          <SelectTrigger>
-            <SelectValue placeholder={t(locale, "language")} />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="zh-CN">{t(locale, "languageZhCn")}</SelectItem>
-            <SelectItem value="en-US">{t(locale, "languageEnUs")}</SelectItem>
-          </SelectContent>
-        </Select>
-      </div>
+        <div className="surf-settings-control">
+          <span className="surf-field-label">{t(locale, "language")}</span>
+          <Select value={locale} onValueChange={(value) => onLocaleChange(value as Locale)}>
+            <SelectTrigger>
+              <SelectValue placeholder={t(locale, "language")} />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="zh-CN">{t(locale, "languageZhCn")}</SelectItem>
+              <SelectItem value="en-US">{t(locale, "languageEnUs")}</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
 
-      <div className="grid gap-2">
-        <span className="surf-field-label">{t(locale, "sidebarMode")}</span>
-        <Select
-          value={sidebarMode}
-          onValueChange={(value) => onSidebarModeChange(value as UiSidebarMode)}
-        >
-          <SelectTrigger>
-            <SelectValue placeholder={t(locale, "sidebarMode")} />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="docked">{t(locale, "sidebarModeDocked")}</SelectItem>
-            <SelectItem value="overlay">{t(locale, "sidebarModeOverlay")}</SelectItem>
-          </SelectContent>
-        </Select>
-      </div>
+        <div className="surf-settings-control">
+          <span className="surf-field-label">{t(locale, "sidebarMode")}</span>
+          <Select
+            value={sidebarMode}
+            onValueChange={(value) => onSidebarModeChange(value as UiSidebarMode)}
+          >
+            <SelectTrigger>
+              <SelectValue placeholder={t(locale, "sidebarMode")} />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="docked">{t(locale, "sidebarModeDocked")}</SelectItem>
+              <SelectItem value="overlay">{t(locale, "sidebarModeOverlay")}</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
 
-      <div className="grid gap-2">
-        <span className="surf-field-label">{t(locale, "theme")}</span>
-        <Select value={themeMode} onValueChange={(value) => onThemeModeChange(value as UiThemeMode)}>
-          <SelectTrigger>
-            <SelectValue placeholder={t(locale, "theme")} />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="system">{t(locale, "themeSystem")}</SelectItem>
-            <SelectItem value="light">{t(locale, "themeLight")}</SelectItem>
-            <SelectItem value="dark">{t(locale, "themeDark")}</SelectItem>
-          </SelectContent>
-        </Select>
+        <div className="surf-settings-control">
+          <span className="surf-field-label">{t(locale, "theme")}</span>
+          <Select value={themeMode} onValueChange={(value) => onThemeModeChange(value as UiThemeMode)}>
+            <SelectTrigger>
+              <SelectValue placeholder={t(locale, "theme")} />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="system">{t(locale, "themeSystem")}</SelectItem>
+              <SelectItem value="light">{t(locale, "themeLight")}</SelectItem>
+              <SelectItem value="dark">{t(locale, "themeDark")}</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
       </div>
     </section>
   );

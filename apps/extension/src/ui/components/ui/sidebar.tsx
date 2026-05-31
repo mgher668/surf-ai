@@ -65,7 +65,7 @@ function SidebarProvider({
         data-state={state}
         style={
           {
-            "--sidebar-width": "236px",
+            "--sidebar-width": "264px",
             "--sidebar-width-icon": "56px",
             ...style
           } as React.CSSProperties

@@ -1,17 +1,18 @@
 html,
 body,
 #root {
-  width: 320px;
-  min-width: 320px;
-  min-height: 296px;
+  width: 344px;
+  min-width: 344px;
+  min-height: 384px;
 }
 
 html {
-  background: #f4f7f5;
+  background: #080d0c;
 }
 
 body {
   margin: 0;
   overflow-x: hidden;
-  background: #f4f7f5;
+  overflow-y: auto;
+  background: #080d0c;
 }

@@ -971,13 +971,73 @@ export function App(): JSX.Element {
           {extractError ? <div style={hintErrorStyle}>{extractError}</div> : null}
           {conversationTimelineItems.length === 0 ? (
             <div className="surf-empty-state">
-              <span className="surf-empty-kicker">Surf AI</span>
-              <strong className="surf-empty-title">{t(locale, "empty")}</strong>
-              <span className="text-sm leading-relaxed text-muted-foreground">
+              <span className="surf-empty-kicker">
+                {locale === "zh-CN" ? "本地 Agent 控制台" : "Local agent console"}
+              </span>
+              <strong className="surf-empty-title">
+                {activeConnection
+                  ? t(locale, "empty")
+                  : t(locale, "noActiveConnectionHint")}
+              </strong>
+              <span className="max-w-[56ch] text-sm leading-relaxed text-muted-foreground">
                 {activeConnection
                   ? t(locale, "placeholder")
                   : t(locale, "noActiveConnectionHint")}
               </span>
+              <div className="grid gap-2 sm:grid-cols-3">
+                <div className="rounded-md border border-border/80 bg-[var(--surface-panel-2)] p-3">
+                  <span className="surf-field-label">bridge</span>
+                  <div className="mt-1 truncate text-sm font-semibold">
+                    {activeConnection?.name ?? t(locale, "noConnection")}
+                  </div>
+                </div>
+                <div className="rounded-md border border-border/80 bg-[var(--surface-panel-2)] p-3">
+                  <span className="surf-field-label">adapter</span>
+                  <div className="mt-1 truncate font-mono text-sm font-semibold">
+                    {adapter} / {model?.trim() || AUTO_MODEL_ID}
+                  </div>
+                </div>
+                <div className="rounded-md border border-border/80 bg-[var(--surface-panel-2)] p-3">
+                  <span className="surf-field-label">context</span>
+                  <div className="mt-1 truncate text-sm font-semibold">
+                    {pageContent
+                      ? t(locale, "pageContextReady")
+                      : locale === "zh-CN"
+                        ? "未附加"
+                        : "Not attached"}
+                  </div>
+                </div>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <Button
+                  type="button"
+                  size="sm"
+                  onClick={() => {
+                    composerTextareaRef.current?.focus();
+                  }}
+                >
+                  {locale === "zh-CN" ? "开始输入" : "Focus composer"}
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => void extractCurrentPage()}
+                  disabled={!activeConnection || extractingPage}
+                >
+                  {extractingPage ? t(locale, "extractingPage") : t(locale, "extractPage")}
+                </Button>
+                {!activeConnection ? (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => void openSettingsPage()}
+                  >
+                    {t(locale, "openSettings")}
+                  </Button>
+                ) : null}
+              </div>
             </div>
           ) : (
             conversationTimelineItems.map((item) => {
@@ -1164,7 +1224,7 @@ export function App(): JSX.Element {
               focusConversationViewport();
             }}
             placeholder={t(locale, "placeholder")}
-            className="min-h-[84px] resize-y rounded-2xl bg-background text-[13px]"
+            className="min-h-[84px] resize-y rounded-md bg-background text-[13px]"
           />
           <Button
             type="button"
@@ -1173,7 +1233,11 @@ export function App(): JSX.Element {
             className="min-h-10"
             style={{ opacity: pending || isActiveRunBusy || !canSend ? 0.6 : 1 }}
           >
-            {pending ? "..." : t(locale, "send")}
+            {pending || isActiveRunBusy
+              ? locale === "zh-CN"
+                ? "运行中"
+                : "Running"
+              : t(locale, "send")}
           </Button>
         </footer>
       </main>

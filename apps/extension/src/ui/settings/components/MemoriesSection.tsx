@@ -85,10 +85,10 @@ function MemoryCard({
   return (
     <article className="surf-memory-card">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <div className="flex flex-wrap items-center gap-2 text-xs">
-          <span className="rounded-full bg-muted px-2 py-0.5">{memory.scope}</span>
-          <span className="rounded-full bg-muted px-2 py-0.5">{memory.kind}</span>
-          <span className="rounded-full bg-muted px-2 py-0.5">{memory.status}</span>
+        <div className="flex flex-wrap items-center gap-1.5 font-mono text-[11px]">
+          <span className="rounded-[4px] border border-border/70 bg-muted px-1.5 py-0.5">{memory.scope}</span>
+          <span className="rounded-[4px] border border-border/70 bg-muted px-1.5 py-0.5">{memory.kind}</span>
+          <span className="rounded-[4px] border border-border/70 bg-muted px-1.5 py-0.5">{memory.status}</span>
           <span className="text-muted-foreground">
             {Math.round(memory.confidence * 100)}%
           </span>
