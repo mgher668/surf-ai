@@ -11,7 +11,6 @@ import type {
   ChatMessage,
   ChatSession,
   ExtensionToUiMessage,
-  BridgeTtsResponse,
   UiSidebarMode,
   UiThemeMode
 } from "@surf-ai/shared";
@@ -53,6 +52,7 @@ import { useRuntimeAlert } from "./hooks/useRuntimeAlert";
 import { useSidepanelModels } from "./hooks/useSidepanelModels";
 import { useSidepanelRuns } from "./hooks/useSidepanelRuns";
 import { useSidepanelSend } from "./hooks/useSidepanelSend";
+import { useSidepanelTts } from "./hooks/useSidepanelTts";
 import {
   deleteSessionOnBackend,
   fetchSessionsFromBackend,
@@ -63,7 +63,6 @@ import {
 } from "./api/sessionApi";
 import {
   areSessionListsEqual,
-  buildBridgeHeaders,
   buildComposerGalleryImages,
   buildConversationTimelineItems,
   buildSessionGalleryImages,
@@ -191,6 +190,10 @@ export function App(): JSX.Element {
     messages,
     reportRuntimeAlert,
     clearRuntimeAlert
+  });
+  const { requestTts } = useSidepanelTts({
+    activeConnection,
+    ttsReady
   });
   const {
     extractingPage,
@@ -974,38 +977,6 @@ export function App(): JSX.Element {
     await setSessions(next);
     setSessionsState(next);
     setActiveSessionId(replacement.id);
-  }
-
-  async function requestTts(text: string): Promise<void> {
-    if (!activeConnection || !ttsReady) return;
-
-    try {
-      const response = await fetch(`${activeConnection.baseUrl}/tts`, {
-        method: "POST",
-        headers: buildBridgeHeaders(activeConnection, true),
-        body: JSON.stringify({ text })
-      });
-
-      if (!response.ok) {
-        return;
-      }
-
-      const payload = (await response.json()) as BridgeTtsResponse;
-      const playbackUrl =
-        payload.audioUrl ??
-        (payload.base64Audio
-          ? `data:${payload.mimeType ?? "audio/mpeg"};base64,${payload.base64Audio}`
-          : undefined);
-
-      if (!playbackUrl) {
-        return;
-      }
-
-      const audio = new Audio(playbackUrl);
-      void audio.play();
-    } catch {
-      // Keep silent for skeleton: chat flow should continue even if TTS is unavailable.
-    }
   }
 
   async function openStandalonePage(): Promise<void> {
