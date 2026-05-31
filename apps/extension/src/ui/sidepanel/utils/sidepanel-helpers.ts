@@ -39,11 +39,20 @@ export interface ProcessTimelineItem {
     | "reasoning_summary"
     | "reasoning_text"
     | "command_output"
-    | "runtime_error";
+    | "runtime_error"
+    | "tool_call"
+    | "tool_result"
+    | "tool_failed";
   approval?: BridgeRunApproval;
+  toolCallId?: string;
+  toolId?: string;
+  outputKind?: string;
+  input?: Record<string, unknown>;
+  metadata?: Record<string, unknown>;
   content?: string;
   segments?: string[];
   message?: string;
+  code?: string;
 }
 
 export interface ComposerAttachment {
@@ -404,6 +413,8 @@ function buildProcessTimelineItems(
   const mergedApprovals = mergeApprovalsFromEvents(events, approvals);
   const commentarySegments = extractCommentarySegments(events);
 
+  items.push(...buildToolTimelineItems(runId, events));
+
   for (const approval of mergedApprovals) {
     items.push({
       id: `approval-${runId}-${approval.id}`,
@@ -474,6 +485,70 @@ function buildProcessTimelineItems(
     return left.id.localeCompare(right.id);
   });
   return items;
+}
+
+function buildToolTimelineItems(
+  runId: string,
+  events: BridgeRunStreamEvent[]
+): ProcessTimelineItem[] {
+  const items: ProcessTimelineItem[] = [];
+
+  for (const event of events) {
+    if (event.type === "tool.started") {
+      items.push({
+        id: `${runId}:tool-start:${event.data.toolCallId}`,
+        ts: event.ts,
+        kind: "tool_call",
+        toolCallId: event.data.toolCallId,
+        toolId: event.data.toolId,
+        ...(event.data.input ? { input: event.data.input } : {})
+      });
+      continue;
+    }
+
+    if (event.type === "tool.output") {
+      items.push({
+        id: `${runId}:tool-output:${event.data.toolCallId}`,
+        ts: event.ts,
+        kind: "tool_result",
+        toolCallId: event.data.toolCallId,
+        toolId: event.data.toolId,
+        outputKind: event.data.outputKind,
+        content: formatUnknownContent(event.data.content),
+        ...(event.data.metadata ? { metadata: event.data.metadata } : {})
+      });
+      continue;
+    }
+
+    if (event.type === "tool.failed") {
+      items.push({
+        id: `${runId}:tool-failed:${event.data.toolCallId}`,
+        ts: event.ts,
+        kind: "tool_failed",
+        toolCallId: event.data.toolCallId,
+        toolId: event.data.toolId,
+        code: event.data.code,
+        message: event.data.message
+      });
+    }
+  }
+
+  return items;
+}
+
+function formatUnknownContent(value: unknown): string {
+  if (typeof value === "string") {
+    return value;
+  }
+  if (value === undefined || value === null) {
+    return "";
+  }
+
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return String(value);
+  }
 }
 
 function extractCommentarySegments(events: BridgeRunStreamEvent[]): string[] {
