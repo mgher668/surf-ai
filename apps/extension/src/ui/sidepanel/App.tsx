@@ -9,11 +9,6 @@ import { STORAGE_KEYS } from "@surf-ai/shared";
 import type {
   BridgeChatRequest,
   BridgeConnection,
-  BridgeSessionCreateResponse,
-  BridgeSessionListResponse,
-  BridgeSessionAdapterRequest,
-  BridgeSessionAdapterResponse,
-  BridgeSessionMessagesResponse,
   BridgeSessionRun,
   BridgeSessionRunCancelResponse,
   BridgeSessionRunCreateResponse,
@@ -22,17 +17,14 @@ import type {
   BridgeRunApproval,
   BridgeUploadCreateResponse,
   BridgeRunStreamEvent,
-  BridgeSessionRenameRequest,
-  BridgeSessionRenameResponse,
-  BridgeSessionStarRequest,
   ChatMessage,
   ChatSession,
   ExtensionToUiMessage,
   BridgeTtsResponse,
   UiSidebarMode,
-  UiThemeMode,
+  UiThemeMode
 } from "@surf-ai/shared";
-import { deleteMessagesBySession, listMessagesBySession, saveMessage, saveMessages } from "../../lib/db";
+import { deleteMessagesBySession, listMessagesBySession, saveMessage } from "../../lib/db";
 import { openBridgeRunStream, type BridgeRunStreamHandle } from "../../lib/bridge-sse";
 import {
   getActiveConnectionId,
@@ -69,12 +61,20 @@ import { usePageContext } from "./hooks/usePageContext";
 import { useRuntimeAlert } from "./hooks/useRuntimeAlert";
 import { useSidepanelModels } from "./hooks/useSidepanelModels";
 import {
-  fetchBridgeJson,
   fetchLatestSessionRun,
   fetchRunApprovalsFromBackend,
   fetchRunEventsFromBackend,
   fetchSessionRunsFromBackend
 } from "./api/bridgeApi";
+import {
+  createSessionOnBackend,
+  deleteSessionOnBackend,
+  fetchSessionsFromBackend,
+  loadMessagesFromBackend,
+  renameSessionOnBackend,
+  updateSessionAdapterOnBackend,
+  updateSessionStarOnBackend
+} from "./api/sessionApi";
 import {
   areMessageListsEqual,
   areSessionListsEqual,
@@ -802,7 +802,11 @@ export function App(): JSX.Element {
 
     const load = async (): Promise<void> => {
       if (sessionMode === "backend" && activeConnection) {
-        const loadedMessages = await loadMessagesFromBackend(activeConnection, sessionId);
+        const loadedMessages = await loadMessagesFromBackend(
+          activeConnection,
+          sessionId,
+          getBackendRuntimeHandlers()
+        );
         if (cancelled) {
           return;
         }
@@ -1012,7 +1016,11 @@ export function App(): JSX.Element {
     }));
 
     const applyTerminalSync = async (nextRun: BridgeSessionRun): Promise<void> => {
-      const loadedMessages = await loadMessagesFromBackend(activeConnection, sessionId);
+      const loadedMessages = await loadMessagesFromBackend(
+        activeConnection,
+        sessionId,
+        getBackendRuntimeHandlers()
+      );
       if (cancelled) {
         return;
       }
@@ -1047,7 +1055,10 @@ export function App(): JSX.Element {
         }));
       }
 
-      const backendSessions = await fetchSessionsFromBackend(activeConnection);
+      const backendSessions = await fetchSessionsFromBackend(
+        activeConnection,
+        getBackendRuntimeHandlers()
+      );
       if (!cancelled && backendSessions) {
         setSessionsState((prev) => {
           const mergedSessions = mergeSessionsWithLocalAdapters(prev, backendSessions);
@@ -1210,7 +1221,10 @@ export function App(): JSX.Element {
     let stopped = false;
 
     const sync = async (): Promise<void> => {
-      const backendSessions = await fetchSessionsFromBackend(activeConnection);
+      const backendSessions = await fetchSessionsFromBackend(
+        activeConnection,
+        getBackendRuntimeHandlers()
+      );
       if (stopped || !backendSessions) {
         return;
       }
@@ -1260,6 +1274,14 @@ export function App(): JSX.Element {
     void setStoredActiveSessionId(activeSessionId);
   }, [activeSessionId]);
 
+  function getBackendRuntimeHandlers() {
+    return {
+      locale,
+      reportRuntimeAlert,
+      clearRuntimeAlert
+    };
+  }
+
   async function bootstrap(): Promise<void> {
     const [storedLocale, storedDefaultAdapter, storedTheme, storedSidebarMode, storedSidebarCollapsed] =
       await Promise.all([
@@ -1301,7 +1323,10 @@ export function App(): JSX.Element {
     setActiveConnectionIdState(resolvedActiveConnectionId);
 
     if (resolvedActiveConnection) {
-      const backendSessions = await fetchSessionsFromBackend(resolvedActiveConnection);
+      const backendSessions = await fetchSessionsFromBackend(
+        resolvedActiveConnection,
+        getBackendRuntimeHandlers()
+      );
       setSessionMode("backend");
       if (backendSessions) {
         const mergedSessions = mergeSessionsWithLocalAdapters(storedSessions, backendSessions);
@@ -1353,230 +1378,6 @@ export function App(): JSX.Element {
     });
   }
 
-  async function fetchSessionsFromBackend(connection: BridgeConnection): Promise<ChatSession[] | null> {
-    const maxAttempts = 3;
-    for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
-      try {
-        const response = await fetchBridgeJson<BridgeSessionListResponse>(connection, "/sessions");
-        if (response.ok) {
-          clearRuntimeAlert();
-          return response.data.sessions;
-        }
-        if (response.status === 401 || response.status === 403) {
-          reportRuntimeAlert("auth_failed", "error", t(locale, "alertAuthFailed"), response.status);
-          return null;
-        }
-        if (response.status === 429) {
-          reportRuntimeAlert("rate_limited", "warn", t(locale, "alertRateLimited"), response.status);
-        } else {
-          reportRuntimeAlert(
-            "bridge_request_failed",
-            "warn",
-            `${t(locale, "alertBridgeRequestFailed")} (${response.status})`,
-            response.status
-          );
-        }
-      } catch {
-        reportRuntimeAlert("backend_unreachable", "error", t(locale, "alertBackendUnreachable"));
-      }
-
-      if (attempt < maxAttempts - 1) {
-        await sleep(300 * (attempt + 1));
-      }
-    }
-    return null;
-  }
-
-  async function loadMessagesFromBackend(
-    connection: BridgeConnection,
-    sessionId: string
-  ): Promise<ChatMessage[]> {
-    try {
-      const response = await fetchBridgeJson<BridgeSessionMessagesResponse>(
-        connection,
-        `/sessions/${sessionId}/messages?afterSeq=0&limit=500`
-      );
-      if (!response.ok) {
-        if (response.status === 401 || response.status === 403) {
-          reportRuntimeAlert("auth_failed", "error", t(locale, "alertAuthFailed"), response.status);
-        } else if (response.status === 429) {
-          reportRuntimeAlert("rate_limited", "warn", t(locale, "alertRateLimited"), response.status);
-        } else {
-          reportRuntimeAlert(
-            "bridge_request_failed",
-            "warn",
-            `${t(locale, "alertBridgeRequestFailed")} (${response.status})`,
-            response.status
-          );
-        }
-        throw new Error(`messages_request_failed:${response.status}`);
-      }
-      await saveMessages(response.data.messages);
-      clearRuntimeAlert();
-      return response.data.messages;
-    } catch (error) {
-      if (error instanceof TypeError) {
-        reportRuntimeAlert("backend_unreachable", "error", t(locale, "alertBackendUnreachable"));
-      }
-      return [
-        {
-          id: crypto.randomUUID(),
-          sessionId,
-          role: "assistant",
-          content: `Error: ${error instanceof Error ? error.message : "load_messages_failed"}`,
-          createdAt: Date.now()
-        }
-      ];
-    }
-  }
-
-  async function createSessionOnBackend(connection: BridgeConnection, title: string): Promise<ChatSession | null> {
-    try {
-      const response = await fetch(`${connection.baseUrl}/sessions`, {
-        method: "POST",
-        headers: buildBridgeHeaders(connection, true),
-        body: JSON.stringify({ title })
-      });
-      if (!response.ok) {
-        if (response.status === 401 || response.status === 403) {
-          reportRuntimeAlert("auth_failed", "error", t(locale, "alertAuthFailed"), response.status);
-        } else if (response.status === 429) {
-          reportRuntimeAlert("rate_limited", "warn", t(locale, "alertRateLimited"), response.status);
-        } else {
-          reportRuntimeAlert(
-            "bridge_request_failed",
-            "warn",
-            `${t(locale, "alertBridgeRequestFailed")} (${response.status})`,
-            response.status
-          );
-        }
-        return null;
-      }
-      const payload = (await response.json()) as BridgeSessionCreateResponse;
-      clearRuntimeAlert();
-      return payload.session;
-    } catch {
-      reportRuntimeAlert("backend_unreachable", "error", t(locale, "alertBackendUnreachable"));
-      return null;
-    }
-  }
-
-  async function updateSessionStarOnBackend(
-    connection: BridgeConnection,
-    sessionId: string,
-    starred: boolean
-  ): Promise<ChatSession | null> {
-    try {
-      const body: BridgeSessionStarRequest = { starred };
-      const response = await fetch(`${connection.baseUrl}/sessions/${sessionId}/star`, {
-        method: "POST",
-        headers: buildBridgeHeaders(connection, true),
-        body: JSON.stringify(body)
-      });
-      if (!response.ok) {
-        if (response.status === 401 || response.status === 403) {
-          reportRuntimeAlert("auth_failed", "error", t(locale, "alertAuthFailed"), response.status);
-        } else if (response.status === 429) {
-          reportRuntimeAlert("rate_limited", "warn", t(locale, "alertRateLimited"), response.status);
-        }
-        return null;
-      }
-      const payload = (await response.json()) as { session: ChatSession };
-      clearRuntimeAlert();
-      return payload.session;
-    } catch {
-      reportRuntimeAlert("backend_unreachable", "error", t(locale, "alertBackendUnreachable"));
-      return null;
-    }
-  }
-
-  async function updateSessionAdapterOnBackend(
-    connection: BridgeConnection,
-    sessionId: string,
-    nextAdapter: BridgeChatRequest["adapter"]
-  ): Promise<ChatSession | null> {
-    try {
-      const body: BridgeSessionAdapterRequest = { adapter: nextAdapter };
-      const response = await fetch(`${connection.baseUrl}/sessions/${sessionId}/adapter`, {
-        method: "POST",
-        headers: buildBridgeHeaders(connection, true),
-        body: JSON.stringify(body)
-      });
-      if (!response.ok) {
-        if (response.status === 401 || response.status === 403) {
-          reportRuntimeAlert("auth_failed", "error", t(locale, "alertAuthFailed"), response.status);
-        } else if (response.status === 429) {
-          reportRuntimeAlert("rate_limited", "warn", t(locale, "alertRateLimited"), response.status);
-        }
-        return null;
-      }
-      const payload = (await response.json()) as BridgeSessionAdapterResponse;
-      clearRuntimeAlert();
-      return payload.session;
-    } catch {
-      reportRuntimeAlert("backend_unreachable", "error", t(locale, "alertBackendUnreachable"));
-      return null;
-    }
-  }
-
-  async function renameSessionOnBackend(
-    connection: BridgeConnection,
-    sessionId: string,
-    title: string
-  ): Promise<ChatSession | null> {
-    try {
-      const body: BridgeSessionRenameRequest = { title };
-      const response = await fetch(`${connection.baseUrl}/sessions/${sessionId}`, {
-        method: "PATCH",
-        headers: buildBridgeHeaders(connection, true),
-        body: JSON.stringify(body)
-      });
-      if (!response.ok) {
-        if (response.status === 401 || response.status === 403) {
-          reportRuntimeAlert("auth_failed", "error", t(locale, "alertAuthFailed"), response.status);
-        } else if (response.status === 429) {
-          reportRuntimeAlert("rate_limited", "warn", t(locale, "alertRateLimited"), response.status);
-        } else {
-          reportRuntimeAlert(
-            "bridge_request_failed",
-            "warn",
-            `${t(locale, "alertBridgeRequestFailed")} (${response.status})`,
-            response.status
-          );
-        }
-        return null;
-      }
-      const payload = (await response.json()) as BridgeSessionRenameResponse;
-      clearRuntimeAlert();
-      return payload.session;
-    } catch {
-      reportRuntimeAlert("backend_unreachable", "error", t(locale, "alertBackendUnreachable"));
-      return null;
-    }
-  }
-
-  async function deleteSessionOnBackend(connection: BridgeConnection, sessionId: string): Promise<boolean> {
-    try {
-      const response = await fetch(`${connection.baseUrl}/sessions/${sessionId}`, {
-        method: "DELETE",
-        headers: buildBridgeHeaders(connection)
-      });
-      if (response.ok) {
-        clearRuntimeAlert();
-        return true;
-      }
-      if (response.status === 401 || response.status === 403) {
-        reportRuntimeAlert("auth_failed", "error", t(locale, "alertAuthFailed"), response.status);
-      } else if (response.status === 429) {
-        reportRuntimeAlert("rate_limited", "warn", t(locale, "alertRateLimited"), response.status);
-      }
-      return false;
-    } catch {
-      reportRuntimeAlert("backend_unreachable", "error", t(locale, "alertBackendUnreachable"));
-      return false;
-    }
-  }
-
   async function createNewSession(): Promise<void> {
     if (sessionMode === "backend") {
       setActiveSessionId(BACKEND_DRAFT_SESSION_ID);
@@ -1622,7 +1423,12 @@ export function App(): JSX.Element {
       if (!current) {
         return;
       }
-      const updated = await updateSessionStarOnBackend(activeConnection, id, !current.starred);
+      const updated = await updateSessionStarOnBackend(
+        activeConnection,
+        id,
+        !current.starred,
+        getBackendRuntimeHandlers()
+      );
       if (updated) {
         setSessionsState((prev) => {
           const next = prev.map((item) => (item.id === id ? updated : item));
@@ -1658,7 +1464,12 @@ export function App(): JSX.Element {
         return false;
       }
 
-      const updated = await renameSessionOnBackend(activeConnection, session.id, title);
+      const updated = await renameSessionOnBackend(
+        activeConnection,
+        session.id,
+        title,
+        getBackendRuntimeHandlers()
+      );
       if (!updated) {
         setMessages((prev) => [
           ...prev,
@@ -1740,7 +1551,7 @@ export function App(): JSX.Element {
         ]);
         return;
       }
-      const deleted = await deleteSessionOnBackend(activeConnection, id);
+      const deleted = await deleteSessionOnBackend(activeConnection, id, getBackendRuntimeHandlers());
       if (!deleted) {
         setMessages((prev) => [
           ...prev,
@@ -1800,7 +1611,11 @@ export function App(): JSX.Element {
     if (sessionMode === "backend") {
       let sessionId = activeSessionId;
       if (!sessionId || sessionId === BACKEND_DRAFT_SESSION_ID) {
-        const created = await createSessionOnBackend(activeConnection, "New chat");
+        const created = await createSessionOnBackend(
+          activeConnection,
+          "New chat",
+          getBackendRuntimeHandlers()
+        );
         if (!created) {
           const errMessage: ChatMessage = {
             id: crypto.randomUUID(),
@@ -2496,7 +2311,8 @@ export function App(): JSX.Element {
                     void updateSessionAdapterOnBackend(
                       activeConnection,
                       activeSessionId,
-                      nextAdapter
+                      nextAdapter,
+                      getBackendRuntimeHandlers()
                     ).then((updatedSession) => {
                       if (!updatedSession) {
                         return;
@@ -2693,10 +2509,4 @@ function createSession(title: string): ChatSession {
 
 function formatAdapterModel(adapter: string, model: string | undefined): string {
   return `${adapter} / ${model?.trim() || AUTO_MODEL_ID}`;
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => {
-    setTimeout(resolve, ms);
-  });
 }
