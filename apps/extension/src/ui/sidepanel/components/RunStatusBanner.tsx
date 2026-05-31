@@ -2,7 +2,6 @@ import type { BridgeSessionRun } from "@surf-ai/shared";
 import { type Locale, t } from "../../common/i18n";
 import { Button } from "../../components/ui/button";
 import { formatRunStatus, isRunInFlight } from "../utils/sidepanel-helpers";
-import { hintErrorStyle, hintInfoStyle, hintWarnStyle } from "../styles";
 
 const AUTO_MODEL_ID = "auto";
 
@@ -19,18 +18,17 @@ export function RunStatusBanner({
   locale,
   onCancelActiveRun
 }: RunStatusBannerProps): JSX.Element {
+  const statusTone =
+    activeRun.status === "FAILED"
+      ? "failed"
+      : activeRun.status === "CANCELLED"
+        ? "cancelled"
+        : "running";
+
   return (
-    <div
-      style={
-        activeRun.status === "FAILED"
-          ? hintErrorStyle
-          : activeRun.status === "CANCELLED"
-            ? hintWarnStyle
-            : hintInfoStyle
-      }
-    >
+    <div className="surf-run-status" data-status={statusTone}>
       <div className="flex items-center justify-between gap-2">
-        <span className="text-xs">
+        <span className="font-mono text-[11px]">
           {t(locale, "runStatusLabel")} {formatRunStatus(locale, activeRun.status)} ·{" "}
           {formatAdapterModel(activeRun.adapter, activeRun.model)}
         </span>
@@ -49,12 +47,12 @@ export function RunStatusBanner({
       </div>
       {activeRun.errorMessage &&
       (activeRun.status === "FAILED" || activeRun.status === "CANCELLED") ? (
-        <div style={{ marginTop: 4, fontSize: 11, whiteSpace: "pre-wrap" }}>
+        <div className="mt-1 whitespace-pre-wrap font-mono text-[11px]">
           {activeRun.errorMessage}
         </div>
       ) : null}
       {runStreamError ? (
-        <div style={{ marginTop: 4, fontSize: 11, whiteSpace: "pre-wrap" }}>
+        <div className="mt-1 whitespace-pre-wrap font-mono text-[11px]">
           {runStreamError}
         </div>
       ) : null}

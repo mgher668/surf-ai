@@ -63,7 +63,7 @@ export function ConversationMessage({
       }`}
     >
       {msg.role === "assistant" ? (
-        <div style={{ display: "grid", gap: 8 }}>
+        <div className="surf-assistant-message-frame">
           <div className="surf-message-toolbar">
             <button
               type="button"
