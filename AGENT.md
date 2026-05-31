@@ -44,6 +44,25 @@
 - Service Worker 视为短生命周期，不保存关键内存状态。
 - 涉及用户数据的变更必须说明存储位置与生命周期。
 
+### 4.1 Extension 修改入口
+
+修改 browser extension 前，先阅读：
+
+- `docs/extension-ui-architecture.md`：extension 全局结构、入口、边界、常见修改路径、验证矩阵。
+- `apps/extension/src/ui/sidepanel/README.md`：sidepanel 局部结构、hooks/api/components/utils 分工、常见改动 playbook。
+- `docs/harness/phase-ui-7-extension-refactor-cdp-smoke.md`：当前 CDP smoke 覆盖范围。
+- `docs/harness/phase-ui-8-extension-bundle-chunk-optimization.md`：bundle chunk warning 与优化边界。
+
+Extension 默认验证序列：
+
+```bash
+pnpm --filter @surf-ai/extension typecheck
+pnpm --filter @surf-ai/extension build
+pnpm e2e:extension
+```
+
+对 extension 做结构性重构时，必须先用文档建立边界，再用 Codegraph/Serena 校验当前符号关系与影响面；文档与代码不一致时，以代码为准并同步更新文档。
+
 ## 5. 本地 Bridge 硬约束
 
 - 必须有鉴权（配对令牌或等价机制）。
